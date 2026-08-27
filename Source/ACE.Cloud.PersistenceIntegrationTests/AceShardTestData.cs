@@ -12,6 +12,7 @@ internal static class AceShardTestData
     private const short ContainerPropertyType = 2; // PropertyInstanceId.Container
     private const short WielderPropertyType = 3; // PropertyInstanceId.Wielder
     private const short LocationPositionType = 1; // PositionType.Location
+    private const short StackSizePropertyType = 12; // PropertyInt.StackSize
 
     public static async Task InsertBiotaAsync(string aceShardConnectionString, uint biotaId)
     {
@@ -25,6 +26,36 @@ internal static class AceShardTestData
             """;
         command.Parameters.AddWithValue("@id", biotaId);
         await command.ExecuteNonQueryAsync();
+    }
+
+    public static async Task<bool> BiotaExistsAsync(string aceShardConnectionString, uint biotaId)
+    {
+        await using var connection = new MySqlConnection(aceShardConnectionString);
+        await connection.OpenAsync();
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM biota WHERE id = @biotaId;";
+        command.Parameters.AddWithValue("@biotaId", biotaId);
+
+        var count = (long)(await command.ExecuteScalarAsync())!;
+        return count > 0;
+    }
+
+    /// <summary>
+    /// Reads the native PropertyInt.StackSize row for a biota, or null if that biota has none.
+    /// </summary>
+    public static async Task<int?> GetStackSizeAsync(string aceShardConnectionString, uint biotaId)
+    {
+        await using var connection = new MySqlConnection(aceShardConnectionString);
+        await connection.OpenAsync();
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT value FROM biota_properties_int WHERE object_Id = @objectId AND type = @type;";
+        command.Parameters.AddWithValue("@objectId", biotaId);
+        command.Parameters.AddWithValue("@type", StackSizePropertyType);
+
+        var result = await command.ExecuteScalarAsync();
+        return result is null or DBNull ? null : Convert.ToInt32(result);
     }
 
     public static Task GrantContainerAsync(string aceShardConnectionString, uint biotaId, uint containerId) =>

@@ -24,6 +24,10 @@ public sealed class CloudDbContext : DbContext
 
     public DbSet<CloudCustodyOutboxEvent> CloudCustodyOutboxEvents => Set<CloudCustodyOutboxEvent>();
 
+    public DbSet<CloudStackLot> CloudStackLots => Set<CloudStackLot>();
+
+    public DbSet<CloudStackLotLineageEvent> CloudStackLotLineageEvents => Set<CloudStackLotLineageEvent>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<CloudShardBinding>(entity =>
@@ -69,7 +73,11 @@ public sealed class CloudDbContext : DbContext
                 .HasPrincipalKey(binding => binding.ShardId)
                 .OnDelete(DeleteBehavior.Restrict);
 
-            entity.Property(record => record.OwnerId).IsRequired();
+            // OwnerId is required for a non-stack record and null for a stack record; TotalQuantity
+            // is the reverse. CK_CloudCustodyRecord_OwnerXorStack (added by the AddCloudStackLots
+            // migration) enforces that exclusivity at the database level.
+            entity.Property(record => record.OwnerId);
+            entity.Property(record => record.TotalQuantity);
             entity.Property(record => record.LedgerCorrelationId).IsRequired();
 
             entity.Property(record => record.Version).IsRequired().IsConcurrencyToken();
@@ -168,6 +176,75 @@ public sealed class CloudDbContext : DbContext
 
             entity.Property(evt => evt.EventType).IsRequired().HasConversion<string>().HasMaxLength(32);
             entity.Property(evt => evt.BiotaId).IsRequired();
+            entity.Property(evt => evt.OwnerId).IsRequired();
+
+            entity.Property(evt => evt.CreatedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAdd()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudStackLot>(entity =>
+        {
+            entity.ToTable("CloudStackLot");
+
+            entity.HasKey(lot => lot.Id);
+            entity.Property(lot => lot.Id).ValueGeneratedNever();
+
+            // INV-001: every lot belongs to exactly one backing stack Cloud Custody Record. Not
+            // cascading on delete: a CloudCustodyRecord is only ever deleted once its last lot is
+            // also deleted in the same transaction (CloudCustodyBoundary.WithdrawLotAsync's
+            // full-stack-withdrawal case), never independently of its lots.
+            entity.Property(lot => lot.CustodyRecordId).IsRequired();
+            entity.HasIndex(lot => lot.CustodyRecordId);
+            entity.HasOne<CloudCustodyRecord>()
+                .WithMany()
+                .HasForeignKey(lot => lot.CustodyRecordId)
+                .HasPrincipalKey(record => record.Id)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(lot => lot.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(lot => lot.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(lot => lot.OwnerId).IsRequired();
+            entity.Property(lot => lot.Quantity).IsRequired();
+            entity.Property(lot => lot.Version).IsRequired();
+
+            entity.Property(lot => lot.CreatedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAdd()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+            entity.Property(lot => lot.UpdatedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAddOrUpdate()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudStackLotLineageEvent>(entity =>
+        {
+            entity.ToTable("CloudStackLotLineageEvent");
+
+            entity.HasKey(evt => evt.Id);
+            entity.Property(evt => evt.Id).ValueGeneratedNever();
+
+            entity.Property(evt => evt.CorrelationId).IsRequired();
+            entity.HasIndex(evt => evt.CorrelationId);
+
+            entity.Property(evt => evt.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(evt => evt.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(evt => evt.ParentBiotaId).IsRequired();
+            entity.Property(evt => evt.ChildBiotaId).IsRequired();
+            entity.Property(evt => evt.Quantity).IsRequired();
             entity.Property(evt => evt.OwnerId).IsRequired();
 
             entity.Property(evt => evt.CreatedAtUtc)

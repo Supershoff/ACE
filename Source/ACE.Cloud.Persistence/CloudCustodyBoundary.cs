@@ -142,6 +142,123 @@ public sealed class CloudCustodyBoundary
         return ReplayWithdrawal(existing);
     }
 
+    /// <summary>
+    /// Moves a stackable native biota with no current world possession into Cloud custody as a
+    /// stack Cloud Custody Record plus its initial single Cloud Stack Lot claiming the entire
+    /// quantity for <paramref name="ownerId"/> (ARCH-002, ARCH-005, ARCH-010). <paramref
+    /// name="quantity"/> is the exact quantity ACE observed on the live object at deposit time; this
+    /// call also writes it to ace_shard's PropertyInt.StackSize row so the persisted native state
+    /// matches (idempotent/no-op if it already does). Repeating this call with the same <paramref
+    /// name="idempotencyKey"/> replays the original committed result (transaction rule 4).
+    /// </summary>
+    public Task<CloudBoundaryOutcome<CloudStackDepositResult>> DepositStackAsync(
+        uint biotaId,
+        string shardId,
+        Guid ownerId,
+        int quantity,
+        Guid idempotencyKey,
+        CancellationToken cancellationToken = default) =>
+        DepositStackAsync(biotaId, shardId, ownerId, quantity, idempotencyKey, faultInjector: null, cancellationToken);
+
+    /// <summary>
+    /// Test-only overload; see <see cref="DepositAsync(uint, string, Guid, Guid, Func{CloudBoundaryFaultPoint, Task}, CancellationToken)"/>'s doc comment.
+    /// </summary>
+    internal Task<CloudBoundaryOutcome<CloudStackDepositResult>> DepositStackAsync(
+        uint biotaId,
+        string shardId,
+        Guid ownerId,
+        int quantity,
+        Guid idempotencyKey,
+        Func<CloudBoundaryFaultPoint, Task>? faultInjector,
+        CancellationToken cancellationToken)
+    {
+        RequireIdempotencyKey(idempotencyKey);
+
+        if (quantity <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(quantity), "A stack deposit requires a positive quantity.");
+        }
+
+        return CloudBoundaryRetry.ExecuteAsync(
+            () => TryDepositStackOnceAsync(biotaId, shardId, ownerId, quantity, idempotencyKey, faultInjector, cancellationToken),
+            cancellationToken: cancellationToken);
+    }
+
+    /// <summary>
+    /// Returns the committed result of a stack deposit previously started with
+    /// <paramref name="idempotencyKey"/>, or null if none has committed yet. See
+    /// <see cref="TryGetDepositOutcomeAsync"/> for why a timed-out caller must call this instead of
+    /// inferring failure.
+    /// </summary>
+    public async Task<CloudBoundaryOutcome<CloudStackDepositResult>?> TryGetStackDepositOutcomeAsync(
+        Guid idempotencyKey, CancellationToken cancellationToken = default)
+    {
+        var existing = await FindIdempotencyRecordAsync(idempotencyKey, cancellationToken);
+        return existing is null ? null : await ReplayStackDepositAsync(existing, cancellationToken);
+    }
+
+    /// <summary>
+    /// Withdraws <paramref name="quantityToWithdraw"/> from a Cloud Stack Lot (ARCH-002, ARCH-005,
+    /// ARCH-010, INV-003). If this lot is the only one left claiming its backing stack and the
+    /// entire remaining quantity is withdrawn, the original biota is delivered directly, exactly
+    /// like a non-stack withdrawal. Otherwise the withdrawal materializes a new native child biota
+    /// under <paramref name="materializedBiotaId"/> -- which callers must obtain from ACE's own GUID
+    /// allocator (ARCH-010: only ACE may allocate a child GUID; this boundary never invents one) --
+    /// and the original biota's GUID stays with whatever quantity remains in Cloud custody
+    /// (INV-003's remainder preference). Repeating this call with the same
+    /// <paramref name="idempotencyKey"/> replays the original committed result.
+    /// </summary>
+    public Task<CloudBoundaryOutcome<CloudStackWithdrawalResult>> WithdrawLotAsync(
+        Guid lotId,
+        int expectedLotVersion,
+        int quantityToWithdraw,
+        uint recipientContainerId,
+        uint? materializedBiotaId,
+        Guid idempotencyKey,
+        CancellationToken cancellationToken = default) =>
+        WithdrawLotAsync(lotId, expectedLotVersion, quantityToWithdraw, recipientContainerId, materializedBiotaId, idempotencyKey, faultInjector: null, cancellationToken);
+
+    /// <summary>
+    /// Test-only overload; see the internal <see cref="DepositAsync"/> overload's doc comment.
+    /// </summary>
+    internal Task<CloudBoundaryOutcome<CloudStackWithdrawalResult>> WithdrawLotAsync(
+        Guid lotId,
+        int expectedLotVersion,
+        int quantityToWithdraw,
+        uint recipientContainerId,
+        uint? materializedBiotaId,
+        Guid idempotencyKey,
+        Func<CloudBoundaryFaultPoint, Task>? faultInjector,
+        CancellationToken cancellationToken)
+    {
+        RequireIdempotencyKey(idempotencyKey);
+
+        if (recipientContainerId == 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(recipientContainerId), "A withdrawal requires a real recipient container GUID.");
+        }
+
+        if (quantityToWithdraw <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(quantityToWithdraw), "A lot withdrawal requires a positive quantity.");
+        }
+
+        return CloudBoundaryRetry.ExecuteAsync(
+            () => TryWithdrawLotOnceAsync(lotId, expectedLotVersion, quantityToWithdraw, recipientContainerId, materializedBiotaId, idempotencyKey, faultInjector, cancellationToken),
+            cancellationToken: cancellationToken);
+    }
+
+    /// <summary>
+    /// Returns the committed result of a lot withdrawal previously started with
+    /// <paramref name="idempotencyKey"/>, or null if none has committed yet.
+    /// </summary>
+    public async Task<CloudBoundaryOutcome<CloudStackWithdrawalResult>?> TryGetLotWithdrawalOutcomeAsync(
+        Guid idempotencyKey, CancellationToken cancellationToken = default)
+    {
+        var existing = await FindIdempotencyRecordAsync(idempotencyKey, cancellationToken);
+        return existing is null ? null : ReplayStackWithdrawal(existing);
+    }
+
     private async Task<CloudBoundaryOutcome<CloudCustodyRecord>> TryDepositOnceAsync(
         uint biotaId,
         string shardId,
@@ -274,7 +391,7 @@ public sealed class CloudCustodyBoundary
 
         var biotaId = record.BiotaId;
         var shardId = record.ShardId;
-        var ownerId = record.OwnerId;
+        var ownerId = record.OwnerId!.Value; // non-stack: OwnerId is always set (CK_CloudCustodyRecord_OwnerXorStack).
         var correlationId = Guid.NewGuid();
 
         // Custody must be released before world possession is granted: the AddCloudCustodyRecords
@@ -302,6 +419,230 @@ public sealed class CloudCustodyBoundary
         await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterCommit);
 
         return CloudBoundaryOutcome<CloudWithdrawalResult>.Committed(new CloudWithdrawalResult(biotaId, recipientContainerId, ownerId));
+    }
+
+    private async Task<CloudBoundaryOutcome<CloudStackDepositResult>> TryDepositStackOnceAsync(
+        uint biotaId,
+        string shardId,
+        Guid ownerId,
+        int quantity,
+        Guid idempotencyKey,
+        Func<CloudBoundaryFaultPoint, Task>? faultInjector,
+        CancellationToken cancellationToken)
+    {
+        _context.ChangeTracker.Clear();
+
+        await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.BeforeLocks);
+
+        var existing = await FindIdempotencyRecordAsync(idempotencyKey, cancellationToken);
+        if (existing is not null)
+        {
+            return await ReplayStackDepositAsync(existing, cancellationToken);
+        }
+
+        await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+
+        if (await HasWorldPossessionAsync(biotaId, cancellationToken))
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return CloudBoundaryOutcome<CloudStackDepositResult>.Conflict(
+                $"Biota {biotaId} currently has world possession (Container, Wielder, or Location) and cannot enter Cloud custody.");
+        }
+
+        await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterValidation);
+        await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterPossessionChange);
+
+        var correlationId = Guid.NewGuid();
+        var record = CloudCustodyRecord.CreateStack(biotaId, shardId, quantity, correlationId);
+        var lot = new CloudStackLot(record.Id, shardId, ownerId, quantity);
+        _context.CloudCustodyRecords.Add(record);
+        _context.CloudStackLots.Add(lot);
+
+        try
+        {
+            await _context.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException ex) when (IsDuplicateKey(ex))
+        {
+            await transaction.RollbackAsync(cancellationToken);
+
+            var winner = await FindIdempotencyRecordAsync(idempotencyKey, cancellationToken);
+            if (winner is not null)
+            {
+                return await ReplayStackDepositAsync(winner, cancellationToken);
+            }
+
+            return CloudBoundaryOutcome<CloudStackDepositResult>.Conflict(
+                $"Biota {biotaId} already has a Cloud Custody Record.");
+        }
+
+        await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterCustodyChange);
+
+        // The native persisted stack size should already match `quantity` (ACE observed it on the
+        // live object before offering the Custodian sale); this upsert is a defensive no-op that
+        // makes ace_shard's on-disk copy authoritative even if it had not been flushed yet.
+        await UpsertStackSizeAsync(biotaId, quantity, cancellationToken);
+
+        await AppendLedgerAndOutboxAsync(correlationId, shardId, CloudBoundaryOperationType.StackDeposit, biotaId, ownerId, faultInjector, cancellationToken);
+
+        _context.CloudIdempotencyRecords.Add(
+            new CloudIdempotencyRecord(
+                idempotencyKey, shardId, CloudBoundaryOperationType.StackDeposit, biotaId, ownerId,
+                custodyRecordId: record.Id, targetContainerId: null, correlationId, quantity));
+        await _context.SaveChangesAsync(cancellationToken);
+
+        await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.BeforeCommit);
+        await transaction.CommitAsync(cancellationToken);
+        await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterCommit);
+
+        return CloudBoundaryOutcome<CloudStackDepositResult>.Committed(new CloudStackDepositResult(record, lot));
+    }
+
+    private async Task<CloudBoundaryOutcome<CloudStackWithdrawalResult>> TryWithdrawLotOnceAsync(
+        Guid lotId,
+        int expectedLotVersion,
+        int quantityToWithdraw,
+        uint recipientContainerId,
+        uint? materializedBiotaId,
+        Guid idempotencyKey,
+        Func<CloudBoundaryFaultPoint, Task>? faultInjector,
+        CancellationToken cancellationToken)
+    {
+        _context.ChangeTracker.Clear();
+
+        await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.BeforeLocks);
+
+        var existing = await FindIdempotencyRecordAsync(idempotencyKey, cancellationToken);
+        if (existing is not null)
+        {
+            return ReplayStackWithdrawal(existing);
+        }
+
+        await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+
+        var custodyRecordId = await _context.CloudStackLots.AsNoTracking()
+            .Where(l => l.Id == lotId)
+            .Select(l => (Guid?)l.CustodyRecordId)
+            .SingleOrDefaultAsync(cancellationToken);
+
+        if (custodyRecordId is null)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+
+            var winnerBeforeLot = await FindIdempotencyRecordAsync(idempotencyKey, cancellationToken);
+            if (winnerBeforeLot is not null)
+            {
+                return ReplayStackWithdrawal(winnerBeforeLot);
+            }
+
+            return CloudBoundaryOutcome<CloudStackWithdrawalResult>.Conflict($"Cloud Stack Lot {lotId} does not exist.");
+        }
+
+        // Deterministic lock order (transaction rule 2): the backing stack record before the lot.
+        var record = await LockCustodyRecordAsync(custodyRecordId.Value, cancellationToken);
+        var lot = await LockStackLotAsync(lotId, cancellationToken);
+
+        if (record is null || lot is null || lot.CustodyRecordId != record.Id)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+
+            var winner = await FindIdempotencyRecordAsync(idempotencyKey, cancellationToken);
+            if (winner is not null)
+            {
+                return ReplayStackWithdrawal(winner);
+            }
+
+            return CloudBoundaryOutcome<CloudStackWithdrawalResult>.Conflict($"Cloud Stack Lot {lotId} does not exist or was already withdrawn.");
+        }
+
+        if (lot.Version != expectedLotVersion)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return CloudBoundaryOutcome<CloudStackWithdrawalResult>.Conflict(
+                $"Cloud Stack Lot {lotId} is at version {lot.Version}, not the expected version {expectedLotVersion}.");
+        }
+
+        if (quantityToWithdraw > lot.Quantity)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return CloudBoundaryOutcome<CloudStackWithdrawalResult>.Conflict(
+                $"Cannot withdraw {quantityToWithdraw} from Cloud Stack Lot {lotId}, which only has {lot.Quantity}.");
+        }
+
+        var siblingCount = await _context.CloudStackLots
+            .CountAsync(l => l.CustodyRecordId == record.Id && l.Id != lot.Id, cancellationToken);
+        var isFullStackWithdrawal = siblingCount == 0 && quantityToWithdraw == lot.Quantity;
+
+        if (!isFullStackWithdrawal && (materializedBiotaId is null or 0))
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return CloudBoundaryOutcome<CloudStackWithdrawalResult>.Conflict(
+                "A materialized child GUID (allocated by ACE) is required to withdraw part of a Cloud Stack Lot.");
+        }
+
+        await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterValidation);
+
+        var originalBiotaId = record.BiotaId;
+        var shardId = record.ShardId;
+        var ownerId = lot.OwnerId;
+        var correlationId = Guid.NewGuid();
+        uint deliveredBiotaId;
+
+        if (isFullStackWithdrawal)
+        {
+            _context.CloudStackLots.Remove(lot);
+            _context.CloudCustodyRecords.Remove(record);
+            await _context.SaveChangesAsync(cancellationToken);
+            await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterCustodyChange);
+
+            await GrantContainerAsync(originalBiotaId, recipientContainerId, cancellationToken);
+            await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterPossessionChange);
+
+            deliveredBiotaId = originalBiotaId;
+        }
+        else
+        {
+            if (quantityToWithdraw == lot.Quantity)
+            {
+                _context.CloudStackLots.Remove(lot);
+            }
+            else
+            {
+                lot.ReduceQuantity(quantityToWithdraw);
+                _context.CloudStackLots.Update(lot);
+            }
+
+            record.ReduceStackTotalQuantity(quantityToWithdraw);
+            _context.CloudCustodyRecords.Update(record);
+            await _context.SaveChangesAsync(cancellationToken);
+            await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterCustodyChange);
+
+            await MaterializeChildBiotaAsync(originalBiotaId, materializedBiotaId!.Value, quantityToWithdraw, cancellationToken);
+            await UpsertStackSizeAsync(originalBiotaId, record.TotalQuantity!.Value, cancellationToken);
+            await GrantContainerAsync(materializedBiotaId.Value, recipientContainerId, cancellationToken);
+            await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterPossessionChange);
+
+            deliveredBiotaId = materializedBiotaId.Value;
+
+            _context.CloudStackLotLineageEvents.Add(
+                new CloudStackLotLineageEvent(correlationId, shardId, originalBiotaId, materializedBiotaId.Value, quantityToWithdraw, ownerId));
+            await _context.SaveChangesAsync(cancellationToken);
+        }
+
+        await AppendLedgerAndOutboxAsync(correlationId, shardId, CloudBoundaryOperationType.StackWithdrawal, deliveredBiotaId, ownerId, faultInjector, cancellationToken);
+
+        _context.CloudIdempotencyRecords.Add(
+            new CloudIdempotencyRecord(
+                idempotencyKey, shardId, CloudBoundaryOperationType.StackWithdrawal, deliveredBiotaId, ownerId,
+                custodyRecordId: record.Id, targetContainerId: recipientContainerId, correlationId, quantityToWithdraw));
+        await _context.SaveChangesAsync(cancellationToken);
+
+        await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.BeforeCommit);
+        await transaction.CommitAsync(cancellationToken);
+        await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterCommit);
+
+        return CloudBoundaryOutcome<CloudStackWithdrawalResult>.Committed(
+            new CloudStackWithdrawalResult(deliveredBiotaId, recipientContainerId, ownerId, quantityToWithdraw));
     }
 
     private async Task AppendLedgerAndOutboxAsync(
@@ -360,6 +701,45 @@ public sealed class CloudCustodyBoundary
             new CloudWithdrawalResult(existing.BiotaId, existing.TargetContainerId!.Value, existing.OwnerId));
     }
 
+    private async Task<CloudBoundaryOutcome<CloudStackDepositResult>> ReplayStackDepositAsync(
+        CloudIdempotencyRecord existing, CancellationToken cancellationToken)
+    {
+        if (existing.OperationType != CloudBoundaryOperationType.StackDeposit)
+        {
+            return CloudBoundaryOutcome<CloudStackDepositResult>.Conflict(
+                $"Idempotency key {existing.IdempotencyKey} was already committed as a {existing.OperationType}, not a StackDeposit.");
+        }
+
+        var record = await _context.CloudCustodyRecords.AsNoTracking()
+            .SingleOrDefaultAsync(r => r.Id == existing.CustodyRecordId, cancellationToken);
+        var lot = await _context.CloudStackLots.AsNoTracking()
+            .SingleOrDefaultAsync(l => l.CustodyRecordId == existing.CustodyRecordId, cancellationToken);
+
+        if (record is null || lot is null)
+        {
+            // ARCH-006 commits the idempotency record, the CloudCustodyRecord insert, and the
+            // initial CloudStackLot insert in the same transaction, so a committed StackDeposit
+            // idempotency record whose rows are gone is not a normal conflict -- it means that
+            // invariant was broken out of band.
+            throw new CloudCustodyConflictException(
+                $"Idempotency key {existing.IdempotencyKey} committed a stack deposit whose records no longer exist.");
+        }
+
+        return CloudBoundaryOutcome<CloudStackDepositResult>.Committed(new CloudStackDepositResult(record, lot));
+    }
+
+    private static CloudBoundaryOutcome<CloudStackWithdrawalResult> ReplayStackWithdrawal(CloudIdempotencyRecord existing)
+    {
+        if (existing.OperationType != CloudBoundaryOperationType.StackWithdrawal)
+        {
+            return CloudBoundaryOutcome<CloudStackWithdrawalResult>.Conflict(
+                $"Idempotency key {existing.IdempotencyKey} was already committed as a {existing.OperationType}, not a StackWithdrawal.");
+        }
+
+        return CloudBoundaryOutcome<CloudStackWithdrawalResult>.Committed(
+            new CloudStackWithdrawalResult(existing.BiotaId, existing.TargetContainerId!.Value, existing.OwnerId, existing.Quantity!.Value));
+    }
+
     private async Task<CloudIdempotencyRecord?> FindIdempotencyRecordAsync(Guid idempotencyKey, CancellationToken cancellationToken) =>
         await _context.CloudIdempotencyRecords.AsNoTracking()
             .SingleOrDefaultAsync(r => r.IdempotencyKey == idempotencyKey, cancellationToken);
@@ -368,6 +748,96 @@ public sealed class CloudCustodyBoundary
         await _context.CloudCustodyRecords
             .FromSqlInterpolated($"SELECT * FROM CloudCustodyRecord WHERE Id = {custodyRecordId} FOR UPDATE")
             .SingleOrDefaultAsync(cancellationToken);
+
+    private async Task<CloudStackLot?> LockStackLotAsync(Guid lotId, CancellationToken cancellationToken) =>
+        await _context.CloudStackLots
+            .FromSqlInterpolated($"SELECT * FROM CloudStackLot WHERE Id = {lotId} FOR UPDATE")
+            .SingleOrDefaultAsync(cancellationToken);
+
+    /// <summary>
+    /// Materializes a native child biota under a caller-supplied (ACE-allocated) GUID, cloning the
+    /// parent's weenie identity and giving it its own PropertyInt.StackSize row (ARCH-010, INV-003).
+    /// This boundary never allocates <paramref name="newBiotaId"/> itself; it only ever writes the
+    /// exact GUID it was given, so the only place a native GUID is actually allocated remains ACE's
+    /// own GuidManager, called by the ACE-side caller of this API.
+    /// </summary>
+    private async Task MaterializeChildBiotaAsync(uint originalBiotaId, uint newBiotaId, int quantity, CancellationToken cancellationToken)
+    {
+        var connection = _context.Database.GetDbConnection();
+        var transaction = _context.Database.CurrentTransaction?.GetDbTransaction();
+
+        uint weenieClassId;
+        int weenieType;
+        uint populatedCollectionFlags;
+
+        await using (var read = connection.CreateCommand())
+        {
+            read.Transaction = transaction;
+            read.CommandText = """
+                SELECT weenie_Class_Id, weenie_Type, populated_Collection_Flags
+                FROM ace_shard.biota WHERE id = @id FOR UPDATE;
+                """;
+            var idParameter = read.CreateParameter();
+            idParameter.ParameterName = "@id";
+            idParameter.Value = originalBiotaId;
+            read.Parameters.Add(idParameter);
+
+            await using var reader = await read.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken))
+            {
+                throw new CloudCustodyConflictException(
+                    $"Cannot materialize a Cloud Stack Lot child: backing biota {originalBiotaId} no longer exists in ace_shard.");
+            }
+
+            weenieClassId = Convert.ToUInt32(reader.GetValue(0));
+            weenieType = Convert.ToInt32(reader.GetValue(1));
+            populatedCollectionFlags = Convert.ToUInt32(reader.GetValue(2));
+        }
+
+        await using (var insertBiota = connection.CreateCommand())
+        {
+            insertBiota.Transaction = transaction;
+            insertBiota.CommandText = """
+                INSERT INTO ace_shard.biota (id, weenie_Class_Id, weenie_Type, populated_Collection_Flags)
+                VALUES (@id, @weenieClassId, @weenieType, @populatedCollectionFlags);
+                """;
+            AddParameter(insertBiota, "@id", newBiotaId);
+            AddParameter(insertBiota, "@weenieClassId", weenieClassId);
+            AddParameter(insertBiota, "@weenieType", weenieType);
+            AddParameter(insertBiota, "@populatedCollectionFlags", populatedCollectionFlags);
+            await insertBiota.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await UpsertStackSizeAsync(newBiotaId, quantity, cancellationToken);
+    }
+
+    /// <summary>
+    /// Writes or updates a biota's PropertyInt.StackSize (type 12) row to exactly
+    /// <paramref name="quantity"/>.
+    /// </summary>
+    private async Task UpsertStackSizeAsync(uint biotaId, int quantity, CancellationToken cancellationToken)
+    {
+        var connection = _context.Database.GetDbConnection();
+
+        await using var command = connection.CreateCommand();
+        command.Transaction = _context.Database.CurrentTransaction?.GetDbTransaction();
+        command.CommandText = """
+            INSERT INTO ace_shard.biota_properties_int (object_Id, type, value)
+            VALUES (@objectId, 12, @quantity)
+            ON DUPLICATE KEY UPDATE value = @quantity;
+            """;
+        AddParameter(command, "@objectId", biotaId);
+        AddParameter(command, "@quantity", quantity);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static void AddParameter(System.Data.Common.DbCommand command, string name, object value)
+    {
+        var parameter = command.CreateParameter();
+        parameter.ParameterName = name;
+        parameter.Value = value;
+        command.Parameters.Add(parameter);
+    }
 
     private async Task<bool> HasWorldPossessionAsync(uint biotaId, CancellationToken cancellationToken)
     {

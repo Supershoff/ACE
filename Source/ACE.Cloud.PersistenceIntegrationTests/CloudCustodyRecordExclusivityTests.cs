@@ -254,7 +254,10 @@ public sealed class CloudCustodyRecordExclusivityTests
             () => InsertCustodyRecordAsync(connection, Guid.NewGuid(), biotaId, BoundShardId, Guid.NewGuid()));
         StringAssert.Contains(duplicateException.Message, "BiotaId");
 
-        // Exactly one owner: OwnerId cannot be omitted.
+        // Exactly one owner: OwnerId cannot be omitted for a non-stack record (a record with
+        // neither OwnerId nor TotalQuantity set is neither a valid non-stack nor stack record;
+        // CK_CloudCustodyRecord_OwnerXorStack, added by issue #5's AddCloudStackLots migration,
+        // rejects it -- OwnerId is nullable at the column level only to support stack records).
         var missingOwnerBiotaId = NextBiotaId();
         await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, missingOwnerBiotaId);
 
@@ -270,7 +273,7 @@ public sealed class CloudCustodyRecordExclusivityTests
 
         var missingOwnerException = await Assert.ThrowsExactlyAsync<MySqlException>(
             () => missingOwnerCommand.ExecuteNonQueryAsync());
-        StringAssert.Contains(missingOwnerException.Message, "OwnerId");
+        StringAssert.Contains(missingOwnerException.Message, "CK_CloudCustodyRecord_OwnerXorStack");
     }
 
     [TestMethod]
