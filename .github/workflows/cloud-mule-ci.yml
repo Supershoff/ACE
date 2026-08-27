@@ -97,6 +97,10 @@ jobs:
           }
 
           foreach ($project in $projects) {
+              if ($runner.os -eq 'Windows' -and $project.BaseName -match 'IntegrationTests$') {
+                  Write-Host "Skipping $($project.BaseName) on Windows because GitHub-hosted Windows runners do not provide Docker. The project was compiled by the solution build; its container tests run on Linux."
+                  continue
+              }
               dotnet test $project.FullName --configuration Release --property:Platform=x64 --no-restore --logger "trx;LogFileName=$($project.BaseName).trx"
               if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
