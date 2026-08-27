@@ -85,7 +85,6 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           allowed_bots: github-actions
-          track_progress: true
           prompt: >-
             Review pull request #${{ steps.prepare.outputs.pr_number }} at exact commit
             ${{ steps.prepare.outputs.head_sha }}. This is review-only: do not modify tracked files,
@@ -145,7 +144,6 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           allowed_bots: github-actions
-          track_progress: true
           branch_prefix: claude/review-repair-
           prompt: >-
             Address every [P0]/[P1] defect in .claude-review.md on the existing pull request.
