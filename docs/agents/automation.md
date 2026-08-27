@@ -7,7 +7,7 @@ The repository automation advances one dependency-ready implementation issue at 
 1. `cloud-mule-orchestrator.yml` selects the lowest-numbered open `ready-for-agent` issue whose `## Dependencies` issues are closed and for which no Claude pull request is open.
 2. `claude.yml` implements the issue from `master`, follows Red → Green → Refactor, and opens a draft pull request.
 3. `cloud-mule-ci.yml` runs repository policy checks, cross-platform .NET builds, Cloud-specific tests when present, and web checks when a client workspace exists.
-4. `claude-review.yml` runs an independent, read-only Claude review of the exact green SHA using `awesome-skills/code-review-skill` at a pinned commit.
+4. After all CI jobs pass, `cloud-mule-ci.yml` explicitly dispatches `claude-review.yml` with the tested branch and SHA. The reviewer runs independently and read-only using `awesome-skills/code-review-skill` at a pinned commit. This explicit handoff avoids GitHub's recursive `workflow_run` suppression after automated repairs.
 5. The same workflow routes Claude P0/P1 findings into a bounded Claude repair on the existing PR. Each correction produces a new SHA, CI run, and fresh independent review. Three unsuccessful repair cycles stop with `automation:needs-attention`.
 6. A clean current-SHA Claude review auto-merges an ordinary issue only when `CLOUD_MULE_AUTOMATION_ENABLED=true`. An `automation:human-gate` issue instead becomes `automation:ready-for-user-testing` and remains unmerged.
 7. After an automatic merge, the orchestrator is dispatched again. A scheduled reconciliation also recovers missed dispatches.
