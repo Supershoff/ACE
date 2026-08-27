@@ -97,7 +97,7 @@ jobs:
           }
 
           foreach ($project in $projects) {
-              if ($runner.os -eq 'Windows' -and $project.BaseName -match 'IntegrationTests$') {
+              if ($env:RUNNER_OS -eq 'Windows' -and $project.BaseName -match 'IntegrationTests$') {
                   Write-Host "Skipping $($project.BaseName) on Windows because GitHub-hosted Windows runners do not provide Docker. The project was compiled by the solution build; its container tests run on Linux."
                   continue
               }
