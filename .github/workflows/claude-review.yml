@@ -1,0 +1,240 @@
+name: Claude code review
+
+on:
+  workflow_run:
+    workflows: [Cloud Mule CI]
+    types: [completed]
+
+concurrency:
+  group: claude-review-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  checks: read
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  review:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Resolve the exact tested pull request
+        id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${HEAD_BRANCH}" == claude/* ]] || { echo 'skip=true' >> "${GITHUB_OUTPUT}"; exit 0; }
+
+          pr_json="$(gh pr list --repo "${GITHUB_REPOSITORY}" --head "${HEAD_BRANCH}" --state open \
+            --json number,headRefOid,body --jq '.[0] // empty')"
+          [ -n "${pr_json}" ] || { echo 'skip=true' >> "${GITHUB_OUTPUT}"; exit 0; }
+          pr_number="$(jq -r .number <<<"${pr_json}")"
+          head_sha="$(jq -r .headRefOid <<<"${pr_json}")"
+          [ "${head_sha}" = "${TESTED_SHA}" ] || { echo "PR advanced beyond tested SHA."; echo 'skip=true' >> "${GITHUB_OUTPUT}"; exit 0; }
+
+          issue_number="$(sed -nE 's/.*(Fixes|Closes|Resolves) #([0-9]+).*/\2/p' <<<"$(jq -r .body <<<"${pr_json}")" | head -n 1)"
+          [ -n "${issue_number}" ] || { echo 'PR has no linked issue.'; exit 1; }
+
+          marker="<!-- claude-code-review:${head_sha} -->"
+          existing="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/comments?per_page=100" \
+            --jq ".[] | select(.body | contains(\"${marker}\")) | .id")"
+          [ -z "${existing}" ] || { echo 'skip=true' >> "${GITHUB_OUTPUT}"; exit 0; }
+
+          repair_count="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/comments?per_page=100" \
+            --jq '[.[] | select(.body | contains("<!-- claude-review-repair:"))] | length')"
+          echo 'skip=false' >> "${GITHUB_OUTPUT}"
+          echo "pr_number=${pr_number}" >> "${GITHUB_OUTPUT}"
+          echo "issue_number=${issue_number}" >> "${GITHUB_OUTPUT}"
+          echo "head_sha=${head_sha}" >> "${GITHUB_OUTPUT}"
+          echo "repair_count=${repair_count}" >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout the exact tested revision
+        if: steps.prepare.outputs.skip == 'false'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ steps.prepare.outputs.head_sha }}
+          fetch-depth: 0
+
+      - name: Checkout the pinned upstream code-review skill
+        if: steps.prepare.outputs.skip == 'false'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: awesome-skills/code-review-skill
+          ref: 277f4793018448eb08289bd54ab3c0e241a02b7b
+          path: .claude/skills/code-review
+          persist-credentials: false
+
+      - name: Keep ephemeral review inputs out of commits
+        if: steps.prepare.outputs.skip == 'false'
+        shell: bash
+        run: |
+          printf '%s\n' '/.claude-review.md' '/.claude/skills/code-review/' >> .git/info/exclude
+
+      - name: Have Claude perform a read-only code review
+        if: steps.prepare.outputs.skip == 'false'
+        uses: anthropics/claude-code-action@62529b7c89dbb8cfaa838f2c87f2f8459b46fe68 # v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          allowed_bots: github-actions
+          track_progress: true
+          prompt: >-
+            Review pull request #${{ steps.prepare.outputs.pr_number }} at exact commit
+            ${{ steps.prepare.outputs.head_sha }}. This is review-only: do not modify tracked files,
+            commit, push, or merge. Read the linked issue and acceptance criteria, AGENTS.md,
+            CLAUDE.md, CONTEXT.md, applicable ADRs, the full base-to-head diff, and CI results.
+            Then read .claude/skills/code-review/SKILL.md completely and follow it. For this C#/.NET
+            repository also read its C#/.NET, architecture, security, performance, concurrency,
+            universal-quality, common-bugs, review-template, and checklist references. Validate
+            material findings with focused read-only checks when practical. Prioritize custody,
+            conservation, transactionality, concurrency, authorization, privacy, data loss,
+            compatibility, and missing regression tests. Write the final review to
+            .claude-review.md. Its first line must be exactly VERDICT: CLEAN or VERDICT: BLOCKING.
+            CLEAN means no P0/P1 defect; lower-severity advice may follow and must not block.
+            BLOCKING requires each defect to be labeled [P0] or [P1] with a precise file/line,
+            impact, evidence, and smallest safe correction. Do not report speculative findings.
+          additional_permissions: |
+            actions: read
+            checks: read
+          claude_args: |
+            --max-turns 200
+            --append-system-prompt "Act as an independent reviewer. The requested code-review skill is authoritative. Never approve code merely because CI is green."
+            --allowedTools "Read,Glob,Grep,Write,Bash(git status:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(dotnet restore:*),Bash(dotnet build:*),Bash(dotnet test:*),Bash(npm ci:*),Bash(npm test:*),Bash(npm run:*),Bash(pnpm:*),Bash(gh issue view:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh run view:*),Bash(gh run list:*)"
+            --disallowedTools "Edit,NotebookEdit,Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(git merge:*),Bash(gh pr merge:*),Bash(gh repo delete:*),Bash(sudo:*),Bash(ssh:*),Bash(scp:*)"
+
+      - name: Publish and classify Claude's exact-SHA review
+        if: steps.prepare.outputs.skip == 'false'
+        id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.prepare.outputs.pr_number }}
+          HEAD_SHA: ${{ steps.prepare.outputs.head_sha }}
+          REPAIR_COUNT: ${{ steps.prepare.outputs.repair_count }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -f .claude-review.md ] || { echo 'Claude did not produce .claude-review.md.'; exit 1; }
+          verdict="$(head -n 1 .claude-review.md)"
+          case "${verdict}" in
+            'VERDICT: CLEAN') route=clean ;;
+            'VERDICT: BLOCKING')
+              grep -Eq '\[P[01]\]' .claude-review.md || { echo 'Blocking verdict has no P0/P1 finding.'; exit 1; }
+              if [ "${REPAIR_COUNT}" -ge 3 ]; then route=stopped; else route=repair; fi
+              ;;
+            *) echo "Invalid Claude verdict: ${verdict}"; exit 1 ;;
+          esac
+
+          marker="<!-- claude-code-review:${HEAD_SHA} -->"
+          { cat .claude-review.md; printf '\n\n%s\n' "${marker}"; } > "${RUNNER_TEMP}/review-comment.md"
+          gh pr comment "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" --body-file "${RUNNER_TEMP}/review-comment.md"
+          git diff --exit-code
+          echo "route=${route}" >> "${GITHUB_OUTPUT}"
+
+      - name: Have Claude repair blocking findings
+        if: steps.classify.outputs.route == 'repair'
+        id: repair
+        uses: anthropics/claude-code-action@62529b7c89dbb8cfaa838f2c87f2f8459b46fe68 # v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          allowed_bots: github-actions
+          track_progress: true
+          branch_prefix: claude/review-repair-
+          prompt: >-
+            Address every [P0]/[P1] defect in .claude-review.md on the existing pull request.
+            Read the linked issue, AGENTS.md, CLAUDE.md, and the requested code-review skill.
+            Add a failing regression test for each defect before fixing it, make the smallest safe
+            correction, run all relevant checks, then commit and push. Do not merge, broaden scope,
+            weaken tests, or dismiss a finding without code/test evidence.
+          additional_permissions: |
+            actions: read
+            checks: read
+          claude_args: |
+            --max-turns 200
+            --append-system-prompt "Preserve custody and authority invariants and report exact verification results."
+            --allowedTools "Read,Write,Edit,Glob,Grep,Bash(git fetch:*),Bash(git status:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(git branch:*),Bash(git switch:*),Bash(git checkout:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(dotnet restore:*),Bash(dotnet build:*),Bash(dotnet test:*),Bash(npm ci:*),Bash(npm test:*),Bash(npm run:*),Bash(pnpm:*),Bash(gh issue view:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*)"
+            --disallowedTools "Bash(git push --force:*),Bash(git push --force-with-lease:*),Bash(git reset --hard:*),Bash(git clean:*),Bash(git merge:*),Bash(gh pr merge:*),Bash(gh repo delete:*),Bash(sudo:*),Bash(ssh:*),Bash(scp:*)"
+
+      - name: Promote a Claude-created repair branch
+        if: steps.classify.outputs.route == 'repair' && steps.repair.outputs.branch_name != '' && steps.repair.outputs.branch_name != github.event.workflow_run.head_branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          REPAIR_BRANCH: ${{ steps.repair.outputs.branch_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          repair_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${REPAIR_BRANCH}" --jq .object.sha)"
+          git fetch origin "${PR_BRANCH}" "${REPAIR_BRANCH}"
+          git merge-base --is-ancestor "origin/${PR_BRANCH}" "origin/${REPAIR_BRANCH}" || { echo 'Unsafe non-fast-forward repair.'; exit 1; }
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/heads/${PR_BRANCH}" -f sha="${repair_sha}" -F force=false >/dev/null
+
+      - name: Re-run CI after a repair
+        if: steps.classify.outputs.route == 'repair'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.prepare.outputs.pr_number }}
+          HEAD_SHA: ${{ steps.prepare.outputs.head_sha }}
+          REPAIR_COUNT: ${{ steps.prepare.outputs.repair_count }}
+          PR_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        shell: bash
+        run: |
+          next=$((REPAIR_COUNT + 1))
+          gh pr comment "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+            --body "Claude repaired blocking findings from ${HEAD_SHA}; CI and independent Claude review will repeat. <!-- claude-review-repair:${next} -->"
+          gh workflow run cloud-mule-ci.yml --repo "${GITHUB_REPOSITORY}" --ref "${PR_BRANCH}"
+
+      - name: Stop after three unsuccessful review cycles
+        if: steps.classify.outputs.route == 'stopped'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ steps.prepare.outputs.issue_number }}
+          PR_NUMBER: ${{ steps.prepare.outputs.pr_number }}
+        shell: bash
+        run: |
+          gh issue edit "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" --remove-label automation:in-progress --add-label automation:needs-attention
+          gh pr comment "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" --body 'Automation stopped after three Claude review/repair cycles. Human investigation is required.'
+
+      - name: Promote a human gate or merge ordinary clean work
+        if: steps.classify.outputs.route == 'clean'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ steps.prepare.outputs.issue_number }}
+          PR_NUMBER: ${{ steps.prepare.outputs.pr_number }}
+          REVIEW_SHA: ${{ steps.prepare.outputs.head_sha }}
+          AUTOMATION_ENABLED: ${{ vars.CLOUD_MULE_AUTOMATION_ENABLED }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          current_sha="$(gh pr view "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" --json headRefOid --jq .headRefOid)"
+          [ "${current_sha}" = "${REVIEW_SHA}" ] || { echo 'PR advanced after review.'; exit 0; }
+          human_gate="$(gh issue view "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" --json labels --jq '[.labels[].name] | any(. == "automation:human-gate")')"
+
+          gh pr ready "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" 2>/dev/null || true
+          gh issue edit "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" --remove-label automation:in-progress
+          if [ "${human_gate}" = true ] || [ "${AUTOMATION_ENABLED}" != true ]; then
+            gh issue edit "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" --add-label automation:ready-for-user-testing
+            gh pr comment "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" --body "CI and Claude review passed for ${REVIEW_SHA}. This PR is ready for user testing and remains unmerged."
+            exit 0
+          fi
+
+          gh pr merge "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" --squash --delete-branch
+          gh workflow run cloud-mule-orchestrator.yml --repo "${GITHUB_REPOSITORY}" --ref master -f dry_run=false
+
+      - name: Stop safely when review automation fails
+        if: failure() && steps.prepare.outputs.issue_number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ steps.prepare.outputs.issue_number }}
+          PR_NUMBER: ${{ steps.prepare.outputs.pr_number }}
+        shell: bash
+        run: |
+          gh issue edit "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" --remove-label automation:in-progress --add-label automation:needs-attention || true
+          gh pr comment "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" --body "Claude review automation failed. Inspect ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}." || true

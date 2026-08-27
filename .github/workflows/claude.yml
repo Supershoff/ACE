@@ -152,13 +152,13 @@ jobs:
           fi
 
           issue_title="$(gh issue view "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" --json title --jq .title)"
-          pr_body="$(printf "Fixes #%s.\n\nImplemented by the AC Cloud Mule Claude automation using the issue's Red -> Green -> Refactor contract.\n\nThis PR must pass Cloud Mule CI and Codex review for its current SHA. Claude must not merge it." "${ISSUE_NUMBER}")"
+          pr_body="$(printf "Fixes #%s.\n\nImplemented by the AC Cloud Mule Claude automation using the issue's Red -> Green -> Refactor contract.\n\nThis PR must pass Cloud Mule CI and an independent Claude review using the pinned code-review skill for its current SHA. The implementation agent must not merge it." "${ISSUE_NUMBER}")"
           pr_url="$(gh pr create --repo "${GITHUB_REPOSITORY}" --draft --head "${CLAUDE_BRANCH}" --base master \
             --title "${issue_title}" \
             --body "${pr_body}")"
 
           gh issue comment "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
-            --body "Claude opened ${pr_url}. It remains draft pending CI and Codex review."
+            --body "Claude opened ${pr_url}. It remains draft pending CI and independent Claude review."
           gh workflow run cloud-mule-ci.yml --repo "${GITHUB_REPOSITORY}" --ref "${CLAUDE_BRANCH}"
 
       - name: Stop safely if Claude produced no branch
