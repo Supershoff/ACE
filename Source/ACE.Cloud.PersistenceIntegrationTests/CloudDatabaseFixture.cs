@@ -64,6 +64,48 @@ public sealed class CloudDatabaseFixture : IAsyncDisposable
         await _container.DisposeAsync();
     }
 
+    /// <summary>
+    /// Provisions a MariaDB identity granted every privilege on the Cloud schema (ace_cloud) and
+    /// explicitly nothing on ace_shard, and returns a connection string authenticating as it. This
+    /// models the narrowly privileged companion web database identity ARCH-004 requires ("The web
+    /// database identity MUST NOT have native-biota write privileges"); tests use it to prove that
+    /// restriction is an enforced database grant, not only documentation. <paramref name="username"/>
+    /// and <paramref name="password"/> are caller-generated test-only random tokens, not real
+    /// operator secrets.
+    /// </summary>
+    public async Task<string> CreateRestrictedCompanionConnectionStringAsync(string username, string password)
+    {
+        await using var connection = new MySqlConnection(BuildConnectionString(database: null));
+        await connection.OpenAsync();
+
+        await using (var createUser = connection.CreateCommand())
+        {
+            createUser.CommandText = $"CREATE USER IF NOT EXISTS '{username}'@'%' IDENTIFIED BY '{password}';";
+            await createUser.ExecuteNonQueryAsync();
+        }
+
+        await using (var grant = connection.CreateCommand())
+        {
+            grant.CommandText = $"GRANT ALL PRIVILEGES ON `{CloudSchemaName}`.* TO '{username}'@'%';";
+            await grant.ExecuteNonQueryAsync();
+        }
+
+        await using (var flush = connection.CreateCommand())
+        {
+            flush.CommandText = "FLUSH PRIVILEGES;";
+            await flush.ExecuteNonQueryAsync();
+        }
+
+        var builder = new MySqlConnectionStringBuilder(_container.GetConnectionString())
+        {
+            Database = CloudSchemaName,
+            UserID = username,
+            Password = password,
+        };
+
+        return builder.ConnectionString;
+    }
+
     private async Task ApplyExistingAceSchemasAsync()
     {
         foreach (var scriptName in new[] { "AuthenticationBase.sql", "ShardBase.sql", "WorldBase.sql" })

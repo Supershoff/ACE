@@ -68,13 +68,37 @@ public static class CloudBoundaryRetry
     private static bool IsDeadlockOrLockTimeout(Exception ex) =>
         UnwrapMySqlException(ex) is { Number: DeadlockErrorNumber or LockWaitTimeoutErrorNumber };
 
-    private static bool IsUnavailable(Exception ex)
+    /// <summary>
+    /// True for a genuine connectivity/availability failure (connection refused, server gone away,
+    /// and similar) as opposed to a deadlock/lock-wait timeout, which is retried instead, or an
+    /// ordinary domain error. Internal so <see cref="CloudGatewayDiagnostics"/> can classify a probe
+    /// failure the same way a mutation attempt would (ARCH-009), without duplicating this detection.
+    /// </summary>
+    internal static bool IsUnavailable(Exception ex)
     {
         var mySqlException = UnwrapMySqlException(ex);
         return mySqlException is { IsTransient: true }
             && mySqlException.Number is not (DeadlockErrorNumber or LockWaitTimeoutErrorNumber);
     }
 
-    private static MySqlException? UnwrapMySqlException(Exception ex) =>
-        ex as MySqlException ?? (ex as DbUpdateException)?.InnerException as MySqlException;
+    /// <summary>
+    /// Walks the full <see cref="Exception.InnerException"/> chain looking for a
+    /// <see cref="MySqlException"/>. A SaveChanges failure surfaces one wrapped in a
+    /// <see cref="DbUpdateException"/>, but a plain query failure (for example the connection
+    /// attempt behind a LINQ query against an unreachable server) surfaces one wrapped in EF Core's
+    /// own <see cref="InvalidOperationException"/> execution-strategy wrapper instead -- both must
+    /// be recognized the same way.
+    /// </summary>
+    internal static MySqlException? UnwrapMySqlException(Exception ex)
+    {
+        for (var current = (Exception?)ex; current is not null; current = current.InnerException)
+        {
+            if (current is MySqlException mySqlException)
+            {
+                return mySqlException;
+            }
+        }
+
+        return null;
+    }
 }

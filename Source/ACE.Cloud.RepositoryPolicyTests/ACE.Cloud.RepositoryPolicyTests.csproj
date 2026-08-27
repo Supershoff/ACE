@@ -15,4 +15,8 @@
     <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\ACE.Cloud.Persistence\ACE.Cloud.Persistence.csproj" />
+  </ItemGroup>
+
 </Project>

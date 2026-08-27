@@ -22,4 +22,16 @@ public enum CloudBoundaryOperationType
     /// INV-003).
     /// </summary>
     StackWithdrawal,
+
+    /// <summary>Opens an exclusive local Withdrawal Reservation for a Withdrawal Token (WDR-001).</summary>
+    WithdrawalReservationOpened,
+
+    /// <summary>Cancels a local Withdrawal Reservation before redemption (WDR-003).</summary>
+    WithdrawalReservationCancelled,
+
+    /// <summary>
+    /// Redeems a local Withdrawal Reservation, atomically performing the same custody-to-world
+    /// transition as <see cref="Withdrawal"/> and releasing the reservation as fulfilled.
+    /// </summary>
+    WithdrawalReservationRedeemed,
 }
