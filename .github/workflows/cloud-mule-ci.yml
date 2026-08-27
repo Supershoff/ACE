@@ -149,23 +149,32 @@ jobs:
             popd >/dev/null
           done
 
-  dispatch-claude-review:
-    name: Dispatch Claude review
+  automation-handoff:
+    name: Automation handoff
     needs: [policy, dotnet, web]
-    if: startsWith(github.head_ref || github.ref_name, 'claude/')
+    if: always() && startsWith(github.head_ref || github.ref_name, 'claude/')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       actions: write
       contents: read
     steps:
-      - name: Review the exact SHA that passed every CI job
+      - name: Dispatch review after success or repair after failure
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_BRANCH: ${{ github.head_ref || github.ref_name }}
           TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          POLICY_RESULT: ${{ needs.policy.result }}
+          DOTNET_RESULT: ${{ needs.dotnet.result }}
+          WEB_RESULT: ${{ needs.web.result }}
+          FAILED_RUN_ID: ${{ github.run_id }}
         shell: bash
         run: |
           set -euo pipefail
-          gh workflow run claude-review.yml --repo "${GITHUB_REPOSITORY}" --ref master \
-            -f head_branch="${HEAD_BRANCH}" -f tested_sha="${TESTED_SHA}"
+          if [ "${POLICY_RESULT}" = success ] && [ "${DOTNET_RESULT}" = success ] && [ "${WEB_RESULT}" = success ]; then
+            gh workflow run claude-review.yml --repo "${GITHUB_REPOSITORY}" --ref master \
+              -f head_branch="${HEAD_BRANCH}" -f tested_sha="${TESTED_SHA}"
+          else
+            gh workflow run claude-ci-repair.yml --repo "${GITHUB_REPOSITORY}" --ref master \
+              -f head_branch="${HEAD_BRANCH}" -f failed_sha="${TESTED_SHA}" -f failed_run_id="${FAILED_RUN_ID}"
+          fi

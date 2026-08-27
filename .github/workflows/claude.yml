@@ -44,7 +44,7 @@ jobs:
       pull-requests: write
       issues: write
       id-token: write
-      actions: read
+      actions: write
       checks: read
 
     steps:
@@ -64,6 +64,10 @@ jobs:
             exit 1
           fi
 
+          existing_pr="$(gh pr list --repo "${GITHUB_REPOSITORY}" --state open --limit 100 \
+            --json number,body --jq "first(.[] | select(.body | test(\"(Fixes|Closes|Resolves) #${ISSUE_NUMBER}([^0-9]|$)\"))) | .number // empty")"
+          [ -z "${existing_pr}" ] || { echo "Issue already has PR #${existing_pr}; nothing to implement."; exit 1; }
+
           dependency_block="$(sed -n '/^## Dependencies$/,/^## Red/p' <<<"$(jq -r .body <<<"${issue_json}")")"
           while read -r dependency; do
             [ -n "${dependency}" ] || continue
@@ -73,6 +77,8 @@ jobs:
 
           gh issue edit "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
             --add-label automation:in-progress --remove-label automation:queued --remove-label automation:retry
+          gh issue comment "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+            --body "Claude implementation attempt started. <!-- claude-implementation-start:${ISSUE_NUMBER}:${GITHUB_RUN_ID} -->"
 
       - name: Checkout complete repository history
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -159,7 +165,10 @@ jobs:
 
           gh issue comment "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
             --body "Claude opened ${pr_url}. It remains draft pending CI and independent Claude review."
-          gh workflow run cloud-mule-ci.yml --repo "${GITHUB_REPOSITORY}" --ref "${CLAUDE_BRANCH}"
+          if ! gh workflow run cloud-mule-ci.yml --repo "${GITHUB_REPOSITORY}" --ref "${CLAUDE_BRANCH}"; then
+            gh issue comment "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+              --body "Initial CI dispatch was deferred to the scheduled reconciler; the PR remains in progress."
+          fi
 
       - name: Stop safely if Claude produced no branch
         if: success() && steps.branch.outputs.name == ''
@@ -180,6 +189,15 @@ jobs:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
         shell: bash
         run: |
+          existing_pr="$(gh pr list --repo "${GITHUB_REPOSITORY}" --state open --search "Fixes #${ISSUE_NUMBER} in:body" --json number --jq '.[0].number // empty')"
+          if [ -n "${existing_pr}" ]; then
+            gh issue edit "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+              --remove-label automation:queued --remove-label automation:needs-attention \
+              --add-label automation:in-progress || true
+            gh issue comment "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+              --body "Implementation produced PR #${existing_pr}; a later handoff failed and will be recovered by the scheduled reconciler. Run ${GITHUB_RUN_ID}." || true
+            exit 0
+          fi
           gh issue edit "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
             --remove-label automation:queued --remove-label automation:in-progress \
             --add-label automation:needs-attention || true
