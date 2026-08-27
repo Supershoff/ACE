@@ -1,16 +1,27 @@
 name: Claude CI repair
 
 on:
-  workflow_run:
-    workflows: [Cloud Mule CI]
-    types: [completed]
+  workflow_dispatch:
+    inputs:
+      head_branch:
+        description: Claude PR branch whose CI failed
+        required: true
+        type: string
+      failed_sha:
+        description: Exact commit whose CI failed
+        required: true
+        type: string
+      failed_run_id:
+        description: Failed Cloud Mule CI run ID
+        required: true
+        type: string
 
 concurrency:
-  group: claude-ci-repair-${{ github.event.workflow_run.head_branch }}
+  group: claude-ci-repair-${{ inputs.head_branch }}
   cancel-in-progress: false
 
 permissions:
-  actions: read
+  actions: write
   checks: read
   contents: write
   issues: write
@@ -19,10 +30,6 @@ permissions:
 
 jobs:
   repair:
-    if: >-
-      github.event.workflow_run.conclusion == 'failure' &&
-      startsWith(github.event.workflow_run.head_branch, 'claude/') &&
-      github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -30,8 +37,9 @@ jobs:
         id: context
         env:
           GH_TOKEN: ${{ github.token }}
-          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
-          FAILED_RUN_ID: ${{ github.event.workflow_run.id }}
+          HEAD_BRANCH: ${{ inputs.head_branch }}
+          FAILED_SHA: ${{ inputs.failed_sha }}
+          FAILED_RUN_ID: ${{ inputs.failed_run_id }}
         shell: bash
         run: |
           set -euo pipefail
@@ -40,6 +48,7 @@ jobs:
           [ -n "${pr_json}" ] || { echo 'No open PR owns the failed Claude branch.'; exit 1; }
           pr_number="$(jq -r .number <<<"${pr_json}")"
           head_sha="$(jq -r .headRefOid <<<"${pr_json}")"
+          [ "${head_sha}" = "${FAILED_SHA}" ] || { echo 'PR advanced beyond failed SHA; no repair needed.'; echo 'repair_allowed=false' >> "${GITHUB_OUTPUT}"; exit 0; }
           issue_number="$(sed -nE 's/.*(Fixes|Closes|Resolves) #([0-9]+).*/\2/p' <<<"$(jq -r .body <<<"${pr_json}")" | head -n 1)"
           [ -n "${issue_number}" ] || { echo 'PR has no linked issue.'; exit 1; }
 
@@ -68,7 +77,7 @@ jobs:
         if: steps.context.outputs.repair_allowed == 'true'
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ github.event.workflow_run.head_branch }}
+          ref: ${{ inputs.head_branch }}
           fetch-depth: 0
 
       - name: Let Claude diagnose and repair CI
@@ -78,7 +87,7 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           allowed_bots: github-actions
-          base_branch: ${{ github.event.workflow_run.head_branch }}
+          base_branch: ${{ inputs.head_branch }}
           branch_prefix: claude/ci-repair-
           prompt: >-
             Repair the failed Cloud Mule CI run ${{ steps.context.outputs.failed_run_id }} for PR
@@ -101,10 +110,10 @@ jobs:
           steps.context.outputs.repair_allowed == 'true' &&
           success() &&
           steps.claude.outputs.branch_name != '' &&
-          steps.claude.outputs.branch_name != github.event.workflow_run.head_branch
+          steps.claude.outputs.branch_name != inputs.head_branch
         env:
           REPAIR_BRANCH: ${{ steps.claude.outputs.branch_name }}
-          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_BRANCH: ${{ inputs.head_branch }}
           ORIGINAL_SHA: ${{ steps.context.outputs.head_sha }}
         shell: bash
         run: |
@@ -116,6 +125,18 @@ jobs:
             exit 1
           }
           git push origin "${repair_sha}:refs/heads/${HEAD_BRANCH}"
+
+      - name: Re-run CI after repair
+        if: steps.context.outputs.repair_allowed == 'true' && success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_BRANCH: ${{ inputs.head_branch }}
+          FAILED_SHA: ${{ inputs.failed_sha }}
+        shell: bash
+        run: |
+          current_sha="$(gh pr list --repo "${GITHUB_REPOSITORY}" --head "${HEAD_BRANCH}" --state open --json headRefOid --jq '.[0].headRefOid // empty')"
+          [ -n "${current_sha}" ] && [ "${current_sha}" != "${FAILED_SHA}" ] || { echo 'Claude CI repair produced no new commit.'; exit 1; }
+          gh workflow run cloud-mule-ci.yml --repo "${GITHUB_REPOSITORY}" --ref "${HEAD_BRANCH}"
 
       - name: Record repair workflow failure
         if: failure()

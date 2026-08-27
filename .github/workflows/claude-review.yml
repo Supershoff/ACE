@@ -11,6 +11,11 @@ on:
         description: Exact green commit to review
         required: true
         type: string
+      retry_existing:
+        description: Retry a stale blocking review whose repair did not advance
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: claude-review-${{ inputs.head_branch }}
@@ -35,6 +40,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           HEAD_BRANCH: ${{ inputs.head_branch }}
           TESTED_SHA: ${{ inputs.tested_sha }}
+          RETRY_EXISTING: ${{ inputs.retry_existing }}
         shell: bash
         run: |
           set -euo pipefail
@@ -53,7 +59,10 @@ jobs:
           marker="<!-- claude-code-review:${head_sha} -->"
           existing="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/comments?per_page=100" \
             --jq ".[] | select(.body | contains(\"${marker}\")) | .id")"
-          [ -z "${existing}" ] || { echo 'skip=true' >> "${GITHUB_OUTPUT}"; exit 0; }
+          if [ -n "${existing}" ] && [ "${RETRY_EXISTING}" != true ]; then
+            echo 'skip=true' >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
 
           repair_count="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/comments?per_page=100" \
             --jq '[.[] | select(.body | contains("<!-- claude-review-repair:"))] | length')"
@@ -190,6 +199,8 @@ jobs:
           PR_BRANCH: ${{ inputs.head_branch }}
         shell: bash
         run: |
+          current_sha="$(gh pr view "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" --json headRefOid --jq .headRefOid)"
+          [ "${current_sha}" != "${HEAD_SHA}" ] || { echo 'Claude repair produced no new commit.'; exit 1; }
           next=$((REPAIR_COUNT + 1))
           gh pr comment "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
             --body "Claude repaired blocking findings from ${HEAD_SHA}; CI and independent Claude review will repeat. <!-- claude-review-repair:${next} -->"
