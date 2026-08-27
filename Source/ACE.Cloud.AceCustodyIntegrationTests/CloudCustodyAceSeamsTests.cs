@@ -219,11 +219,8 @@ public sealed class CloudCustodyAceSeamsTests
     public async Task Deposit_NeverAllocatesOrConsumesANativeGuid_SoAProjectedStackLotCannotEither()
     {
         // ARCH-010/ARCH-011: a projected Cloud Stack Lot must not consume a native GUID until ACE
-        // materializes it. CloudStackLot itself does not exist yet (a later issue adds it, per
-        // docs/adr/0002-defer-native-materialization-for-partial-stacks.md); what can be proven
-        // now is the invariant its future implementation must preserve: the only Cloud
-        // custody-creation path that exists today, CloudCustodyBoundary.DepositAsync, reuses the
-        // existing native biota's GUID and never allocates/inserts a new ace_shard.biota row.
+        // materializes it. CloudCustodyBoundary.DepositAsync reuses the existing native biota's
+        // GUID and never allocates/inserts a new ace_shard.biota row.
         var biotaId = NextBiotaId();
         await InsertBiotaAsync(biotaId);
 
@@ -234,5 +231,72 @@ public sealed class CloudCustodyAceSeamsTests
         var biotaCountAfter = new ShardDatabase().GetBiotaCount();
 
         Assert.AreEqual(biotaCountBefore, biotaCountAfter, "Cloud custody must never allocate a new native biota/GUID.");
+    }
+
+    [TestMethod]
+    public async Task DepositStack_AlsoNeverAllocatesOrConsumesANativeGuid()
+    {
+        // Issue #5: CloudCustodyBoundary.DepositStackAsync creates a stack Cloud Custody Record
+        // plus its initial Cloud Stack Lot, but -- exactly like the non-stack deposit above -- must
+        // not allocate a new native biota/GUID; only a later materializing withdrawal may.
+        var biotaId = NextBiotaId();
+        await InsertBiotaAsync(biotaId);
+
+        var biotaCountBefore = new ShardDatabase().GetBiotaCount();
+
+        var cloudOptions = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
+        await using var context = new CloudDbContext(cloudOptions);
+        var boundary = new CloudCustodyBoundary(context);
+        await boundary.DepositStackAsync(biotaId, ShardId, Guid.NewGuid(), quantity: 20, Guid.NewGuid());
+
+        var biotaCountAfter = new ShardDatabase().GetBiotaCount();
+
+        Assert.AreEqual(biotaCountBefore, biotaCountAfter, "A stack deposit must never allocate a new native biota/GUID either.");
+    }
+
+    [TestMethod]
+    public async Task WithdrawLot_Materializing_UsesExactlyTheCallerSuppliedAceAllocatedGuid_AndSurvivesOrphanCleanup()
+    {
+        // ARCH-010: only ACE may allocate a child GUID; CloudCustodyBoundary.WithdrawLotAsync must
+        // never invent one of its own. In production the ACE-side caller obtains this GUID from its
+        // own GuidManager (Source/ACE.Server/Managers/GuidManager.cs); this project intentionally
+        // does not reference ACE.Server (see the class doc comment), so this test supplies a real
+        // dynamic-range GUID the same way that caller would and proves the persistence layer
+        // delivers a native biota under exactly that GUID -- one new biota row, no more, no fewer --
+        // and that the materialized child survives the same orphan-cleanup/GUID-reservation seam
+        // proven above for a non-stack deposit.
+        var biotaId = NextBiotaId();
+        await InsertBiotaAsync(biotaId);
+
+        var materializedBiotaId = NextBiotaId();
+
+        var cloudOptions = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
+        await using var context = new CloudDbContext(cloudOptions);
+        var boundary = new CloudCustodyBoundary(context);
+
+        var depositOutcome = await boundary.DepositStackAsync(biotaId, ShardId, Guid.NewGuid(), quantity: 20, Guid.NewGuid());
+        var lot = depositOutcome.Value!.Lot;
+
+        var biotaCountBeforeWithdrawal = new ShardDatabase().GetBiotaCount();
+
+        var withdrawOutcome = await boundary.WithdrawLotAsync(
+            lot.Id, lot.Version, quantityToWithdraw: 7, recipientContainerId: NextBiotaId(), materializedBiotaId, Guid.NewGuid());
+
+        Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, withdrawOutcome.Kind, withdrawOutcome.Reason);
+        Assert.AreEqual(materializedBiotaId, withdrawOutcome.Value!.DeliveredBiotaId, "The delivered biota must be exactly the caller-supplied GUID, never one CloudCustodyBoundary invented.");
+
+        var biotaCountAfterWithdrawal = new ShardDatabase().GetBiotaCount();
+        Assert.AreEqual(biotaCountBeforeWithdrawal + 1, biotaCountAfterWithdrawal, "Materialization must create exactly one new native biota.");
+
+        using (var shardContext = new ShardDbContext())
+        {
+            Assert.IsTrue(await shardContext.Biota.AsNoTracking().AnyAsync(b => b.Id == materializedBiotaId));
+        }
+
+        // Cleanup/GUID-reservation must treat the materialized child exactly like any other biota:
+        // it is not Cloud-custodied (it was just delivered to a recipient container), so ordinary
+        // world rules govern it from here, and its GUID is reserved the same way any live biota's is.
+        var maxGuidInRange = new ShardDatabase().GetMaxGuidFoundInRange(materializedBiotaId, materializedBiotaId);
+        Assert.AreEqual(materializedBiotaId, maxGuidInRange, "The materialized child's GUID must be reserved (never a free gap) immediately after materialization.");
     }
 }

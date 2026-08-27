@@ -20,7 +20,8 @@ public sealed class CloudIdempotencyRecord
         Guid ownerId,
         Guid? custodyRecordId,
         uint? targetContainerId,
-        Guid correlationId)
+        Guid correlationId,
+        int? quantity = null)
     {
         if (idempotencyKey == Guid.Empty)
         {
@@ -47,10 +48,17 @@ public sealed class CloudIdempotencyRecord
             throw new ArgumentException("An idempotency record requires an Activity Ledger correlation ID.", nameof(correlationId));
         }
 
-        if (operationType == CloudBoundaryOperationType.Withdrawal && targetContainerId is null or 0)
+        if (operationType is CloudBoundaryOperationType.Withdrawal or CloudBoundaryOperationType.StackWithdrawal
+            && targetContainerId is null or 0)
         {
             throw new ArgumentException(
                 "A withdrawal idempotency record requires the recipient container it delivered into.", nameof(targetContainerId));
+        }
+
+        if (operationType == CloudBoundaryOperationType.StackWithdrawal && quantity is null or <= 0)
+        {
+            throw new ArgumentException(
+                "A stack withdrawal idempotency record requires the positive quantity it delivered.", nameof(quantity));
         }
 
         IdempotencyKey = idempotencyKey;
@@ -61,6 +69,7 @@ public sealed class CloudIdempotencyRecord
         CustodyRecordId = custodyRecordId;
         TargetContainerId = targetContainerId;
         CorrelationId = correlationId;
+        Quantity = quantity;
     }
 
     public Guid IdempotencyKey { get; private set; }
@@ -90,6 +99,11 @@ public sealed class CloudIdempotencyRecord
     public uint? TargetContainerId { get; private set; }
 
     public Guid CorrelationId { get; private set; }
+
+    /// <summary>
+    /// The quantity a StackDeposit or StackWithdrawal delivered; null for a non-stack operation.
+    /// </summary>
+    public int? Quantity { get; private set; }
 
     public DateTime CreatedAtUtc { get; private set; }
 }

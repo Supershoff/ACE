@@ -24,6 +24,7 @@ public static class CloudSchemaMigrator
         new AddCloudCustodyRecords(),
         new ProtectCloudCustodyBiotaFromDeletion(),
         new AddIdempotencyAndLedgerOutbox(),
+        new AddCloudStackLots(),
     ];
 
     /// <summary>
