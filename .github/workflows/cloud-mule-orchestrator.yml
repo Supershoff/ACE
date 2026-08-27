@@ -48,6 +48,13 @@ jobs:
             exit 0
           fi
 
+          active_issue="$(gh issue list --repo "${GITHUB_REPOSITORY}" --state open --label ready-for-agent --limit 100 \
+            --json number,labels --jq 'first(.[] | select([.labels[].name] | any(. == "automation:queued" or . == "automation:in-progress"))) | .number // empty')"
+          if [ -n "${active_issue}" ]; then
+            echo "Claude work for issue #${active_issue} is active before PR creation; serialization holds."
+            exit 0
+          fi
+
           candidates=()
           if [ -n "${REQUESTED_ISSUE}" ]; then
             candidates+=("${REQUESTED_ISSUE}")
