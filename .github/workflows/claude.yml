@@ -93,6 +93,7 @@ jobs:
           allowed_bots: github-actions
           base_branch: master
           branch_prefix: claude/
+          show_full_output: true
           prompt: >-
             Implement GitHub issue #${{ inputs.issue_number }} completely. First read the issue with
             gh issue view, then read AGENTS.md, CLAUDE.md, CONTEXT.md, IMPLEMENTATION-BRIEF.md,
@@ -107,7 +108,7 @@ jobs:
           claude_args: |
             --max-turns 300
             --append-system-prompt "Work on exactly one issue. If a required prerequisite is unavailable or an acceptance criterion cannot be verified, stop and report it instead of claiming completion."
-            --allowedTools "Read,Write,Edit,Glob,Grep,Bash(git fetch:*),Bash(git status:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(git branch:*),Bash(git switch:*),Bash(git checkout:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(dotnet new:*),Bash(dotnet sln:*),Bash(dotnet add:*),Bash(dotnet restore:*),Bash(dotnet build:*),Bash(dotnet test:*),Bash(npm ci:*),Bash(npm test:*),Bash(npm run:*),Bash(pnpm:*),Bash(gh issue view:*),Bash(gh issue comment:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh run view:*),Bash(gh run list:*)"
+            --allowedTools "Read,Write,Edit,Glob,Grep,Bash(pwd:*),Bash(ls:*),Bash(find:*),Bash(cat:*),Bash(head:*),Bash(tail:*),Bash(grep:*),Bash(rg:*),Bash(sed:*),Bash(sort:*),Bash(wc:*),Bash(which:*),Bash(git fetch:*),Bash(git status:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(git branch:*),Bash(git switch:*),Bash(git checkout:*),Bash(git rev-parse:*),Bash(git ls-files:*),Bash(git grep:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(dotnet:*),Bash(npm ci:*),Bash(npm test:*),Bash(npm run:*),Bash(pnpm:*),Bash(gh issue view:*),Bash(gh issue comment:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh run view:*),Bash(gh run list:*)"
             --disallowedTools "Bash(git push --force:*),Bash(git push --force-with-lease:*),Bash(git reset --hard:*),Bash(git clean:*),Bash(git merge:*),Bash(gh pr merge:*),Bash(gh repo delete:*),Bash(sudo:*),Bash(ssh:*),Bash(scp:*)"
 
       - name: Resolve Claude's implementation branch
@@ -178,9 +179,9 @@ jobs:
         shell: bash
         run: |
           gh issue edit "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
-            --remove-label automation:in-progress --add-label automation:needs-attention
+            --remove-label automation:needs-attention --add-label automation:in-progress --add-label automation:retry
           gh issue comment "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
-            --body "Claude completed without producing an implementation branch. Automation stopped for investigation."
+            --body "Claude completed without producing an implementation branch. The scheduled reconciler will retry automatically; full Claude output is enabled for subsequent attempts. Run ${GITHUB_RUN_ID}."
 
       - name: Record automation failure
         if: failure()
@@ -199,7 +200,7 @@ jobs:
             exit 0
           fi
           gh issue edit "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
-            --remove-label automation:queued --remove-label automation:in-progress \
-            --add-label automation:needs-attention || true
+            --remove-label automation:queued --remove-label automation:needs-attention \
+            --add-label automation:in-progress --add-label automation:retry || true
           gh issue comment "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
-            --body "Claude automation failed and stopped safely. Inspect run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}." || true
+            --body "Claude automation failed. The scheduled reconciler will retry automatically up to the configured attempt limit. Inspect run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}." || true
