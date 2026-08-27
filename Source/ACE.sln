@@ -78,6 +78,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ACE.Cloud.RepositoryPolicyT
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ACE.Cloud.PersistenceIntegrationTests", "ACE.Cloud.PersistenceIntegrationTests\ACE.Cloud.PersistenceIntegrationTests.csproj", "{DABB6BB9-D070-49C3-975D-7FD8E2B325E1}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ACE.Cloud.AceCustodyIntegrationTests", "ACE.Cloud.AceCustodyIntegrationTests\ACE.Cloud.AceCustodyIntegrationTests.csproj", "{A1B2C3D4-E5F6-47A8-9B0C-D1E2F3A4B5C6}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -268,6 +270,18 @@ Global
 		{DABB6BB9-D070-49C3-975D-7FD8E2B325E1}.Release|Any CPU.Build.0 = Release|Any CPU
 		{DABB6BB9-D070-49C3-975D-7FD8E2B325E1}.Release|x86.ActiveCfg = Release|Any CPU
 		{DABB6BB9-D070-49C3-975D-7FD8E2B325E1}.Release|x86.Build.0 = Release|Any CPU
+		{A1B2C3D4-E5F6-47A8-9B0C-D1E2F3A4B5C6}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{A1B2C3D4-E5F6-47A8-9B0C-D1E2F3A4B5C6}.Debug|x64.Build.0 = Debug|Any CPU
+		{A1B2C3D4-E5F6-47A8-9B0C-D1E2F3A4B5C6}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A1B2C3D4-E5F6-47A8-9B0C-D1E2F3A4B5C6}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A1B2C3D4-E5F6-47A8-9B0C-D1E2F3A4B5C6}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{A1B2C3D4-E5F6-47A8-9B0C-D1E2F3A4B5C6}.Debug|x86.Build.0 = Debug|Any CPU
+		{A1B2C3D4-E5F6-47A8-9B0C-D1E2F3A4B5C6}.Release|x64.ActiveCfg = Release|Any CPU
+		{A1B2C3D4-E5F6-47A8-9B0C-D1E2F3A4B5C6}.Release|x64.Build.0 = Release|Any CPU
+		{A1B2C3D4-E5F6-47A8-9B0C-D1E2F3A4B5C6}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A1B2C3D4-E5F6-47A8-9B0C-D1E2F3A4B5C6}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A1B2C3D4-E5F6-47A8-9B0C-D1E2F3A4B5C6}.Release|x86.ActiveCfg = Release|Any CPU
+		{A1B2C3D4-E5F6-47A8-9B0C-D1E2F3A4B5C6}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
