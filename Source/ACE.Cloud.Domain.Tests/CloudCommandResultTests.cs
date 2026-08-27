@@ -1,3 +1,4 @@
+using System.Text.Json;
 using ACE.Cloud.Contracts;
 
 namespace ACE.Cloud.Domain.Tests;
@@ -74,5 +75,29 @@ public sealed class CloudCommandResultTests
         Assert.ThrowsExactly<ArgumentException>(() => CloudCommandResult<string>.Conflict(reason!));
         Assert.ThrowsExactly<ArgumentException>(() => CloudCommandResult<string>.ValidationFailed(reason!));
         Assert.ThrowsExactly<ArgumentException>(() => CloudCommandResult<string>.Unavailable(reason!));
+    }
+
+    [TestMethod]
+    public void Deserialization_RejectsSuccessWithNullPayload()
+    {
+        Assert.ThrowsExactly<ArgumentNullException>(() =>
+            JsonSerializer.Deserialize<CloudCommandResult<string>>("""{"Kind":0,"Payload":null,"Reason":null}"""));
+    }
+
+    [TestMethod]
+    public void Deserialization_RejectsIdempotentReplayWithNullPayload()
+    {
+        Assert.ThrowsExactly<ArgumentNullException>(() =>
+            JsonSerializer.Deserialize<CloudCommandResult<string>>("""{"Kind":4,"Payload":null,"Reason":null}"""));
+    }
+
+    [TestMethod]
+    [DataRow(1)]
+    [DataRow(2)]
+    [DataRow(3)]
+    public void Deserialization_RejectsNonSuccessKindWithBlankReason(int kind)
+    {
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            JsonSerializer.Deserialize<CloudCommandResult<string>>($$"""{"Kind":{{kind}},"Payload":null,"Reason":null}"""));
     }
 }

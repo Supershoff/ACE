@@ -22,8 +22,9 @@ public sealed record CloudCommandResult<TPayload>
     private CloudCommandResult(CloudCommandResultKind kind, TPayload? payload, string? reason)
     {
         Kind = kind;
-        Payload = payload;
-        Reason = reason;
+        var isSuccessLike = kind is CloudCommandResultKind.Success or CloudCommandResultKind.IdempotentReplay;
+        Payload = isSuccessLike ? RequirePayload(payload!) : default;
+        Reason = isSuccessLike ? null : RequireReason(reason!);
     }
 
     public static CloudCommandResult<TPayload> Success(TPayload payload) =>
