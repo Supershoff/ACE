@@ -1,5 +1,4 @@
-using ACE.Cloud.Persistence;
-using Microsoft.EntityFrameworkCore;
+using ACE.Cloud.Persistence.Migrations;
 using MySqlConnector;
 using Testcontainers.MariaDb;
 
@@ -7,7 +6,7 @@ namespace ACE.Cloud.PersistenceIntegrationTests;
 
 /// <summary>
 /// Boots one disposable MariaDB instance per test class, applies ACE's existing Auth/Shard/World
-/// schemas from Database/Base plus the empty versioned Cloud schema, and tears everything down
+/// schemas from Database/Base plus the versioned Cloud schema migrations, and tears everything down
 /// unconditionally. Nothing here is reused between test runs: every run gets a fresh container
 /// and fresh databases, and a failed setup disposes the container before propagating the error.
 /// </summary>
@@ -17,6 +16,7 @@ public sealed class CloudDatabaseFixture : IAsyncDisposable
     public const string ContractProtocolVersion = "0.1.0";
 
     private const string CloudSchemaName = "ace_cloud";
+    private const string ShardSchemaName = "ace_shard";
 
     private readonly MariaDbContainer _container;
 
@@ -26,6 +26,14 @@ public sealed class CloudDatabaseFixture : IAsyncDisposable
     }
 
     public string CloudConnectionString => BuildConnectionString(CloudSchemaName);
+
+    /// <summary>
+    /// A connection string to ACE's own shard database, scoped to the same disposable server as
+    /// <see cref="CloudConnectionString"/>. Only Red/Green tests proving the world-boundary
+    /// invariants (ARCH-005) should use this directly; ordinary Cloud application code must never
+    /// hold a connection like this (ARCH-004).
+    /// </summary>
+    public string AceShardConnectionString => BuildConnectionString(ShardSchemaName);
 
     public static async Task<CloudDatabaseFixture> StartAsync()
     {
@@ -40,7 +48,7 @@ public sealed class CloudDatabaseFixture : IAsyncDisposable
         {
             await container.StartAsync();
             await fixture.ApplyExistingAceSchemasAsync();
-            await fixture.ApplyEmptyVersionedCloudSchemaAsync();
+            await fixture.ApplyVersionedCloudSchemaAsync();
         }
         catch
         {
@@ -72,7 +80,7 @@ public sealed class CloudDatabaseFixture : IAsyncDisposable
         }
     }
 
-    private async Task ApplyEmptyVersionedCloudSchemaAsync()
+    private async Task ApplyVersionedCloudSchemaAsync()
     {
         await using (var connection = new MySqlConnection(BuildConnectionString(database: null)))
         {
@@ -83,9 +91,7 @@ public sealed class CloudDatabaseFixture : IAsyncDisposable
             await createDatabase.ExecuteNonQueryAsync();
         }
 
-        var options = CloudDbContextOptionsFactory.Create(CloudConnectionString);
-        await using var context = new CloudDbContext(options);
-        await context.Database.EnsureCreatedAsync();
+        await CloudSchemaMigrator.MigrateAsync(CloudConnectionString);
     }
 
     private string BuildConnectionString(string? database)
