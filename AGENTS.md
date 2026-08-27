@@ -14,7 +14,7 @@ This is a single-context repository. Read `CONTEXT.md` and applicable ADRs under
 
 ### Code review
 
-Codex code and pull-request reviews must use the installed `code-review-skill`. Review the linked issue and acceptance criteria first, then apply the relevant C#/.NET, TypeScript/React, architecture, security, performance, concurrency, and universal-quality guidance. Validate material findings with focused tests, builds, or static checks where practical, and prioritize actionable correctness, custody-invariant, security, and regression findings over formatting preferences.
+Claude pull-request reviews must use the upstream `awesome-skills/code-review-skill` checked out at the commit pinned in `.github/workflows/claude-review.yml`. Review the linked issue and acceptance criteria first, then apply the relevant C#/.NET, TypeScript/React, architecture, security, performance, concurrency, and universal-quality guidance. Validate material findings with focused tests, builds, or static checks where practical, and prioritize actionable correctness, custody-invariant, security, and regression findings over formatting preferences.
 
 ## Code Review Rules
 
@@ -47,4 +47,4 @@ Codex code and pull-request reviews must use the installed `code-review-skill`. 
 
 ### Automation
 
-The AC Cloud Mule automation pipeline and emergency stop are documented in `docs/agents/automation.md`. Automation may auto-merge ordinary dependency-complete issues only after current-SHA CI and a clean Codex review. Issues labeled `automation:human-gate` must stop at `automation:ready-for-user-testing`.
+The AC Cloud Mule automation pipeline and emergency stop are documented in `docs/agents/automation.md`. Automation may auto-merge ordinary dependency-complete issues only after current-SHA CI and a clean independent Claude review. Issues labeled `automation:human-gate` must stop at `automation:ready-for-user-testing`.
