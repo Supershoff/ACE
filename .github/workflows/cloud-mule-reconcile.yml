@@ -96,7 +96,7 @@ jobs:
 
           open_prs="$(gh pr list --repo "${GITHUB_REPOSITORY}" --state open --limit 100 --json body)"
           gh issue list --repo "${GITHUB_REPOSITORY}" --state open --label ready-for-agent --limit 100 \
-            --json number,labels,comments --jq '.[] | @base64' |
+            --json number,labels,comments,updatedAt --jq '.[] | @base64' |
           while read -r encoded; do
             issue_json="$(base64 -d <<<"${encoded}")"
             issue="$(jq -r .number <<<"${issue_json}")"
@@ -117,6 +117,12 @@ jobs:
               run_id="$(sed -nE 's/.*claude-implementation-start:[0-9]+:([0-9]+).*/\1/p' <<<"${last_start}")"
               run_status="$(gh run view "${run_id}" --repo "${GITHUB_REPOSITORY}" --json status --jq .status 2>/dev/null || echo completed)"
               [ "${run_status}" != queued ] && [ "${run_status}" != in_progress ] || continue
+            else
+              updated_at="$(date -d "$(jq -r .updatedAt <<<"${issue_json}")" +%s)"
+              now="$(date +%s)"
+              if [ $((now - updated_at)) -lt 1200 ]; then
+                continue
+              fi
             fi
 
             gh issue edit "${issue}" --repo "${GITHUB_REPOSITORY}" \
@@ -124,6 +130,9 @@ jobs:
             gh workflow run claude.yml --repo "${GITHUB_REPOSITORY}" --ref master -f issue_number="${issue}"
           done
 
-          if [ "$(gh pr list --repo "${GITHUB_REPOSITORY}" --state open --limit 100 --json headRefName --jq '[.[] | select(.headRefName | startswith("claude/"))] | length')" -eq 0 ]; then
+          active_prs="$(gh pr list --repo "${GITHUB_REPOSITORY}" --state open --limit 100 --json headRefName --jq '[.[] | select(.headRefName | startswith("claude/"))] | length')"
+          active_issues="$(gh issue list --repo "${GITHUB_REPOSITORY}" --state open --label ready-for-agent --limit 100 \
+            --json labels --jq '[.[] | select([.labels[].name] | any(. == "automation:queued" or . == "automation:in-progress"))] | length')"
+          if [ "${active_prs}" -eq 0 ] && [ "${active_issues}" -eq 0 ]; then
             gh workflow run cloud-mule-orchestrator.yml --repo "${GITHUB_REPOSITORY}" --ref master -f dry_run=false
           fi
