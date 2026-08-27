@@ -84,6 +84,7 @@ jobs:
         uses: anthropics/claude-code-action@62529b7c89dbb8cfaa838f2c87f2f8459b46fe68 # v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          allowed_bots: github-actions
           base_branch: master
           branch_prefix: claude/
           prompt: >-
