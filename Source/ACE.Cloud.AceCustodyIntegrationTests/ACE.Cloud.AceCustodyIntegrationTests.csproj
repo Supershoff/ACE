@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MSTest" Version="4.0.2" />
+    <PackageReference Include="MySqlConnector" Version="2.6.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Production code under test: ACE.Database is the "narrowest ACE ... cleanup ... seam"
+         issue #3 teaches about Cloud custody. ACE.Cloud.Persistence supplies the real
+         CloudCustodyBoundary/CloudDbContext used to create custody records, and
+         ACE.Cloud.PersistenceIntegrationTests is reused for its CloudDatabaseFixture rather than
+         duplicating that Testcontainers/schema bootstrap here. -->
+    <ProjectReference Include="..\ACE.Database\ACE.Database.csproj" />
+    <ProjectReference Include="..\ACE.Cloud.Persistence\ACE.Cloud.Persistence.csproj" />
+    <ProjectReference Include="..\ACE.Cloud.PersistenceIntegrationTests\ACE.Cloud.PersistenceIntegrationTests.csproj" />
+  </ItemGroup>
+
+</Project>

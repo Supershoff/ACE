@@ -190,6 +190,35 @@ public sealed class CloudCustodyRecordExclusivityTests
     }
 
     [TestMethod]
+    public async Task WorldSide_CannotDeleteBiota_WhenBiotaIsCloudCustodied()
+    {
+        var biotaId = NextBiotaId();
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, biotaId);
+
+        await using (var cloudConnection = new MySqlConnection(_fixture.CloudConnectionString))
+        {
+            await cloudConnection.OpenAsync();
+            await InsertCustodyRecordAsync(cloudConnection, Guid.NewGuid(), biotaId, BoundShardId, Guid.NewGuid());
+        }
+
+        await using var shardConnection = new MySqlConnection(_fixture.AceShardConnectionString);
+        await shardConnection.OpenAsync();
+        await using var delete = shardConnection.CreateCommand();
+        delete.CommandText = "DELETE FROM biota WHERE id = @biotaId;";
+        delete.Parameters.AddWithValue("@biotaId", biotaId);
+
+        var exception = await Assert.ThrowsExactlyAsync<MySqlException>(() => delete.ExecuteNonQueryAsync());
+        StringAssert.Contains(exception.Message, "Cloud custody");
+
+        await using var verifyConnection = new MySqlConnection(_fixture.AceShardConnectionString);
+        await verifyConnection.OpenAsync();
+        await using var verify = verifyConnection.CreateCommand();
+        verify.CommandText = "SELECT COUNT(*) FROM biota WHERE id = @biotaId;";
+        verify.Parameters.AddWithValue("@biotaId", biotaId);
+        Assert.AreEqual(1L, (long)(await verify.ExecuteScalarAsync())!, "The native biota must survive a rejected delete attempt (GUID lineage, ARCH-010/ARCH-011).");
+    }
+
+    [TestMethod]
     public async Task FailedCustodyTransition_PreservesOriginalWorldPossession()
     {
         var biotaId = NextBiotaId();

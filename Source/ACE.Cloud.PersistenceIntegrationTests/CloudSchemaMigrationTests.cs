@@ -37,8 +37,9 @@ public sealed class CloudSchemaMigrationTests
     {
         var connectionString = _fixture.CloudConnectionString;
 
-        // The fixture's startup already applied both migrations; confirm that baseline.
+        // The fixture's startup already applied every migration; confirm that baseline.
         await AssertAppliedAsync(connectionString, "20260827000002_AddCloudCustodyRecords");
+        await AssertAppliedAsync(connectionString, "20260827000003_ProtectCloudCustodyBiotaFromDeletion");
         Assert.IsTrue(await TableExistsAsync(connectionString, "CloudCustodyRecord"));
         Assert.IsTrue(await TableExistsAsync(connectionString, "CloudShardBinding"));
 
@@ -62,6 +63,7 @@ public sealed class CloudSchemaMigrationTests
 
             Assert.IsTrue(await TableExistsAsync(connectionString, "CloudCustodyRecord"));
             await AssertAppliedAsync(connectionString, "20260827000002_AddCloudCustodyRecords");
+            await AssertAppliedAsync(connectionString, "20260827000003_ProtectCloudCustodyBiotaFromDeletion");
             await AssertCustodySchemaIsFunctionalAsync(connectionString, repetition);
         }
 
@@ -76,6 +78,7 @@ public sealed class CloudSchemaMigrationTests
         Assert.IsTrue(await TableExistsAsync(connectionString, "CloudShardBinding"));
         await AssertAppliedAsync(connectionString, InitialMigrationId);
         await AssertAppliedAsync(connectionString, "20260827000002_AddCloudCustodyRecords");
+        await AssertAppliedAsync(connectionString, "20260827000003_ProtectCloudCustodyBiotaFromDeletion");
     }
 
     private static async Task<string> SeedShardBindingAsync(string connectionString)
@@ -142,6 +145,16 @@ public sealed class CloudSchemaMigrationTests
         conflicting.Parameters.AddWithValue("@ledgerCorrelationId", Guid.NewGuid().ToString());
 
         await Assert.ThrowsExactlyAsync<MySqlException>(() => conflicting.ExecuteNonQueryAsync());
+
+        // ...and issue #3's delete-protection trigger is enforced again, not just the insert guard.
+        await using var deleteConnection = new MySqlConnection(_fixture.AceShardConnectionString);
+        await deleteConnection.OpenAsync();
+        await using var delete = deleteConnection.CreateCommand();
+        delete.CommandText = "DELETE FROM biota WHERE id = @biotaId;";
+        delete.Parameters.AddWithValue("@biotaId", biotaId);
+
+        var deleteException = await Assert.ThrowsExactlyAsync<MySqlException>(() => delete.ExecuteNonQueryAsync());
+        StringAssert.Contains(deleteException.Message, "Cloud custody");
     }
 
     private static async Task AssertAppliedAsync(string connectionString, string migrationId)

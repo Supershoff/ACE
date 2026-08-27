@@ -276,46 +276,57 @@ namespace ACE.Database
                 .Include(r => r.BiotaPropertiesString)
                 .FirstOrDefault(r => r.Id == id);
 
-            if (biota != null)
+            if (biota == null)
+                return false;
+
+            var descriptor = $"Biota 0x{id:X8}";
+
+            var name = biota.GetProperty(PropertyString.Name);
+
+            if (!string.IsNullOrWhiteSpace(name))
+                descriptor += $":{name}";
+
+            descriptor += $", WeenieType: {(WeenieType)biota.WeenieType}";
+
+            var reasonSuffix = string.IsNullOrWhiteSpace(reason) ? "" : $" Reason: {reason}.";
+
+            context.Biota.Remove(biota);
+
+            // Do not log or report success ahead of the actual delete: a biota protected by an
+            // active Cloud Custody Record (ARCH-005) is rejected by an ace_shard database trigger,
+            // and the caller (e.g. PurgeOrphanedBiotasInParallel) must see that rejection rather
+            // than a silently misreported purge (AGENTS.md verification quality: no silent repair
+            // of custody state).
+            try
             {
-                var message = $"[DATABASE][PURGE] Biota 0x{id:X8}";
+                context.SaveChanges();
+            }
+            catch (Exception ex)
+            {
+                if (IsCloudCustodyProtectionException(ex))
+                    log.WarnFormat("[DATABASE][PURGE] {0} was NOT purged: it is protected by an active Cloud Custody Record.{1}", descriptor, reasonSuffix);
+                else
+                    log.ErrorFormat("[DATABASE][PURGE] {0} failed to purge with exception: {1}.{2}", descriptor, ex.GetFullMessage(), reasonSuffix);
 
-                var name = biota.GetProperty(PropertyString.Name);
+                return false;
+            }
 
-                if (!string.IsNullOrWhiteSpace(name))
-                    message += $":{name}";
+            log.Info($"[DATABASE][PURGE] {descriptor}, has been purged.{reasonSuffix}");
 
-                message += $", WeenieType: {(WeenieType)biota.WeenieType}";
+            return true;
+        }
 
-                //if (NonPurgeableWeenieTypes.Contains((WeenieType)biota.WeenieType))
-                //{
-                //    message += ", has NOT been purged due to non-purgeable WeenieType.";
-                //    if (!String.IsNullOrWhiteSpace(reason))
-                //        message += $" Reason: {reason}.";
-                //    log.Debug(message);
-
-                //    return false;
-                //}
-
-                message += $", has been purged.";
-
-                if (!string.IsNullOrWhiteSpace(reason))
-                    message += $" Reason: {reason}.";
-
-                log.Info(message);
-
-                context.Biota.Remove(biota);
-
-                try
-                {
-                    context.SaveChanges();
-                }
-                catch (Exception ex)
-                {
-                    log.ErrorFormat("[DATABASE][PURGE] PurgeBiota 0x{0:X8} failed with exception: {1}", id, ex);
-                }
-
-                return true;
+        /// <summary>
+        /// True if <paramref name="ex"/> (or one of its inner exceptions, since EF Core wraps
+        /// provider exceptions in <see cref="DbUpdateException"/>) is the ace_shard database
+        /// trigger rejecting a delete because the biota is under an active Cloud Custody Record.
+        /// </summary>
+        private static bool IsCloudCustodyProtectionException(Exception ex)
+        {
+            for (var current = ex; current != null; current = current.InnerException)
+            {
+                if (current is MySqlConnector.MySqlException && current.Message.IndexOf("Cloud custody", StringComparison.OrdinalIgnoreCase) >= 0)
+                    return true;
             }
 
             return false;
@@ -327,7 +338,17 @@ namespace ACE.Database
                 return PurgeBiota(context, id, reason);
         }
 
-        public static void PurgeOrphanedBiotasInParallel(ShardDbContext context, out int numberOfBiotasPurged)
+        /// <summary>
+        /// <paramref name="cloudCustodiedBiotaIds"/> is an optional, caller-supplied set of native
+        /// biota GUIDs currently held under a Cloud Custody Record (ARCH-005). ACE.Database has no
+        /// reference to the Cloud schema, so it cannot discover this set itself; a Cloud-aware
+        /// caller supplies it so a valid off-world Cloud Item is not misclassified as an orphan
+        /// alongside the existing Allegiance exclusion below. Passing null (the default, and every
+        /// existing caller's behavior) preserves prior behavior for ACE deployments that do not run
+        /// Cloud Mule; the ace_shard database trigger added by Cloud Mule's schema migration is the
+        /// remaining defense-in-depth guard in that case (see <see cref="PurgeBiota"/>).
+        /// </summary>
+        public static void PurgeOrphanedBiotasInParallel(ShardDbContext context, out int numberOfBiotasPurged, IReadOnlySet<uint> cloudCustodiedBiotaIds = null)
         {
             int totalNumberOfBiotasPurged = 0;
 
@@ -518,6 +539,12 @@ namespace ACE.Database
 
                     // exclude objects that have either a container, wielder, or location
                     if (containerPointers.ContainsKey(kvp.Key) || wielderPointers.ContainsKey(kvp.Key) || locationPointers.Contains(kvp.Key))
+                        continue;
+
+                    // exclude objects under a Cloud Custody Record (ARCH-005): first-class
+                    // off-world possession is not orphaned, even though it also has no
+                    // Container/Wielder/Location.
+                    if (cloudCustodiedBiotaIds != null && cloudCustodiedBiotaIds.Contains(kvp.Key))
                         continue;
 
                     results.Add(kvp.Key);
