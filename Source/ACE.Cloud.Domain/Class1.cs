@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace ACE.Cloud.Domain;
 
 /// <summary>
@@ -5,6 +7,7 @@ namespace ACE.Cloud.Domain;
 /// deployment binds to one Cloud Shard ID for its lifetime; it is never blank and never
 /// reassigned after a deployment is bound.
 /// </summary>
+[JsonConverter(typeof(CloudShardIdJsonConverter))]
 public sealed class CloudShardId : IEquatable<CloudShardId>
 {
     public string Value { get; }
