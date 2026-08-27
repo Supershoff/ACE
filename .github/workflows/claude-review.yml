@@ -1,12 +1,19 @@
 name: Claude code review
 
 on:
-  workflow_run:
-    workflows: [Cloud Mule CI]
-    types: [completed]
+  workflow_dispatch:
+    inputs:
+      head_branch:
+        description: Claude PR branch whose exact SHA passed Cloud Mule CI
+        required: true
+        type: string
+      tested_sha:
+        description: Exact green commit to review
+        required: true
+        type: string
 
 concurrency:
-  group: claude-review-${{ github.event.workflow_run.head_branch }}
+  group: claude-review-${{ inputs.head_branch }}
   cancel-in-progress: false
 
 permissions:
@@ -19,7 +26,6 @@ permissions:
 
 jobs:
   review:
-    if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -27,8 +33,8 @@ jobs:
         id: prepare
         env:
           GH_TOKEN: ${{ github.token }}
-          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
-          TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_BRANCH: ${{ inputs.head_branch }}
+          TESTED_SHA: ${{ inputs.tested_sha }}
         shell: bash
         run: |
           set -euo pipefail
@@ -161,10 +167,10 @@ jobs:
             --disallowedTools "Bash(git push --force:*),Bash(git push --force-with-lease:*),Bash(git reset --hard:*),Bash(git clean:*),Bash(git merge:*),Bash(gh pr merge:*),Bash(gh repo delete:*),Bash(sudo:*),Bash(ssh:*),Bash(scp:*)"
 
       - name: Promote a Claude-created repair branch
-        if: steps.classify.outputs.route == 'repair' && steps.repair.outputs.branch_name != '' && steps.repair.outputs.branch_name != github.event.workflow_run.head_branch
+        if: steps.classify.outputs.route == 'repair' && steps.repair.outputs.branch_name != '' && steps.repair.outputs.branch_name != inputs.head_branch
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          PR_BRANCH: ${{ inputs.head_branch }}
           REPAIR_BRANCH: ${{ steps.repair.outputs.branch_name }}
         shell: bash
         run: |
@@ -181,7 +187,7 @@ jobs:
           PR_NUMBER: ${{ steps.prepare.outputs.pr_number }}
           HEAD_SHA: ${{ steps.prepare.outputs.head_sha }}
           REPAIR_COUNT: ${{ steps.prepare.outputs.repair_count }}
-          PR_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          PR_BRANCH: ${{ inputs.head_branch }}
         shell: bash
         run: |
           next=$((REPAIR_COUNT + 1))

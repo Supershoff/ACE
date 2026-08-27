@@ -148,3 +148,24 @@ jobs:
             fi
             popd >/dev/null
           done
+
+  dispatch-claude-review:
+    name: Dispatch Claude review
+    needs: [policy, dotnet, web]
+    if: startsWith(github.head_ref || github.ref_name, 'claude/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Review the exact SHA that passed every CI job
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_BRANCH: ${{ github.head_ref || github.ref_name }}
+          TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run claude-review.yml --repo "${GITHUB_REPOSITORY}" --ref master \
+            -f head_branch="${HEAD_BRANCH}" -f tested_sha="${TESTED_SHA}"
