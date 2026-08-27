@@ -65,13 +65,16 @@ jobs:
 
           next=$((count + 1))
           marker="<!-- claude-ci-repair:${next}:${head_sha} -->"
+          # shellcheck disable=SC2016 # Markdown backticks are intentionally literal.
           body="$(printf 'CI failed for `%s`; Claude repair cycle %s/3 is starting.\n\n%s' "${head_sha}" "${next}" "${marker}")"
           gh pr comment "${pr_number}" --repo "${GITHUB_REPOSITORY}" --body "${body}"
-          echo 'repair_allowed=true' >> "${GITHUB_OUTPUT}"
-          echo "pr_number=${pr_number}" >> "${GITHUB_OUTPUT}"
-          echo "issue_number=${issue_number}" >> "${GITHUB_OUTPUT}"
-          echo "head_sha=${head_sha}" >> "${GITHUB_OUTPUT}"
-          echo "failed_run_id=${FAILED_RUN_ID}" >> "${GITHUB_OUTPUT}"
+          {
+            echo 'repair_allowed=true'
+            echo "pr_number=${pr_number}"
+            echo "issue_number=${issue_number}"
+            echo "head_sha=${head_sha}"
+            echo "failed_run_id=${FAILED_RUN_ID}"
+          } >> "${GITHUB_OUTPUT}"
 
       - name: Checkout the failed PR branch
         if: steps.context.outputs.repair_allowed == 'true'
@@ -135,7 +138,10 @@ jobs:
         shell: bash
         run: |
           current_sha="$(gh pr list --repo "${GITHUB_REPOSITORY}" --head "${HEAD_BRANCH}" --state open --json headRefOid --jq '.[0].headRefOid // empty')"
-          [ -n "${current_sha}" ] && [ "${current_sha}" != "${FAILED_SHA}" ] || { echo 'Claude CI repair produced no new commit.'; exit 1; }
+          if [ -z "${current_sha}" ] || [ "${current_sha}" = "${FAILED_SHA}" ]; then
+            echo 'Claude CI repair produced no new commit.'
+            exit 1
+          fi
           gh workflow run cloud-mule-ci.yml --repo "${GITHUB_REPOSITORY}" --ref "${HEAD_BRANCH}"
 
       - name: Record repair workflow failure

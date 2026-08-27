@@ -28,6 +28,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          merged_prs="$(gh pr list --repo "${GITHUB_REPOSITORY}" --state merged --limit 100 --json number,body)"
+          gh issue list --repo "${GITHUB_REPOSITORY}" --state open --label ready-for-agent --limit 100 \
+            --json number --jq '.[].number' |
+          while read -r issue; do
+            completed_pr="$(jq -r --arg issue "${issue}" \
+              'first(.[] | select(.body | test("(Fixes|Closes|Resolves) #" + $issue + "([^0-9]|$)"))) | .number // empty' \
+              <<<"${merged_prs}")"
+            [ -n "${completed_pr}" ] || continue
+            gh issue edit "${issue}" --repo "${GITHUB_REPOSITORY}" \
+              --remove-label automation:queued --remove-label automation:in-progress \
+              --remove-label automation:retry --remove-label automation:needs-attention \
+              --add-label automation:ready-for-user-testing >/dev/null
+            gh issue close "${issue}" --repo "${GITHUB_REPOSITORY}" \
+              --comment "Reconciled as completed by merged PR #${completed_pr}." >/dev/null
+          done
+
           gh pr list --repo "${GITHUB_REPOSITORY}" --state open --limit 100 \
             --json number,headRefName,headRefOid,body,isDraft --jq '.[] | @base64' |
           while read -r encoded; do
@@ -60,6 +77,12 @@ jobs:
                     --remove-label automation:in-progress --add-label automation:ready-for-user-testing >/dev/null
                 else
                   gh pr merge "${number}" --repo "${GITHUB_REPOSITORY}" --squash --delete-branch
+                  gh issue edit "${issue}" --repo "${GITHUB_REPOSITORY}" \
+                    --remove-label automation:queued --remove-label automation:in-progress \
+                    --remove-label automation:retry --remove-label automation:needs-attention \
+                    --add-label automation:ready-for-user-testing >/dev/null
+                  gh issue close "${issue}" --repo "${GITHUB_REPOSITORY}" \
+                    --comment "Completed by merged PR #${number} after exact-SHA CI and a clean independent Claude review." >/dev/null
                 fi
               elif grep -q '^VERDICT: BLOCKING' <<<"${review_body}"; then
                 reviewed_at="$(date -d "$(jq -r .created_at <<<"${review}")" +%s)"
@@ -116,7 +139,9 @@ jobs:
             if [ -n "${last_start}" ]; then
               run_id="$(sed -nE 's/.*claude-implementation-start:[0-9]+:([0-9]+).*/\1/p' <<<"${last_start}")"
               run_status="$(gh run view "${run_id}" --repo "${GITHUB_REPOSITORY}" --json status --jq .status 2>/dev/null || echo completed)"
-              [ "${run_status}" != queued ] && [ "${run_status}" != in_progress ] || continue
+              if [ "${run_status}" = queued ] || [ "${run_status}" = in_progress ]; then
+                continue
+              fi
             else
               updated_at="$(date -d "$(jq -r .updatedAt <<<"${issue_json}")" +%s)"
               now="$(date +%s)"

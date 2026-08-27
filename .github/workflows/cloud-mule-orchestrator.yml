@@ -66,9 +66,23 @@ jobs:
           fi
 
           selected=""
+          merged_prs="$(gh pr list --repo "${GITHUB_REPOSITORY}" --state merged --limit 100 --json number,body)"
           for number in "${candidates[@]}"; do
             issue_json="$(gh issue view "${number}" --repo "${GITHUB_REPOSITORY}" --json state,labels,body,title)"
             [ "$(jq -r .state <<<"${issue_json}")" = "OPEN" ] || continue
+
+            completed_pr="$(jq -r --arg issue "${number}" \
+              'first(.[] | select(.body | test("(Fixes|Closes|Resolves) #" + $issue + "([^0-9]|$)"))) | .number // empty' \
+              <<<"${merged_prs}")"
+            if [ -n "${completed_pr}" ]; then
+              gh issue edit "${number}" --repo "${GITHUB_REPOSITORY}" \
+                --remove-label automation:queued --remove-label automation:in-progress \
+                --remove-label automation:retry --remove-label automation:needs-attention \
+                --add-label automation:ready-for-user-testing >/dev/null
+              gh issue close "${number}" --repo "${GITHUB_REPOSITORY}" \
+                --comment "Reconciled as completed by merged PR #${completed_pr}." >/dev/null
+              continue
+            fi
             if jq -e '[.labels[].name] | any(. == "automation:in-progress" or . == "automation:queued" or . == "automation:needs-attention" or . == "automation:ready-for-user-testing" or . == "ready-for-human")' <<<"${issue_json}" >/dev/null; then
               continue
             fi
