@@ -289,6 +289,75 @@ public sealed class CloudCustodyRecordExclusivityTests
     }
 
     [TestMethod]
+    public async Task ConcurrentTransactions_WorldPossessionThenCloudCustody_SecondTransactionBlocksThenIsRejected()
+    {
+        var biotaId = NextBiotaId();
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, biotaId);
+
+        await using var worldConnection = new MySqlConnection(_fixture.AceShardConnectionString);
+        await worldConnection.OpenAsync();
+        await using var worldTransaction = await worldConnection.BeginTransactionAsync();
+
+        // Transaction A: grant world possession, left uncommitted (racing the boundary).
+        await GrantContainerAsync(worldConnection, biotaId, containerId: NextBiotaId(), worldTransaction);
+
+        await using var cloudConnection = new MySqlConnection(_fixture.CloudConnectionString);
+        await cloudConnection.OpenAsync();
+
+        // Transaction B: attempt a conflicting Cloud custody deposit for the same biota, concurrently.
+        var depositTask = InsertCustodyRecordAsync(cloudConnection, Guid.NewGuid(), biotaId, BoundShardId, Guid.NewGuid());
+
+        // A non-locking read here would let B race past A's uncommitted row; a deterministically
+        // locked check must block B until A resolves.
+        var completedFirst = await Task.WhenAny(depositTask, Task.Delay(TimeSpan.FromSeconds(2)));
+        Assert.AreNotSame(
+            depositTask,
+            completedFirst,
+            "Cloud custody deposit must block while a conflicting world-possession transaction is uncommitted, not race past a stale snapshot.");
+
+        await worldTransaction.CommitAsync();
+
+        // Once unblocked, B observes the now-committed world possession and is rejected.
+        var exception = await Assert.ThrowsExactlyAsync<MySqlException>(() => depositTask);
+        StringAssert.Contains(exception.Message, "world possession");
+
+        Assert.IsTrue(await AceShardTestData.HasContainerAsync(_fixture.AceShardConnectionString, biotaId));
+    }
+
+    [TestMethod]
+    public async Task ConcurrentTransactions_CloudCustodyThenWorldPossession_SecondTransactionBlocksThenIsRejected()
+    {
+        var biotaId = NextBiotaId();
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, biotaId);
+
+        await using var cloudConnection = new MySqlConnection(_fixture.CloudConnectionString);
+        await cloudConnection.OpenAsync();
+        await using var cloudTransaction = await cloudConnection.BeginTransactionAsync();
+
+        // Transaction A: deposit into Cloud custody, left uncommitted (racing the boundary).
+        await InsertCustodyRecordAsync(cloudConnection, Guid.NewGuid(), biotaId, BoundShardId, Guid.NewGuid(), cloudTransaction);
+
+        // Transaction B: attempt to grant conflicting world possession for the same biota, concurrently.
+        var grantTask = AceShardTestData.GrantContainerAsync(_fixture.AceShardConnectionString, biotaId, containerId: NextBiotaId());
+
+        // A non-locking read here would let B race past A's uncommitted row; a deterministically
+        // locked check must block B until A resolves.
+        var completedFirst = await Task.WhenAny(grantTask, Task.Delay(TimeSpan.FromSeconds(2)));
+        Assert.AreNotSame(
+            grantTask,
+            completedFirst,
+            "Granting Container world possession must block while a conflicting Cloud custody transaction is uncommitted, not race past a stale snapshot.");
+
+        await cloudTransaction.CommitAsync();
+
+        // Once unblocked, B observes the now-committed Cloud custody record and is rejected.
+        var exception = await Assert.ThrowsExactlyAsync<MySqlException>(() => grantTask);
+        StringAssert.Contains(exception.Message, "Cloud custody");
+
+        Assert.IsFalse(await AceShardTestData.HasContainerAsync(_fixture.AceShardConnectionString, biotaId));
+    }
+
+    [TestMethod]
     public async Task CloudCustodyBoundary_Deposit_RefusesWithTypedException_WhenBiotaHasWorldPossession()
     {
         var biotaId = NextBiotaId();
@@ -308,6 +377,23 @@ public sealed class CloudCustodyRecordExclusivityTests
     }
 
     private static uint NextBiotaId() => Interlocked.Increment(ref _nextBiotaId);
+
+    private static async Task GrantContainerAsync(
+        MySqlConnection connection,
+        uint biotaId,
+        uint containerId,
+        MySqlTransaction? transaction)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            INSERT INTO biota_properties_i_i_d (object_Id, type, value)
+            VALUES (@objectId, 2, @containerId);
+            """;
+        command.Parameters.AddWithValue("@objectId", biotaId);
+        command.Parameters.AddWithValue("@containerId", containerId);
+        await command.ExecuteNonQueryAsync();
+    }
 
     private static async Task InsertCustodyRecordAsync(
         MySqlConnection connection,

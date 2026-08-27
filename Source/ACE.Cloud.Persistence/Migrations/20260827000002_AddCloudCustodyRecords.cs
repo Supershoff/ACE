@@ -15,6 +15,12 @@ namespace ACE.Cloud.Persistence.Migrations;
 ///     currently has world possession, in ace_shard.
 ///   - ace_shard.biota_properties_i_i_d (Container/Wielder) and biota_properties_position
 ///     (Location) refuse a row for a biota that currently has a CloudCustodyRecord.
+/// Every cross-schema EXISTS subquery above uses FOR UPDATE: two overlapping, uncommitted
+/// transactions racing opposite directions of the boundary (one granting world possession, one
+/// depositing Cloud custody, for the same biota) must not both read an empty result from a stale
+/// snapshot. FOR UPDATE forces the second transaction's check to block on the first transaction's
+/// row/gap lock until it commits or rolls back, so the check that runs second always observes the
+/// first transaction's outcome instead of racing past it.
 /// Triggers run with definer privileges, so the narrowly privileged Cloud web identity (ARCH-004)
 /// never needs its own read/write grant on ace_shard to be protected by the ace_cloud-side guard.
 /// <see cref="CloudCustodyBoundary"/> adds a complementary application-level, commit-time
@@ -65,7 +71,7 @@ public sealed class AddCloudCustodyRecords : CloudSchemaMigrationStep
         BEFORE INSERT ON CloudCustodyRecord
         FOR EACH ROW
         BEGIN
-            IF NOT EXISTS (SELECT 1 FROM ace_shard.biota WHERE id = NEW.BiotaId) THEN
+            IF NOT EXISTS (SELECT 1 FROM ace_shard.biota WHERE id = NEW.BiotaId FOR UPDATE) THEN
                 SIGNAL SQLSTATE '45000'
                     SET MESSAGE_TEXT = 'Cloud Custody Record references a native biota that does not exist in ace_shard.';
             END IF;
@@ -73,9 +79,11 @@ public sealed class AddCloudCustodyRecords : CloudSchemaMigrationStep
             IF EXISTS (
                 SELECT 1 FROM ace_shard.biota_properties_i_i_d
                 WHERE object_Id = NEW.BiotaId AND type IN ({ContainerPropertyType}, {WielderPropertyType})
+                FOR UPDATE
             ) OR EXISTS (
                 SELECT 1 FROM ace_shard.biota_properties_position
                 WHERE object_Id = NEW.BiotaId AND position_Type = {LocationPositionType}
+                FOR UPDATE
             ) THEN
                 SIGNAL SQLSTATE '45000'
                     SET MESSAGE_TEXT = 'Biota currently has world possession (Container, Wielder, or Location) and cannot enter Cloud custody.';
@@ -88,7 +96,7 @@ public sealed class AddCloudCustodyRecords : CloudSchemaMigrationStep
         FOR EACH ROW
         BEGIN
             IF NEW.type IN ({ContainerPropertyType}, {WielderPropertyType})
-                AND EXISTS (SELECT 1 FROM ace_cloud.CloudCustodyRecord WHERE BiotaId = NEW.object_Id) THEN
+                AND EXISTS (SELECT 1 FROM ace_cloud.CloudCustodyRecord WHERE BiotaId = NEW.object_Id FOR UPDATE) THEN
                 SIGNAL SQLSTATE '45000'
                     SET MESSAGE_TEXT = 'Biota is in Cloud custody and cannot receive world possession (Container/Wielder).';
             END IF;
@@ -100,7 +108,7 @@ public sealed class AddCloudCustodyRecords : CloudSchemaMigrationStep
         FOR EACH ROW
         BEGIN
             IF NEW.type IN ({ContainerPropertyType}, {WielderPropertyType})
-                AND EXISTS (SELECT 1 FROM ace_cloud.CloudCustodyRecord WHERE BiotaId = NEW.object_Id) THEN
+                AND EXISTS (SELECT 1 FROM ace_cloud.CloudCustodyRecord WHERE BiotaId = NEW.object_Id FOR UPDATE) THEN
                 SIGNAL SQLSTATE '45000'
                     SET MESSAGE_TEXT = 'Biota is in Cloud custody and cannot receive world possession (Container/Wielder).';
             END IF;
@@ -112,7 +120,7 @@ public sealed class AddCloudCustodyRecords : CloudSchemaMigrationStep
         FOR EACH ROW
         BEGIN
             IF NEW.position_Type = {LocationPositionType}
-                AND EXISTS (SELECT 1 FROM ace_cloud.CloudCustodyRecord WHERE BiotaId = NEW.object_Id) THEN
+                AND EXISTS (SELECT 1 FROM ace_cloud.CloudCustodyRecord WHERE BiotaId = NEW.object_Id FOR UPDATE) THEN
                 SIGNAL SQLSTATE '45000'
                     SET MESSAGE_TEXT = 'Biota is in Cloud custody and cannot receive world possession (Location).';
             END IF;
@@ -124,7 +132,7 @@ public sealed class AddCloudCustodyRecords : CloudSchemaMigrationStep
         FOR EACH ROW
         BEGIN
             IF NEW.position_Type = {LocationPositionType}
-                AND EXISTS (SELECT 1 FROM ace_cloud.CloudCustodyRecord WHERE BiotaId = NEW.object_Id) THEN
+                AND EXISTS (SELECT 1 FROM ace_cloud.CloudCustodyRecord WHERE BiotaId = NEW.object_Id FOR UPDATE) THEN
                 SIGNAL SQLSTATE '45000'
                     SET MESSAGE_TEXT = 'Biota is in Cloud custody and cannot receive world possession (Location).';
             END IF;
