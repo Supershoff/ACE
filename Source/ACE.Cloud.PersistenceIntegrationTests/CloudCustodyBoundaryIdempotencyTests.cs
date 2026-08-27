@@ -89,6 +89,42 @@ public sealed class CloudCustodyBoundaryIdempotencyTests
     }
 
     [TestMethod]
+    public async Task ConcurrentDeposits_WithTheSameIdempotencyKey_BothReplayTheCommittedResult()
+    {
+        var biotaId = NextId();
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, biotaId);
+
+        var options = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
+
+        await using var contextA = new CloudDbContext(options);
+        await using var contextB = new CloudDbContext(options);
+        var boundaryA = new CloudCustodyBoundary(contextA);
+        var boundaryB = new CloudCustodyBoundary(contextB);
+
+        var ownerId = Guid.NewGuid();
+        var idempotencyKey = Guid.NewGuid();
+
+        // Both concurrent calls share the same idempotency key and target biota, modeling a caller
+        // that retries a slow-but-not-yet-failed deposit (transaction rules 4 and 8): the loser must
+        // replay the winner's committed result, not report a domain Conflict.
+        var taskA = boundaryA.DepositAsync(biotaId, ShardId, ownerId, idempotencyKey);
+        var taskB = boundaryB.DepositAsync(biotaId, ShardId, ownerId, idempotencyKey);
+
+        var results = await Task.WhenAll(taskA, taskB);
+
+        Assert.IsTrue(
+            results.All(r => r.Kind == CloudBoundaryOutcomeKind.Committed),
+            "Same-key concurrent deposits must both observe the committed replay, never a spurious Conflict.");
+        Assert.AreEqual(
+            results[0].Value!.Id, results[1].Value!.Id,
+            "Both callers must observe the same Cloud Custody Record.");
+
+        await using var verifyContext = new CloudDbContext(options);
+        Assert.AreEqual(1, await verifyContext.CloudCustodyRecords.CountAsync(r => r.BiotaId == biotaId));
+        Assert.AreEqual(1, await verifyContext.CloudIdempotencyRecords.CountAsync(r => r.IdempotencyKey == idempotencyKey));
+    }
+
+    [TestMethod]
     public async Task CallerTimeout_MustRequeryTheIdempotencyRecord_InsteadOfInferringFailure()
     {
         var biotaId = NextId();

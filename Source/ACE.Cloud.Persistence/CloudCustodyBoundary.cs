@@ -187,6 +187,19 @@ public sealed class CloudCustodyBoundary
         catch (DbUpdateException ex) when (IsDuplicateKey(ex))
         {
             await transaction.RollbackAsync(cancellationToken);
+
+            // A concurrent caller with the same idempotency key can lose this race (its
+            // CloudCustodyRecord insert collides with the winner's) without ever reaching the
+            // idempotency-record-write step itself. Re-checking here, after the winner's
+            // transaction has released the unique-index lock this insert collided on, lets this
+            // loser replay the winner's committed result instead of reporting an unrelated-looking
+            // domain Conflict (ARCH-006, transaction rules 4 and 8).
+            var winner = await FindIdempotencyRecordAsync(idempotencyKey, cancellationToken);
+            if (winner is not null)
+            {
+                return await ReplayDepositAsync(winner, cancellationToken);
+            }
+
             return CloudBoundaryOutcome<CloudCustodyRecord>.Conflict(
                 $"Biota {biotaId} already has a Cloud Custody Record.");
         }
@@ -234,6 +247,18 @@ public sealed class CloudCustodyBoundary
         if (record is null)
         {
             await transaction.RollbackAsync(cancellationToken);
+
+            // A concurrent caller with the same idempotency key can lose this race: it blocks on
+            // the winner's row lock and, once unblocked, observes the winner's delete instead of a
+            // row to withdraw. Re-checking here lets this loser replay the winner's committed
+            // result instead of reporting an unrelated-looking domain Conflict (ARCH-006,
+            // transaction rules 4 and 8).
+            var winner = await FindIdempotencyRecordAsync(idempotencyKey, cancellationToken);
+            if (winner is not null)
+            {
+                return ReplayWithdrawal(winner);
+            }
+
             return CloudBoundaryOutcome<CloudWithdrawalResult>.Conflict(
                 $"Cloud Custody Record {custodyRecordId} does not exist or was already withdrawn.");
         }

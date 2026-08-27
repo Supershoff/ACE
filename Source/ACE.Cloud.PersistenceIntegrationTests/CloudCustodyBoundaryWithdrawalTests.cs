@@ -157,6 +157,51 @@ public sealed class CloudCustodyBoundaryWithdrawalTests
     }
 
     [TestMethod]
+    public async Task ConcurrentWithdrawals_WithTheSameIdempotencyKey_BothReplayTheCommittedResult()
+    {
+        var biotaId = NextId();
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, biotaId);
+
+        var options = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
+
+        Guid custodyRecordId;
+        await using (var seedContext = new CloudDbContext(options))
+        {
+            var seedBoundary = new CloudCustodyBoundary(seedContext);
+            var depositOutcome = await seedBoundary.DepositAsync(biotaId, ShardId, Guid.NewGuid(), Guid.NewGuid());
+            custodyRecordId = depositOutcome.Value!.Id;
+        }
+
+        var recipientContainerId = NextId();
+
+        await using var contextA = new CloudDbContext(options);
+        await using var contextB = new CloudDbContext(options);
+        var boundaryA = new CloudCustodyBoundary(contextA);
+        var boundaryB = new CloudCustodyBoundary(contextB);
+
+        var idempotencyKey = Guid.NewGuid();
+
+        // Both concurrent calls share the same idempotency key and target custody record, modeling
+        // a caller that retries a slow-but-not-yet-failed withdrawal (transaction rules 4 and 8):
+        // the loser must replay the winner's committed result, not report a domain Conflict.
+        var taskA = boundaryA.WithdrawAsync(custodyRecordId, expectedVersion: 1, recipientContainerId, idempotencyKey);
+        var taskB = boundaryB.WithdrawAsync(custodyRecordId, expectedVersion: 1, recipientContainerId, idempotencyKey);
+
+        var results = await Task.WhenAll(taskA, taskB);
+
+        Assert.IsTrue(
+            results.All(r => r.Kind == CloudBoundaryOutcomeKind.Committed),
+            "Same-key concurrent withdrawals must both observe the committed replay, never a spurious Conflict.");
+        Assert.AreEqual(biotaId, results[0].Value!.BiotaId);
+        Assert.AreEqual(biotaId, results[1].Value!.BiotaId);
+        Assert.AreEqual(recipientContainerId, results[0].Value!.RecipientContainerId);
+        Assert.AreEqual(recipientContainerId, results[1].Value!.RecipientContainerId);
+
+        var containerRowCount = await AceShardTestData.CountContainerRowsAsync(_fixture.AceShardConnectionString, biotaId);
+        Assert.AreEqual(1, containerRowCount, "Replaying a committed withdrawal must not grant world possession a second time.");
+    }
+
+    [TestMethod]
     public async Task RepeatedIdempotencyKey_ForWithdrawal_ReplaysCommittedResult_WithoutReapplyingTheGrant()
     {
         var biotaId = NextId();
