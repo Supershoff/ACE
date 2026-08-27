@@ -5,12 +5,12 @@
     <LangVersion>latest</LangVersion>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>false</IsTestProject>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="MSTest" Version="4.0.2" />
-    <PackageReference Include="MySqlConnector" Version="2.6.2" />
-    <PackageReference Include="Testcontainers.MariaDb" Version="4.14.0" />
+    <PackageReference Include="MSTest.TestFramework" Version="4.0.2" />
   </ItemGroup>
 
   <ItemGroup>
@@ -20,8 +20,6 @@
   <ItemGroup>
     <ProjectReference Include="..\ACE.Cloud.Domain\ACE.Cloud.Domain.csproj" />
     <ProjectReference Include="..\ACE.Cloud.Contracts\ACE.Cloud.Contracts.csproj" />
-    <ProjectReference Include="..\ACE.Cloud.Persistence\ACE.Cloud.Persistence.csproj" />
-    <ProjectReference Include="..\ACE.Cloud.TestKit\ACE.Cloud.TestKit.csproj" />
   </ItemGroup>
 
 </Project>
