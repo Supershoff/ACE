@@ -49,24 +49,52 @@ jobs:
 
     steps:
       - name: Validate and claim the requested issue
+        id: claim
         env:
           GH_TOKEN: ${{ github.token }}
           ISSUE_NUMBER: ${{ inputs.issue_number }}
         shell: bash
         run: |
           set -euo pipefail
+          echo 'skip=true' >> "${GITHUB_OUTPUT}"
+          echo 'started=false' >> "${GITHUB_OUTPUT}"
 
           issue_json="$(gh issue view "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" --json state,labels,title,body)"
-          [ "$(jq -r .state <<<"${issue_json}")" = "OPEN" ] || { echo "Issue is not open."; exit 1; }
+          [ "$(jq -r .state <<<"${issue_json}")" = "OPEN" ] || { echo "Issue is already closed; nothing to implement."; exit 0; }
           jq -e '[.labels[].name] | any(. == "ready-for-agent")' <<<"${issue_json}" >/dev/null
           if jq -e '[.labels[].name] | any(. == "automation:needs-attention" or . == "ready-for-human")' <<<"${issue_json}" >/dev/null; then
             echo "Issue is intentionally blocked from autonomous implementation."
-            exit 1
+            exit 0
+          fi
+
+          completed_pr="$(gh pr list --repo "${GITHUB_REPOSITORY}" --state merged --limit 100 \
+            --json number,body --jq "first(.[] | select(.body | test(\"(Fixes|Closes|Resolves) #${ISSUE_NUMBER}([^0-9]|$)\"))) | .number // empty")"
+          if [ -n "${completed_pr}" ]; then
+            gh issue edit "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+              --remove-label automation:queued --remove-label automation:in-progress \
+              --remove-label automation:retry --remove-label automation:needs-attention \
+              --add-label automation:ready-for-user-testing
+            gh issue close "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+              --comment "Reconciled as completed by merged PR #${completed_pr}."
+            echo 'skip=true' >> "${GITHUB_OUTPUT}"
+            exit 0
           fi
 
           existing_pr="$(gh pr list --repo "${GITHUB_REPOSITORY}" --state open --limit 100 \
             --json number,body --jq "first(.[] | select(.body | test(\"(Fixes|Closes|Resolves) #${ISSUE_NUMBER}([^0-9]|$)\"))) | .number // empty")"
-          [ -z "${existing_pr}" ] || { echo "Issue already has PR #${existing_pr}; nothing to implement."; exit 1; }
+          if [ -n "${existing_pr}" ]; then
+            gh issue edit "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+              --remove-label automation:queued --add-label automation:in-progress
+            echo "Issue already has open PR #${existing_pr}; implementation is already owned."
+            exit 0
+          fi
+
+          gh issue edit "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+            --add-label automation:in-progress --remove-label automation:queued --remove-label automation:retry
+          gh issue comment "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+            --body "Claude implementation attempt started. <!-- claude-implementation-start:${ISSUE_NUMBER}:${GITHUB_RUN_ID} -->"
+          echo 'skip=false' >> "${GITHUB_OUTPUT}"
+          echo 'started=true' >> "${GITHUB_OUTPUT}"
 
           dependency_block="$(sed -n '/^## Dependencies$/,/^## Red/p' <<<"$(jq -r .body <<<"${issue_json}")")"
           while read -r dependency; do
@@ -75,17 +103,14 @@ jobs:
             [ "${state}" = "CLOSED" ] || { echo "Dependency #${dependency} is ${state}."; exit 1; }
           done < <(grep -oE '#[0-9]+' <<<"${dependency_block}" | tr -d '#' || true)
 
-          gh issue edit "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
-            --add-label automation:in-progress --remove-label automation:queued --remove-label automation:retry
-          gh issue comment "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
-            --body "Claude implementation attempt started. <!-- claude-implementation-start:${ISSUE_NUMBER}:${GITHUB_RUN_ID} -->"
-
       - name: Checkout complete repository history
+        if: steps.claim.outputs.skip == 'false'
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
 
       - name: Run Claude Code for the issue
+        if: steps.claim.outputs.skip == 'false'
         id: claude
         uses: anthropics/claude-code-action@62529b7c89dbb8cfaa838f2c87f2f8459b46fe68 # v1
         with:
@@ -113,7 +138,7 @@ jobs:
 
       - name: Resolve Claude's implementation branch
         id: branch
-        if: success()
+        if: success() && steps.claim.outputs.skip == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
           ACTION_BRANCH: ${{ steps.claude.outputs.branch_name }}
@@ -143,7 +168,7 @@ jobs:
           echo "name=${resolved}" >> "${GITHUB_OUTPUT}"
 
       - name: Open a draft pull request
-        if: success() && steps.branch.outputs.name != ''
+        if: success() && steps.claim.outputs.skip == 'false' && steps.branch.outputs.name != ''
         env:
           GH_TOKEN: ${{ github.token }}
           CLAUDE_BRANCH: ${{ steps.branch.outputs.name }}
@@ -168,23 +193,35 @@ jobs:
             --body "Claude opened ${pr_url}. It remains draft pending CI and independent Claude review."
           if ! gh workflow run cloud-mule-ci.yml --repo "${GITHUB_REPOSITORY}" --ref "${CLAUDE_BRANCH}"; then
             gh issue comment "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
-              --body "Initial CI dispatch was deferred to the scheduled reconciler; the PR remains in progress."
+              --body "Initial CI dispatch failed; waking the reconciler immediately. The PR remains in progress."
+            gh workflow run cloud-mule-reconcile.yml --repo "${GITHUB_REPOSITORY}" --ref master
           fi
 
       - name: Stop safely if Claude produced no branch
-        if: success() && steps.branch.outputs.name == ''
+        if: success() && steps.claim.outputs.skip == 'false' && steps.branch.outputs.name == ''
         env:
           GH_TOKEN: ${{ github.token }}
           ISSUE_NUMBER: ${{ inputs.issue_number }}
         shell: bash
         run: |
-          gh issue edit "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
-            --remove-label automation:needs-attention --add-label automation:in-progress --add-label automation:retry
-          gh issue comment "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
-            --body "Claude completed without producing an implementation branch. The scheduled reconciler will retry automatically; full Claude output is enabled for subsequent attempts. Run ${GITHUB_RUN_ID}."
+          attempts="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}/comments?per_page=100" \
+            --jq "[.[][] | select(.body | contains(\"<!-- claude-implementation-start:${ISSUE_NUMBER}:\"))] | length")"
+          if [ "${attempts}" -ge 3 ]; then
+            gh issue edit "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+              --remove-label automation:in-progress --remove-label automation:retry \
+              --add-label automation:needs-attention
+            gh issue comment "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+              --body "Automation stopped after three implementation attempts produced no branch. Full output is available in run ${GITHUB_RUN_ID}; human investigation is now required."
+          else
+            gh issue edit "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+              --remove-label automation:needs-attention --add-label automation:in-progress --add-label automation:retry
+            gh issue comment "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+              --body "Claude produced no implementation branch on attempt ${attempts}/3. Retrying immediately with full output enabled. Run ${GITHUB_RUN_ID}."
+            gh workflow run claude.yml --repo "${GITHUB_REPOSITORY}" --ref master -f issue_number="${ISSUE_NUMBER}"
+          fi
 
       - name: Record automation failure
-        if: failure()
+        if: failure() && steps.claim.outputs.started == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           ISSUE_NUMBER: ${{ inputs.issue_number }}
@@ -199,8 +236,19 @@ jobs:
               --body "Implementation produced PR #${existing_pr}; a later handoff failed and will be recovered by the scheduled reconciler. Run ${GITHUB_RUN_ID}." || true
             exit 0
           fi
-          gh issue edit "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
-            --remove-label automation:queued --remove-label automation:needs-attention \
-            --add-label automation:in-progress --add-label automation:retry || true
-          gh issue comment "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
-            --body "Claude automation failed. The scheduled reconciler will retry automatically up to the configured attempt limit. Inspect run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}." || true
+          attempts="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}/comments?per_page=100" \
+            --jq "[.[][] | select(.body | contains(\"<!-- claude-implementation-start:${ISSUE_NUMBER}:\"))] | length" 2>/dev/null || echo 3)"
+          if [ "${attempts}" -ge 3 ]; then
+            gh issue edit "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+              --remove-label automation:queued --remove-label automation:in-progress --remove-label automation:retry \
+              --add-label automation:needs-attention || true
+            gh issue comment "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+              --body "Automation stopped after three failed implementation attempts. Inspect ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}." || true
+          else
+            gh issue edit "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+              --remove-label automation:queued --remove-label automation:needs-attention \
+              --add-label automation:in-progress --add-label automation:retry || true
+            gh issue comment "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+              --body "Claude implementation attempt ${attempts}/3 failed and will retry immediately. Inspect ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}." || true
+            gh workflow run claude.yml --repo "${GITHUB_REPOSITORY}" --ref master -f issue_number="${ISSUE_NUMBER}" || true
+          fi

@@ -66,11 +66,13 @@ jobs:
 
           repair_count="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/comments?per_page=100" \
             --jq '[.[] | select(.body | contains("<!-- claude-review-repair:"))] | length')"
-          echo 'skip=false' >> "${GITHUB_OUTPUT}"
-          echo "pr_number=${pr_number}" >> "${GITHUB_OUTPUT}"
-          echo "issue_number=${issue_number}" >> "${GITHUB_OUTPUT}"
-          echo "head_sha=${head_sha}" >> "${GITHUB_OUTPUT}"
-          echo "repair_count=${repair_count}" >> "${GITHUB_OUTPUT}"
+          {
+            echo 'skip=false'
+            echo "pr_number=${pr_number}"
+            echo "issue_number=${issue_number}"
+            echo "head_sha=${head_sha}"
+            echo "repair_count=${repair_count}"
+          } >> "${GITHUB_OUTPUT}"
 
       - name: Checkout the exact tested revision
         if: steps.prepare.outputs.skip == 'false'
@@ -241,6 +243,12 @@ jobs:
           fi
 
           gh pr merge "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" --squash --delete-branch
+          gh issue edit "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+            --remove-label automation:queued --remove-label automation:in-progress \
+            --remove-label automation:retry --remove-label automation:needs-attention \
+            --add-label automation:ready-for-user-testing
+          gh issue close "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+            --comment "Completed by merged PR #${PR_NUMBER} after exact-SHA CI and a clean independent Claude review."
           gh workflow run cloud-mule-orchestrator.yml --repo "${GITHUB_REPOSITORY}" --ref master -f dry_run=false
 
       - name: Stop safely when review automation fails

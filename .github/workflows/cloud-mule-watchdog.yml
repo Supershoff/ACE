@@ -1,0 +1,35 @@
+name: Cloud Mule watchdog
+
+on:
+  workflow_run:
+    workflows:
+      - Cloud Mule orchestrator
+      - Claude implementation
+      - Cloud Mule CI
+      - Claude CI repair
+      - Claude code review
+    types: [completed]
+  workflow_dispatch:
+
+concurrency:
+  group: cloud-mule-watchdog
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  wake-reconciler:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (vars.CLOUD_MULE_AUTOMATION_ENABLED == 'true' &&
+        github.event.workflow_run.conclusion != 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Reconcile durable state after every pipeline terminal event
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: gh workflow run cloud-mule-reconcile.yml --repo "${GITHUB_REPOSITORY}" --ref master
