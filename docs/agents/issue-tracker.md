@@ -12,3 +12,12 @@ Issues and implementation plans for this repository live in GitHub Issues on `Su
 - **Close an issue**: `gh issue close <number> --repo Supershoff/ACE --comment "..."`.
 
 When an engineering skill says to publish to the issue tracker, create a GitHub issue in `Supershoff/ACE`. When it says to fetch a relevant ticket, read that issue and its comments and labels.
+
+## Active implementation plan
+
+AC Cloud Mule version-one work is tracked by [GitHub issue #60](https://github.com/Supershoff/ACE/issues/60) and its ten ordered milestones. Before starting an implementation issue:
+
+1. Confirm every dependency listed in the issue is closed and the preceding phase gate passed.
+2. Implement one focused issue per pull request using its Red → Green → Refactor instructions.
+3. Link the pull request to the issue and include its automated and required manual acceptance evidence.
+4. Do not post or commit private DAT files, extracted client art, captures, credentials, secrets, or absolute operator paths.
