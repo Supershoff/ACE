@@ -6,7 +6,24 @@ namespace ACE.Cloud.Domain;
 /// </summary>
 public static class CloudCompatibilityChecker
 {
-    public static CloudCompatibilityResult Evaluate(CloudComponentVersions expected, CloudComponentVersions actual)
+    /// <summary>
+    /// Evaluates compatibility requiring every component -- including the contract protocol -- to
+    /// match exactly. This is the default, most conservative policy and remains unchanged so
+    /// existing callers keep their current exact-match behavior.
+    /// </summary>
+    public static CloudCompatibilityResult Evaluate(CloudComponentVersions expected, CloudComponentVersions actual) =>
+        Evaluate(expected, actual, supportedProtocolWindow: null);
+
+    /// <summary>
+    /// Evaluates compatibility the same way as <see cref="Evaluate(CloudComponentVersions, CloudComponentVersions)"/>,
+    /// except that when <paramref name="supportedProtocolWindow"/> is supplied, the contract
+    /// protocol version only needs to fall within that declared inclusive range rather than match
+    /// <paramref name="expected"/> exactly (OPS-002: "declare supported ACE releases" and "use
+    /// versioned forward migrations"). The ACE extension and Cloud schema versions always require
+    /// an exact match regardless of this parameter.
+    /// </summary>
+    public static CloudCompatibilityResult Evaluate(
+        CloudComponentVersions expected, CloudComponentVersions actual, CloudSupportedProtocolWindow? supportedProtocolWindow)
     {
         ArgumentNullException.ThrowIfNull(expected);
         ArgumentNullException.ThrowIfNull(actual);
@@ -25,11 +42,21 @@ public static class CloudCompatibilityChecker
                 $"Cloud schema version mismatch: expected {expected.CloudSchemaVersion}, found {actual.CloudSchemaVersion}.");
         }
 
-        if (!string.Equals(expected.ContractProtocolVersion, actual.ContractProtocolVersion, StringComparison.Ordinal))
+        if (supportedProtocolWindow is null)
+        {
+            if (!string.Equals(expected.ContractProtocolVersion, actual.ContractProtocolVersion, StringComparison.Ordinal))
+            {
+                return CloudCompatibilityResult.Incompatible(
+                    CloudVersionComponent.ContractProtocol,
+                    $"Contract protocol version mismatch: expected {expected.ContractProtocolVersion}, found {actual.ContractProtocolVersion}.");
+            }
+        }
+        else if (!CloudProtocolVersion.TryParse(actual.ContractProtocolVersion, out var actualProtocolVersion) ||
+                 !supportedProtocolWindow.Contains(actualProtocolVersion))
         {
             return CloudCompatibilityResult.Incompatible(
                 CloudVersionComponent.ContractProtocol,
-                $"Contract protocol version mismatch: expected {expected.ContractProtocolVersion}, found {actual.ContractProtocolVersion}.");
+                $"Contract protocol version {actual.ContractProtocolVersion} is outside the declared supported window {supportedProtocolWindow}.");
         }
 
         return CloudCompatibilityResult.Compatible();
