@@ -1,0 +1,58 @@
+name: Codex review watchdog
+
+on:
+  schedule:
+    - cron: '13,43 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  detect-missing-review:
+    if: github.event_name == 'workflow_dispatch' || vars.CLOUD_MULE_AUTOMATION_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Stop PRs whose current-SHA Codex request has no review
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          now="$(date +%s)"
+          gh pr list --repo "${GITHUB_REPOSITORY}" --state open --limit 100 \
+            --json number,headRefName,headRefOid,body --jq '.[] | @base64' |
+          while read -r encoded; do
+            pr="$(base64 -d <<<"${encoded}")"
+            branch="$(jq -r .headRefName <<<"${pr}")"
+            [[ "${branch}" == claude/* ]] || continue
+            number="$(jq -r .number <<<"${pr}")"
+            sha="$(jq -r .headRefOid <<<"${pr}")"
+            issue="$(sed -nE 's/.*(Fixes|Closes|Resolves) #([0-9]+).*/\2/p' <<<"$(jq -r .body <<<"${pr}")" | head -n 1)"
+            [ -n "${issue}" ] || continue
+
+            request_json="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${number}/comments?per_page=100" \
+              --jq "[.[] | select(.body | contains(\"<!-- codex-auto-review:${sha} -->\"))] | last // empty")"
+            [ -n "${request_json}" ] || continue
+            requested_at="$(date -d "$(jq -r .created_at <<<"${request_json}")" +%s)"
+            [ $((now - requested_at)) -ge 2700 ] || continue
+
+            reviewed="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${number}/reviews" \
+              --jq "[.[] | select(.user.login == \"chatgpt-codex-connector[bot]\" or .user.login == \"chatgpt-codex-connector\") | select(.commit_id == \"${sha}\")] | length")"
+            [ "${reviewed}" -eq 0 ] || continue
+
+            marker="<!-- codex-review-timeout:${sha} -->"
+            existing="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${number}/comments?per_page=100" \
+              --jq ".[] | select(.body | contains(\"${marker}\")) | .id")"
+            [ -z "${existing}" ] || continue
+
+            gh issue edit "${issue}" --repo "${GITHUB_REPOSITORY}" \
+              --remove-label automation:in-progress --add-label automation:needs-attention
+            gh pr comment "${number}" --repo "${GITHUB_REPOSITORY}" \
+              --body "Codex did not submit a review for ${sha} within 45 minutes. Automation stopped. Verify Codex Cloud and Code Review are enabled for this repository.
+
+${marker}"
+          done

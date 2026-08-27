@@ -21,3 +21,5 @@ AC Cloud Mule version-one work is tracked by [GitHub issue #60](https://github.c
 2. Implement one focused issue per pull request using its Red → Green → Refactor instructions.
 3. Link the pull request to the issue and include its automated and required manual acceptance evidence.
 4. Do not post or commit private DAT files, extracted client art, captures, credentials, secrets, or absolute operator paths.
+
+See `docs/agents/automation.md` for the unattended issue-to-PR pipeline, state labels, repair limit, human gates, and emergency stop.
