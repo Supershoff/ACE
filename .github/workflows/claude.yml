@@ -104,11 +104,42 @@ jobs:
             --allowedTools "Read,Write,Edit,Glob,Grep,Bash(git fetch:*),Bash(git status:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(git branch:*),Bash(git switch:*),Bash(git checkout:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(dotnet new:*),Bash(dotnet sln:*),Bash(dotnet add:*),Bash(dotnet restore:*),Bash(dotnet build:*),Bash(dotnet test:*),Bash(npm ci:*),Bash(npm test:*),Bash(npm run:*),Bash(pnpm:*),Bash(gh issue view:*),Bash(gh issue comment:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh run view:*),Bash(gh run list:*)"
             --disallowedTools "Bash(git push --force:*),Bash(git push --force-with-lease:*),Bash(git reset --hard:*),Bash(git clean:*),Bash(git merge:*),Bash(gh pr merge:*),Bash(gh repo delete:*),Bash(sudo:*),Bash(ssh:*),Bash(scp:*)"
 
-      - name: Open a draft pull request
-        if: success() && steps.claude.outputs.branch_name != ''
+      - name: Resolve Claude's implementation branch
+        id: branch
+        if: success()
         env:
           GH_TOKEN: ${{ github.token }}
-          CLAUDE_BRANCH: ${{ steps.claude.outputs.branch_name }}
+          ACTION_BRANCH: ${{ steps.claude.outputs.branch_name }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          resolved="${ACTION_BRANCH}"
+
+          if [ -z "${resolved}" ]; then
+            candidates="${RUNNER_TEMP}/claude-branch-candidates.tsv"
+            : > "${candidates}"
+            while read -r branch; do
+              name="$(jq -r .name <<<"${branch}")"
+              [[ "${name}" == claude/* ]] || continue
+              sha="$(jq -r .commit.sha <<<"${branch}")"
+              commit="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${sha}")"
+              message="$(jq -r .commit.message <<<"${commit}")"
+              grep -Eq "#${ISSUE_NUMBER}([^0-9]|$)" <<<"${message}" || continue
+              date="$(jq -r .commit.committer.date <<<"${commit}")"
+              printf '%s\t%s\n' "${date}" "${name}" >> "${candidates}"
+            done < <(gh api --paginate "repos/${GITHUB_REPOSITORY}/branches?per_page=100" --jq '.[] | @base64' |
+              while read -r encoded; do base64 -d <<<"${encoded}"; echo; done)
+            resolved="$(sort -r "${candidates}" | head -n 1 | cut -f 2-)"
+          fi
+
+          echo "name=${resolved}" >> "${GITHUB_OUTPUT}"
+
+      - name: Open a draft pull request
+        if: success() && steps.branch.outputs.name != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLAUDE_BRANCH: ${{ steps.branch.outputs.name }}
           ISSUE_NUMBER: ${{ inputs.issue_number }}
         shell: bash
         run: |
@@ -130,7 +161,7 @@ jobs:
             --body "Claude opened ${pr_url}. It remains draft pending CI and Codex review."
 
       - name: Stop safely if Claude produced no branch
-        if: success() && steps.claude.outputs.branch_name == ''
+        if: success() && steps.branch.outputs.name == ''
         env:
           GH_TOKEN: ${{ github.token }}
           ISSUE_NUMBER: ${{ inputs.issue_number }}
