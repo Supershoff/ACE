@@ -52,6 +52,30 @@ internal static class AceShardTestData
 
     public static async Task<bool> HasContainerAsync(string aceShardConnectionString, uint biotaId)
     {
+        var count = await CountContainerRowsAsync(aceShardConnectionString, biotaId);
+        return count > 0;
+    }
+
+    public static async Task<bool> HasSpecificContainerAsync(string aceShardConnectionString, uint biotaId, uint containerId)
+    {
+        await using var connection = new MySqlConnection(aceShardConnectionString);
+        await connection.OpenAsync();
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT COUNT(*) FROM biota_properties_i_i_d
+            WHERE object_Id = @objectId AND type = @type AND value = @containerId;
+            """;
+        command.Parameters.AddWithValue("@objectId", biotaId);
+        command.Parameters.AddWithValue("@type", ContainerPropertyType);
+        command.Parameters.AddWithValue("@containerId", containerId);
+
+        var count = (long)(await command.ExecuteScalarAsync())!;
+        return count > 0;
+    }
+
+    public static async Task<long> CountContainerRowsAsync(string aceShardConnectionString, uint biotaId)
+    {
         await using var connection = new MySqlConnection(aceShardConnectionString);
         await connection.OpenAsync();
 
@@ -62,8 +86,7 @@ internal static class AceShardTestData
         command.Parameters.AddWithValue("@objectId", biotaId);
         command.Parameters.AddWithValue("@type", ContainerPropertyType);
 
-        var count = (long)(await command.ExecuteScalarAsync())!;
-        return count > 0;
+        return (long)(await command.ExecuteScalarAsync())!;
     }
 
     private static async Task InsertIidPropertyAsync(
