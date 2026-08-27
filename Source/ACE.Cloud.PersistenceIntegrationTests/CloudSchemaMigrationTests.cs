@@ -40,8 +40,12 @@ public sealed class CloudSchemaMigrationTests
         // The fixture's startup already applied every migration; confirm that baseline.
         await AssertAppliedAsync(connectionString, "20260827000002_AddCloudCustodyRecords");
         await AssertAppliedAsync(connectionString, "20260827000003_ProtectCloudCustodyBiotaFromDeletion");
+        await AssertAppliedAsync(connectionString, "20260827000004_AddIdempotencyAndLedgerOutbox");
         Assert.IsTrue(await TableExistsAsync(connectionString, "CloudCustodyRecord"));
         Assert.IsTrue(await TableExistsAsync(connectionString, "CloudShardBinding"));
+        Assert.IsTrue(await TableExistsAsync(connectionString, "CloudIdempotencyRecord"));
+        Assert.IsTrue(await TableExistsAsync(connectionString, "CloudActivityLedgerEvent"));
+        Assert.IsTrue(await TableExistsAsync(connectionString, "CloudCustodyOutboxEvent"));
 
         var shardId = await SeedShardBindingAsync(connectionString);
 
@@ -53,6 +57,9 @@ public sealed class CloudSchemaMigrationTests
             Assert.IsFalse(
                 await TableExistsAsync(connectionString, "CloudCustodyRecord"),
                 $"CloudCustodyRecord must not exist after rollback (repetition {repetition}).");
+            Assert.IsFalse(await TableExistsAsync(connectionString, "CloudIdempotencyRecord"));
+            Assert.IsFalse(await TableExistsAsync(connectionString, "CloudActivityLedgerEvent"));
+            Assert.IsFalse(await TableExistsAsync(connectionString, "CloudCustodyOutboxEvent"));
 
             // ...while unrelated data from the still-applied migration is untouched.
             Assert.IsTrue(await TableExistsAsync(connectionString, "CloudShardBinding"));
@@ -62,8 +69,12 @@ public sealed class CloudSchemaMigrationTests
             await CloudSchemaMigrator.MigrateAsync(connectionString);
 
             Assert.IsTrue(await TableExistsAsync(connectionString, "CloudCustodyRecord"));
+            Assert.IsTrue(await TableExistsAsync(connectionString, "CloudIdempotencyRecord"));
+            Assert.IsTrue(await TableExistsAsync(connectionString, "CloudActivityLedgerEvent"));
+            Assert.IsTrue(await TableExistsAsync(connectionString, "CloudCustodyOutboxEvent"));
             await AssertAppliedAsync(connectionString, "20260827000002_AddCloudCustodyRecords");
             await AssertAppliedAsync(connectionString, "20260827000003_ProtectCloudCustodyBiotaFromDeletion");
+            await AssertAppliedAsync(connectionString, "20260827000004_AddIdempotencyAndLedgerOutbox");
             await AssertCustodySchemaIsFunctionalAsync(connectionString, repetition);
         }
 
@@ -71,14 +82,21 @@ public sealed class CloudSchemaMigrationTests
         await CloudSchemaMigrator.RollbackToAsync(connectionString, targetMigrationId: null);
         Assert.IsFalse(await TableExistsAsync(connectionString, "CloudCustodyRecord"));
         Assert.IsFalse(await TableExistsAsync(connectionString, "CloudShardBinding"));
+        Assert.IsFalse(await TableExistsAsync(connectionString, "CloudIdempotencyRecord"));
+        Assert.IsFalse(await TableExistsAsync(connectionString, "CloudActivityLedgerEvent"));
+        Assert.IsFalse(await TableExistsAsync(connectionString, "CloudCustodyOutboxEvent"));
 
         // Re-applying from empty must be just as repeatable as the partial case above.
         await CloudSchemaMigrator.MigrateAsync(connectionString);
         Assert.IsTrue(await TableExistsAsync(connectionString, "CloudCustodyRecord"));
         Assert.IsTrue(await TableExistsAsync(connectionString, "CloudShardBinding"));
+        Assert.IsTrue(await TableExistsAsync(connectionString, "CloudIdempotencyRecord"));
+        Assert.IsTrue(await TableExistsAsync(connectionString, "CloudActivityLedgerEvent"));
+        Assert.IsTrue(await TableExistsAsync(connectionString, "CloudCustodyOutboxEvent"));
         await AssertAppliedAsync(connectionString, InitialMigrationId);
         await AssertAppliedAsync(connectionString, "20260827000002_AddCloudCustodyRecords");
         await AssertAppliedAsync(connectionString, "20260827000003_ProtectCloudCustodyBiotaFromDeletion");
+        await AssertAppliedAsync(connectionString, "20260827000004_AddIdempotencyAndLedgerOutbox");
     }
 
     private static async Task<string> SeedShardBindingAsync(string connectionString)

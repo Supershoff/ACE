@@ -18,6 +18,12 @@ public sealed class CloudDbContext : DbContext
 
     public DbSet<CloudCustodyRecord> CloudCustodyRecords => Set<CloudCustodyRecord>();
 
+    public DbSet<CloudIdempotencyRecord> CloudIdempotencyRecords => Set<CloudIdempotencyRecord>();
+
+    public DbSet<CloudActivityLedgerEvent> CloudActivityLedgerEvents => Set<CloudActivityLedgerEvent>();
+
+    public DbSet<CloudCustodyOutboxEvent> CloudCustodyOutboxEvents => Set<CloudCustodyOutboxEvent>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<CloudShardBinding>(entity =>
@@ -76,6 +82,97 @@ public sealed class CloudDbContext : DbContext
             entity.Property(record => record.UpdatedAtUtc)
                 .IsRequired()
                 .ValueGeneratedOnAddOrUpdate()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudIdempotencyRecord>(entity =>
+        {
+            entity.ToTable("CloudIdempotencyRecord");
+
+            // ARCH-006 / transaction rule 4: the primary key is the idempotency key itself, so a
+            // repeated request cannot insert a second row for the same key.
+            entity.HasKey(record => record.IdempotencyKey);
+            entity.Property(record => record.IdempotencyKey).ValueGeneratedNever();
+
+            entity.Property(record => record.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(record => record.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(record => record.OperationType).IsRequired().HasConversion<string>().HasMaxLength(32);
+            entity.Property(record => record.BiotaId).IsRequired();
+            entity.Property(record => record.OwnerId).IsRequired();
+
+            // Not a foreign key: a withdrawal deletes its CloudCustodyRecord in the same
+            // transaction that writes this row, so the referenced row legitimately may not exist.
+            entity.Property(record => record.CustodyRecordId);
+
+            entity.Property(record => record.TargetContainerId);
+            entity.Property(record => record.CorrelationId).IsRequired();
+
+            entity.Property(record => record.CreatedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAdd()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudActivityLedgerEvent>(entity =>
+        {
+            entity.ToTable("CloudActivityLedgerEvent");
+
+            entity.HasKey(evt => evt.Id);
+            entity.Property(evt => evt.Id).ValueGeneratedNever();
+
+            entity.Property(evt => evt.CorrelationId).IsRequired();
+            entity.HasIndex(evt => evt.CorrelationId);
+
+            entity.Property(evt => evt.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(evt => evt.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(evt => evt.EventType).IsRequired().HasConversion<string>().HasMaxLength(32);
+            entity.Property(evt => evt.BiotaId).IsRequired();
+            entity.HasIndex(evt => evt.BiotaId);
+            entity.Property(evt => evt.OwnerId).IsRequired();
+            entity.Property(evt => evt.Outcome).IsRequired().HasConversion<string>().HasMaxLength(16);
+            entity.Property(evt => evt.Reason).HasMaxLength(512);
+
+            // Database time (transaction rule 1), not application time.
+            entity.Property(evt => evt.OccurredAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAdd()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudCustodyOutboxEvent>(entity =>
+        {
+            entity.ToTable("CloudCustodyOutboxEvent");
+
+            entity.HasKey(evt => evt.Id);
+            entity.Property(evt => evt.Id).ValueGeneratedNever();
+
+            entity.Property(evt => evt.CorrelationId).IsRequired();
+            entity.HasIndex(evt => evt.CorrelationId);
+
+            entity.Property(evt => evt.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(evt => evt.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(evt => evt.EventType).IsRequired().HasConversion<string>().HasMaxLength(32);
+            entity.Property(evt => evt.BiotaId).IsRequired();
+            entity.Property(evt => evt.OwnerId).IsRequired();
+
+            entity.Property(evt => evt.CreatedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAdd()
                 .HasDefaultValueSql("CURRENT_TIMESTAMP");
         });
     }

@@ -35,28 +35,7 @@ public sealed class CloudCustodyRecordExclusivityTests
     [TestInitialize]
     public async Task TestInitialize()
     {
-        await using var connection = new MySqlConnection(_fixture.CloudConnectionString);
-        await connection.OpenAsync();
-
-        await using (var deleteCustody = connection.CreateCommand())
-        {
-            deleteCustody.CommandText = "DELETE FROM CloudCustodyRecord;";
-            await deleteCustody.ExecuteNonQueryAsync();
-        }
-
-        await using (var deleteBinding = connection.CreateCommand())
-        {
-            deleteBinding.CommandText = "DELETE FROM CloudShardBinding;";
-            await deleteBinding.ExecuteNonQueryAsync();
-        }
-
-        await using var insertBinding = connection.CreateCommand();
-        insertBinding.CommandText = """
-            INSERT INTO CloudShardBinding (Id, ShardId, SchemaVersion, AceExtensionVersion, ContractProtocolVersion)
-            VALUES (1, @shardId, '0.1.0', '0.1.0', '0.1.0');
-            """;
-        insertBinding.Parameters.AddWithValue("@shardId", BoundShardId);
-        await insertBinding.ExecuteNonQueryAsync();
+        await CloudBoundaryTestFixtureData.ResetAsync(_fixture.CloudConnectionString, BoundShardId);
     }
 
     [TestMethod]
@@ -305,12 +284,13 @@ public sealed class CloudCustodyRecordExclusivityTests
         var boundary = new CloudCustodyBoundary(context);
 
         var ownerId = Guid.NewGuid();
-        var ledgerCorrelationId = Guid.NewGuid();
+        var idempotencyKey = Guid.NewGuid();
 
-        var record = await boundary.DepositAsync(biotaId, BoundShardId, ownerId, ledgerCorrelationId);
+        var outcome = await boundary.DepositAsync(biotaId, BoundShardId, ownerId, idempotencyKey);
 
-        Assert.AreEqual(biotaId, record.BiotaId);
-        Assert.AreEqual(ownerId, record.OwnerId);
+        Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, outcome.Kind);
+        Assert.AreEqual(biotaId, outcome.Value!.BiotaId);
+        Assert.AreEqual(ownerId, outcome.Value!.OwnerId);
 
         await using var verifyContext = new CloudDbContext(options);
         var persisted = await verifyContext.CloudCustodyRecords.SingleAsync(r => r.BiotaId == biotaId);
@@ -387,7 +367,7 @@ public sealed class CloudCustodyRecordExclusivityTests
     }
 
     [TestMethod]
-    public async Task CloudCustodyBoundary_Deposit_RefusesWithTypedException_WhenBiotaHasWorldPossession()
+    public async Task CloudCustodyBoundary_Deposit_RefusesWithExplicitConflictOutcome_WhenBiotaHasWorldPossession()
     {
         var biotaId = NextBiotaId();
         await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, biotaId);
@@ -397,8 +377,10 @@ public sealed class CloudCustodyRecordExclusivityTests
         await using var context = new CloudDbContext(options);
         var boundary = new CloudCustodyBoundary(context);
 
-        await Assert.ThrowsExactlyAsync<CloudCustodyConflictException>(
-            () => boundary.DepositAsync(biotaId, BoundShardId, Guid.NewGuid(), Guid.NewGuid()));
+        var outcome = await boundary.DepositAsync(biotaId, BoundShardId, Guid.NewGuid(), Guid.NewGuid());
+
+        Assert.AreEqual(CloudBoundaryOutcomeKind.Conflict, outcome.Kind);
+        StringAssert.Contains(outcome.Reason, "world possession");
 
         await using var verifyContext = new CloudDbContext(options);
         var count = await verifyContext.CloudCustodyRecords.CountAsync(r => r.BiotaId == biotaId);
