@@ -79,6 +79,7 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           allowed_bots: chatgpt-codex-connector
+          track_progress: true
           prompt: >-
             Address every actionable P0/P1 finding in the submitted Codex review for this existing
             pull request. Read the linked issue, AGENTS.md Code Review Rules, full diff, review body,
@@ -91,7 +92,7 @@ jobs:
           claude_args: |
             --max-turns 200
             --append-system-prompt "Continue on the existing PR branch. Preserve issue scope and report exact verification results."
-            --allowedTools "Read,Write,Edit,Glob,Grep,Bash(git fetch:*),Bash(git status:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(dotnet restore:*),Bash(dotnet build:*),Bash(dotnet test:*),Bash(npm ci:*),Bash(npm test:*),Bash(npm run:*),Bash(pnpm:*),Bash(gh issue view:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh run view:*),Bash(gh run list:*)"
+            --allowedTools "Read,Write,Edit,Glob,Grep,Bash(git fetch:*),Bash(git status:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(git branch:*),Bash(git switch:*),Bash(git checkout:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(dotnet new:*),Bash(dotnet sln:*),Bash(dotnet add:*),Bash(dotnet restore:*),Bash(dotnet build:*),Bash(dotnet test:*),Bash(npm ci:*),Bash(npm test:*),Bash(npm run:*),Bash(pnpm:*),Bash(gh issue view:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh run view:*),Bash(gh run list:*)"
             --disallowedTools "Bash(git push --force:*),Bash(git push --force-with-lease:*),Bash(git reset --hard:*),Bash(git clean:*),Bash(git merge:*),Bash(gh pr merge:*),Bash(gh repo delete:*),Bash(sudo:*),Bash(ssh:*),Bash(scp:*)"
 
       - name: Record correction attempt
