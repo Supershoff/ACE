@@ -51,8 +51,7 @@ jobs:
 
             gh issue edit "${issue}" --repo "${GITHUB_REPOSITORY}" \
               --remove-label automation:in-progress --add-label automation:needs-attention
+            body="$(printf 'Codex did not submit a review for %s within 45 minutes. Automation stopped. Verify Codex Cloud and Code Review are enabled for this repository.\n\n%s' "${sha}" "${marker}")"
             gh pr comment "${number}" --repo "${GITHUB_REPOSITORY}" \
-              --body "Codex did not submit a review for ${sha} within 45 minutes. Automation stopped. Verify Codex Cloud and Code Review are enabled for this repository.
-
-${marker}"
+              --body "${body}"
           done

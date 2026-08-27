@@ -104,10 +104,9 @@ jobs:
         shell: bash
         run: |
           next=$((REPAIR_NUMBER + 1))
+          body="$(printf 'Claude addressed Codex findings from %s. CI and Codex review will repeat for the new SHA.\n\n<!-- claude-codex-repair:%s -->' "${REVIEW_SHA}" "${next}")"
           gh pr comment "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
-            --body "Claude addressed Codex findings from ${REVIEW_SHA}. CI and Codex review will repeat for the new SHA.
-
-<!-- claude-codex-repair:${next} -->"
+            --body "${body}"
 
       - name: Stop after repair failure
         if: failure()
