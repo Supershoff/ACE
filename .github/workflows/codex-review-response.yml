@@ -1,0 +1,171 @@
+name: Codex review response
+
+on:
+  pull_request_review:
+    types: [submitted]
+
+concurrency:
+  group: codex-response-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  checks: read
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  classify:
+    if: >-
+      contains(fromJSON('["chatgpt-codex-connector","chatgpt-codex-connector[bot]"]'),
+        github.event.review.user.login) &&
+      startsWith(github.event.pull_request.head.ref, 'claude/') &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      route: ${{ steps.route.outputs.route }}
+      issue_number: ${{ steps.route.outputs.issue_number }}
+      repair_count: ${{ steps.route.outputs.repair_count }}
+    steps:
+      - name: Classify current-SHA Codex findings
+        id: route
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REVIEW_ID: ${{ github.event.review.id }}
+          REVIEW_SHA: ${{ github.event.review.commit_id }}
+          REVIEW_BODY: ${{ github.event.review.body }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pr_json="$(gh pr view "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" --json headRefOid,body)"
+          current_sha="$(jq -r .headRefOid <<<"${pr_json}")"
+          [ "${current_sha}" = "${REVIEW_SHA}" ] || { echo "Ignoring stale review for ${REVIEW_SHA}."; echo 'route=stale' >> "${GITHUB_OUTPUT}"; exit 0; }
+
+          issue_number="$(sed -nE 's/.*(Fixes|Closes|Resolves) #([0-9]+).*/\2/p' <<<"$(jq -r .body <<<"${pr_json}")" | head -n 1)"
+          [ -n "${issue_number}" ] || { echo "PR has no linked issue."; exit 1; }
+
+          inline_count="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews/${REVIEW_ID}/comments" --jq 'length')"
+          repair_count="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100" \
+            --jq '[.[] | select(.body | contains("<!-- claude-codex-repair:"))] | length')"
+
+          route=clean
+          if [ "${inline_count}" -gt 0 ] || grep -Eiq '\[P[01]\]|\bP[01]\b|blocking|must fix|critical' <<<"${REVIEW_BODY}"; then
+            if [ "${repair_count}" -ge 3 ]; then route=stopped; else route=repair; fi
+          fi
+
+          echo "route=${route}" >> "${GITHUB_OUTPUT}"
+          echo "issue_number=${issue_number}" >> "${GITHUB_OUTPUT}"
+          echo "repair_count=${repair_count}" >> "${GITHUB_OUTPUT}"
+
+  repair:
+    needs: classify
+    if: needs.classify.outputs.route == 'repair'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout the existing PR branch
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Let Claude address Codex P0/P1 findings
+        id: claude
+        uses: anthropics/claude-code-action@62529b7c89dbb8cfaa838f2c87f2f8459b46fe68 # v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          allowed_bots: chatgpt-codex-connector
+          prompt: >-
+            Address every actionable P0/P1 finding in the submitted Codex review for this existing
+            pull request. Read the linked issue, AGENTS.md Code Review Rules, full diff, review body,
+            and inline comments. Add a failing regression test for each defect before fixing it,
+            make the smallest safe correction on the current PR branch, and run all relevant checks.
+            Do not dismiss, resolve, or hide findings without code/test evidence. Do not merge.
+          additional_permissions: |
+            actions: read
+            checks: read
+          claude_args: |
+            --max-turns 200
+            --append-system-prompt "Continue on the existing PR branch. Preserve issue scope and report exact verification results."
+            --allowedTools "Read,Write,Edit,Glob,Grep,Bash(git fetch:*),Bash(git status:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(dotnet restore:*),Bash(dotnet build:*),Bash(dotnet test:*),Bash(npm ci:*),Bash(npm test:*),Bash(npm run:*),Bash(pnpm:*),Bash(gh issue view:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh run view:*),Bash(gh run list:*)"
+            --disallowedTools "Bash(git push --force:*),Bash(git push --force-with-lease:*),Bash(git reset --hard:*),Bash(git clean:*),Bash(git merge:*),Bash(gh pr merge:*),Bash(gh repo delete:*),Bash(sudo:*),Bash(ssh:*),Bash(scp:*)"
+
+      - name: Record correction attempt
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REVIEW_SHA: ${{ github.event.review.commit_id }}
+          REPAIR_NUMBER: ${{ needs.classify.outputs.repair_count }}
+        shell: bash
+        run: |
+          next=$((REPAIR_NUMBER + 1))
+          body="$(printf 'Claude addressed Codex findings from %s. CI and Codex review will repeat for the new SHA.\n\n<!-- claude-codex-repair:%s -->' "${REVIEW_SHA}" "${next}")"
+          gh pr comment "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+            --body "${body}"
+
+      - name: Stop after repair failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ needs.classify.outputs.issue_number }}
+        shell: bash
+        run: |
+          gh issue edit "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+            --remove-label automation:in-progress --add-label automation:needs-attention
+
+  stop-after-limit:
+    needs: classify
+    if: needs.classify.outputs.route == 'stopped'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require investigation after three failed cycles
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ needs.classify.outputs.issue_number }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          gh issue edit "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+            --remove-label automation:in-progress --add-label automation:needs-attention
+          gh pr comment "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+            --body "Automation stopped after three Codex→Claude repair cycles. Human investigation is required."
+
+  promote-or-merge:
+    needs: classify
+    if: needs.classify.outputs.route == 'clean'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Promote a human gate or merge ordinary clean work
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ needs.classify.outputs.issue_number }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REVIEW_SHA: ${{ github.event.review.commit_id }}
+          AUTOMATION_ENABLED: ${{ vars.CLOUD_MULE_AUTOMATION_ENABLED }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          current_sha="$(gh pr view "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" --json headRefOid --jq .headRefOid)"
+          [ "${current_sha}" = "${REVIEW_SHA}" ] || { echo "PR advanced after review."; exit 0; }
+
+          human_gate="$(gh issue view "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" --json labels \
+            --jq '[.labels[].name] | any(. == "automation:human-gate")')"
+
+          gh pr ready "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" 2>/dev/null || true
+          gh issue edit "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" --remove-label automation:in-progress
+
+          if [ "${human_gate}" = true ] || [ "${AUTOMATION_ENABLED}" != true ]; then
+            gh issue edit "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" --add-label automation:ready-for-user-testing
+            gh pr comment "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+              --body "CI and Codex review passed for ${REVIEW_SHA}. This PR is ready for user testing and remains unmerged."
+            exit 0
+          fi
+
+          gh pr merge "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" --squash --delete-branch
+          gh workflow run cloud-mule-orchestrator.yml --repo "${GITHUB_REPOSITORY}" --ref master -f dry_run=false

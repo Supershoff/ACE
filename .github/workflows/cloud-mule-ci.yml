@@ -1,0 +1,146 @@
+name: Cloud Mule CI
+
+on:
+  pull_request:
+    branches: [master]
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+concurrency:
+  group: cloud-mule-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  policy:
+    name: Repository policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout complete history
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Reject private deployment data and require an issue link
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ] && ! grep -Eq '(Fixes|Closes|Resolves) #[0-9]+' <<<"${PR_BODY}"; then
+            echo "Pull request body must close one GitHub issue."
+            exit 1
+          fi
+
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            changed="$(git diff --name-only "${BASE_SHA}" "${GITHUB_SHA}")"
+          else
+            changed="$(git ls-files)"
+          fi
+
+          forbidden="$(grep -Ei '(^|/)(Dats?/|\.env($|\.)|secrets?/)|\.dat$|client_(portal|cell|highres|local).*' <<<"${changed}" || true)"
+          if [ -n "${forbidden}" ]; then
+            echo "Private deployment/DAT paths are forbidden:"
+            echo "${forbidden}"
+            exit 1
+          fi
+
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            git diff --check "${BASE_SHA}" "${GITHUB_SHA}"
+          else
+            git diff --check HEAD^
+          fi
+
+  dotnet:
+    name: .NET build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - name: Checkout complete history
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install .NET 10 SDK
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore Source/ACE.sln --property:Platform=x64
+
+      - name: Build
+        run: dotnet build Source/ACE.sln --configuration Release --property:Platform=x64 --no-restore
+
+      - name: Run self-contained Cloud Mule tests when present
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $projects = @(Get-ChildItem -LiteralPath Source -Recurse -Filter '*.csproj' |
+              Where-Object { $_.BaseName -match 'Cloud' -and $_.BaseName -match '(Tests|IntegrationTests)$' } |
+              Sort-Object FullName)
+
+          if ($projects.Count -eq 0) {
+              Write-Host 'No self-contained Cloud Mule test projects exist yet. Issue #1 introduces the harness.'
+              exit 0
+          }
+
+          foreach ($project in $projects) {
+              dotnet test $project.FullName --configuration Release --property:Platform=x64 --no-restore --logger "trx;LogFileName=$($project.BaseName).trx"
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+  web:
+    name: Web checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24
+
+      - name: Run repository web checks when a lockfile exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t manifests < <(find . -path './.git' -prune -o -name package.json -print | sort)
+          if [ "${#manifests[@]}" -eq 0 ]; then
+            echo "No web workspace exists yet."
+            exit 0
+          fi
+
+          for manifest in "${manifests[@]}"; do
+            directory="$(dirname "${manifest}")"
+            pushd "${directory}" >/dev/null
+            if [ -f pnpm-lock.yaml ]; then
+              corepack enable
+              pnpm install --frozen-lockfile
+              pnpm test --if-present
+              pnpm run build --if-present
+            elif [ -f package-lock.json ]; then
+              npm ci
+              npm test --if-present
+              npm run build --if-present
+            else
+              echo "${directory} contains package.json without a supported lockfile."
+              exit 1
+            fi
+            popd >/dev/null
+          done

@@ -1,0 +1,100 @@
+name: Cloud Mule orchestrator
+
+on:
+  schedule:
+    - cron: '7,22,37,52 * * * *'
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Optional explicit dependency-ready issue number
+        required: false
+        type: string
+      dry_run:
+        description: Select and report without dispatching Claude
+        required: false
+        default: true
+        type: boolean
+
+concurrency:
+  group: cloud-mule-orchestrator
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  select-and-dispatch:
+    if: github.event_name == 'workflow_dispatch' || vars.CLOUD_MULE_AUTOMATION_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Select the next dependency-ready issue
+        id: select
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_ISSUE: ${{ inputs.issue_number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          active_pr="$(gh pr list --repo "${GITHUB_REPOSITORY}" --state open --limit 100 \
+            --json number,headRefName --jq 'first(.[] | select(.headRefName | startswith("claude/")) | .number) // empty')"
+          if [ -n "${active_pr}" ]; then
+            echo "A Claude PR (#${active_pr}) is already open; serialization holds."
+            exit 0
+          fi
+
+          candidates=()
+          if [ -n "${REQUESTED_ISSUE}" ]; then
+            candidates+=("${REQUESTED_ISSUE}")
+          else
+            while read -r number; do candidates+=("${number}"); done < <(
+              gh issue list --repo "${GITHUB_REPOSITORY}" --state open --label ready-for-agent --limit 100 \
+                --json number --jq 'sort_by(.number) | .[].number'
+            )
+          fi
+
+          selected=""
+          for number in "${candidates[@]}"; do
+            issue_json="$(gh issue view "${number}" --repo "${GITHUB_REPOSITORY}" --json state,labels,body,title)"
+            [ "$(jq -r .state <<<"${issue_json}")" = "OPEN" ] || continue
+            if jq -e '[.labels[].name] | any(. == "automation:in-progress" or . == "automation:queued" or . == "automation:needs-attention" or . == "automation:ready-for-user-testing" or . == "ready-for-human")' <<<"${issue_json}" >/dev/null; then
+              continue
+            fi
+
+            dependency_block="$(sed -n '/^## Dependencies$/,/^## Red/p' <<<"$(jq -r .body <<<"${issue_json}")")"
+            blocked=false
+            while read -r dependency; do
+              [ -n "${dependency}" ] || continue
+              state="$(gh issue view "${dependency}" --repo "${GITHUB_REPOSITORY}" --json state --jq .state)"
+              if [ "${state}" != "CLOSED" ]; then blocked=true; break; fi
+            done < <(grep -oE '#[0-9]+' <<<"${dependency_block}" | tr -d '#' || true)
+
+            if [ "${blocked}" = false ]; then selected="${number}"; break; fi
+          done
+
+          if [ -z "${selected}" ]; then
+            echo "No dependency-ready autonomous issue is available."
+            exit 0
+          fi
+
+          echo "Selected issue #${selected}."
+          echo "issue_number=${selected}" >> "${GITHUB_OUTPUT}"
+
+      - name: Queue and dispatch Claude
+        if: steps.select.outputs.issue_number != '' && (github.event_name != 'workflow_dispatch' || inputs.dry_run == false)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ steps.select.outputs.issue_number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh issue edit "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+            --add-label automation:queued --remove-label automation:retry
+          gh issue comment "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+            --body "Queued for unattended Claude implementation by run ${GITHUB_RUN_ID}."
+          gh workflow run claude.yml --repo "${GITHUB_REPOSITORY}" --ref master -f issue_number="${ISSUE_NUMBER}"
