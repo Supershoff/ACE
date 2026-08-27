@@ -48,12 +48,12 @@ jobs:
           issue_number="$(sed -nE 's/.*(Fixes|Closes|Resolves) #([0-9]+).*/\2/p' <<<"$(jq -r .body <<<"${pr_json}")" | head -n 1)"
           [ -n "${issue_number}" ] || { echo "PR has no linked issue."; exit 1; }
 
-          inline_count="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews/${REVIEW_ID}/comments" --jq 'length')"
+          inline_bodies="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews/${REVIEW_ID}/comments" --jq '.[].body')"
           repair_count="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100" \
             --jq '[.[] | select(.body | contains("<!-- claude-codex-repair:"))] | length')"
 
           route=clean
-          if [ "${inline_count}" -gt 0 ] || grep -Eiq '\[P[01]\]|\bP[01]\b|blocking|must fix|critical' <<<"${REVIEW_BODY}"; then
+          if grep -Eiq '\[P[01]\]|\bP[01]\b' <<<"${REVIEW_BODY}"$'\n'"${inline_bodies}"; then
             if [ "${repair_count}" -ge 3 ]; then route=stopped; else route=repair; fi
           fi
 

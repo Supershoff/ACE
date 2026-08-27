@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Request one Codex review for the tested PR head
+      - name: Make the tested PR eligible for automatic Codex review
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
@@ -36,9 +36,6 @@ jobs:
             --jq ".[] | select(.body | contains(\"${marker}\")) | .id")"
           [ -z "${existing}" ] || { echo "Codex already requested for ${head_sha}."; exit 0; }
 
-          body="$(printf '@codex review using the AGENTS.md Code Review Rules and the linked issue acceptance criteria. Focus on P0/P1 correctness, custody, concurrency, authorization, privacy, and missing-test defects.\n\n%s' "${marker}")"
-          gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/comments" \
-            --raw-field body="${body}" --silent
-
-          gh pr comment "${pr_number}" --repo "${GITHUB_REPOSITORY}" \
-            --body "CI passed for ${head_sha}; requested Codex review for this exact revision."
+          gh pr ready "${pr_number}" --repo "${GITHUB_REPOSITORY}" 2>/dev/null || true
+          body="$(printf 'CI passed for `%s`; this PR is ready for automatic Codex review.\n\n%s' "${head_sha}" "${marker}")"
+          gh pr comment "${pr_number}" --repo "${GITHUB_REPOSITORY}" --body "${body}"
