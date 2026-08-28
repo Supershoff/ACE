@@ -129,6 +129,30 @@ public sealed class CloudStartupDiagnosticsBoundaryTests
     }
 
     [TestMethod]
+    public async Task RawConnectionAvailabilityCheck_AgainstTheRealDatabase_ReportsHealthy()
+    {
+        var result = await CloudStartupChecks.RawConnectionAvailability(_fixture.CloudConnectionString)(CancellationToken.None);
+
+        Assert.IsTrue(result.IsHealthy);
+    }
+
+    [TestMethod]
+    public async Task RawConnectionAvailabilityCheck_AgainstAnUnreachableDatabase_ReportsUnavailable_InsteadOfThrowing()
+    {
+        var result = await CloudStartupChecks.RawConnectionAvailability(UnreachableConnectionString())(CancellationToken.None);
+
+        Assert.IsFalse(result.IsHealthy);
+        Assert.AreEqual(CloudStartupComponent.Database, result.Component);
+    }
+
+    [TestMethod]
+    public async Task RawConnectionAvailabilityCheck_WithANonTransientAccessDeniedFailure_PropagatesInsteadOfReportingUnavailable()
+    {
+        await Assert.ThrowsExactlyAsync<MySqlException>(
+            () => CloudStartupChecks.RawConnectionAvailability(InvalidCredentialsConnectionString())(CancellationToken.None));
+    }
+
+    [TestMethod]
     public async Task FullDiagnosticsService_WithNoBindingRow_StopsAtShardIdentity_NeverEvaluatingProtocolCompatibility()
     {
         await DeleteShardBindingRowAsync();
@@ -208,6 +232,22 @@ public sealed class CloudStartupDiagnosticsBoundaryTests
             Server = "127.0.0.1",
             Port = 1,
             ConnectionTimeout = 2,
+        };
+
+        return builder.ConnectionString;
+    }
+
+    /// <summary>
+    /// A connection string to the real, reachable fixture server but with credentials MariaDB will
+    /// refuse -- an access-denied failure, which is not transient, as opposed to
+    /// <see cref="UnreachableConnectionString"/>'s genuine connectivity failure.
+    /// </summary>
+    private string InvalidCredentialsConnectionString()
+    {
+        var builder = new MySqlConnectionStringBuilder(_fixture.CloudConnectionString)
+        {
+            UserID = "does_not_exist_" + Guid.NewGuid().ToString("N")[..12],
+            Password = Guid.NewGuid().ToString("N"),
         };
 
         return builder.ConnectionString;

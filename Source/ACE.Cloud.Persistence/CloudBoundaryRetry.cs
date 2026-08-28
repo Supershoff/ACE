@@ -71,10 +71,13 @@ public static class CloudBoundaryRetry
     /// <summary>
     /// True for a genuine connectivity/availability failure (connection refused, server gone away,
     /// and similar) as opposed to a deadlock/lock-wait timeout, which is retried instead, or an
-    /// ordinary domain error. Internal so <see cref="CloudGatewayDiagnostics"/> can classify a probe
-    /// failure the same way a mutation attempt would (ARCH-009), without duplicating this detection.
+    /// ordinary domain error (for example an access-denied failure from a misconfigured/wrong
+    /// -permission identity, which must not be misreported as a transient outage). Public so both
+    /// <see cref="CloudGatewayDiagnostics"/> and <c>ACE.Cloud.Hosting</c>'s startup checks classify a
+    /// probe failure the same way a mutation attempt would (ARCH-009), without duplicating this
+    /// detection.
     /// </summary>
-    internal static bool IsUnavailable(Exception ex)
+    public static bool IsUnavailable(Exception ex)
     {
         var mySqlException = UnwrapMySqlException(ex);
         return mySqlException is { IsTransient: true }
@@ -89,7 +92,7 @@ public static class CloudBoundaryRetry
     /// own <see cref="InvalidOperationException"/> execution-strategy wrapper instead -- both must
     /// be recognized the same way.
     /// </summary>
-    internal static MySqlException? UnwrapMySqlException(Exception ex)
+    public static MySqlException? UnwrapMySqlException(Exception ex)
     {
         for (var current = (Exception?)ex; current is not null; current = current.InnerException)
         {

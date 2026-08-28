@@ -31,7 +31,11 @@ public static class CloudStartupChecks
     /// <summary>
     /// A database-availability check for a host with no <see cref="CloudGatewayDiagnostics"/> of its
     /// own (the Auth Bridge has no Cloud schema access), probing an arbitrary connection string
-    /// directly instead.
+    /// directly instead. Only classifies a genuine connectivity/availability failure as "unavailable"
+    /// (<see cref="CloudBoundaryRetry.IsUnavailable"/>, the same classification
+    /// <see cref="CloudGatewayDiagnostics.CheckDatabaseAvailabilityAsync"/> uses); a non-transient
+    /// failure such as access-denied from a misconfigured/wrong-permission identity propagates
+    /// instead of being misreported as a transient outage.
     /// </summary>
     public static Func<CancellationToken, Task<CloudStartupCheckResult>> RawConnectionAvailability(string connectionString)
     {
@@ -53,9 +57,10 @@ public static class CloudStartupChecks
 
                 return CloudStartupCheckResult.Healthy(CloudStartupComponent.Database);
             }
-            catch (MySqlException ex)
+            catch (Exception ex) when (CloudBoundaryRetry.IsUnavailable(ex))
             {
-                return CloudStartupCheckResult.Unhealthy(CloudStartupComponent.Database, $"The database is unavailable: {ex.Message}");
+                var mySqlException = CloudBoundaryRetry.UnwrapMySqlException(ex)!;
+                return CloudStartupCheckResult.Unhealthy(CloudStartupComponent.Database, $"The database is unavailable: {mySqlException.Message}");
             }
         };
     }
