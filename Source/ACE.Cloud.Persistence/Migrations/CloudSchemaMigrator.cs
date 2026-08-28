@@ -26,6 +26,7 @@ public static class CloudSchemaMigrator
         new AddIdempotencyAndLedgerOutbox(),
         new AddCloudStackLots(),
         new AddWithdrawalReservationsAndOrderedOutbox(),
+        new AddCloudCustodianConfiguration(),
     ];
 
     /// <summary>

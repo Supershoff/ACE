@@ -32,6 +32,10 @@ public sealed class CloudDbContext : DbContext
 
     public DbSet<CloudWithdrawalReservation> CloudWithdrawalReservations => Set<CloudWithdrawalReservation>();
 
+    public DbSet<CloudCustodianConfigurationRecord> CloudCustodianConfigurations => Set<CloudCustodianConfigurationRecord>();
+
+    public DbSet<CloudCustodianCustomPositionRecord> CloudCustodianCustomPositions => Set<CloudCustodianCustomPositionRecord>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<CloudShardBinding>(entity =>
@@ -317,6 +321,56 @@ public sealed class CloudDbContext : DbContext
             entity.Property(evt => evt.OwnerId).IsRequired();
 
             entity.Property(evt => evt.CreatedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAdd()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudCustodianConfigurationRecord>(entity =>
+        {
+            // ARCH-001: exactly one Custodian configuration row per deployment, the same singleton
+            // shape as CloudShardBinding.
+            entity.ToTable("CloudCustodianConfiguration", table =>
+                table.HasCheckConstraint("CK_CloudCustodianConfiguration_Singleton", "`Id` = 1"));
+
+            entity.HasKey(config => config.Id);
+            entity.Property(config => config.Id).ValueGeneratedNever();
+
+            entity.Property(config => config.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(config => config.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(config => config.MarketplaceEnabled).IsRequired();
+            entity.Property(config => config.MansionsEnabled).IsRequired();
+            entity.Property(config => config.Version).IsRequired().IsConcurrencyToken();
+
+            entity.Property(config => config.UpdatedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAddOrUpdate()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudCustodianCustomPositionRecord>(entity =>
+        {
+            entity.ToTable("CloudCustodianCustomPosition");
+
+            entity.HasKey(position => position.Id);
+            entity.Property(position => position.Id).ValueGeneratedNever();
+
+            entity.Property(position => position.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasIndex(position => position.ShardId);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(position => position.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(position => position.PositionRaw).IsRequired().HasMaxLength(255);
+
+            entity.Property(position => position.CreatedAtUtc)
                 .IsRequired()
                 .ValueGeneratedOnAdd()
                 .HasDefaultValueSql("CURRENT_TIMESTAMP");
