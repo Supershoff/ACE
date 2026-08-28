@@ -46,4 +46,17 @@ public enum CloudBoundaryOperationType
 
     /// <summary>Withdraws all or part of an account's Pyreal Remainder as raw Pyreal coin stacks (DEP-006).</summary>
     PyrealRemainderWithdrawal,
+
+    /// <summary>Opens an exclusive local Withdrawal Reservation over a Cloud Stack Lot quantity for a Withdrawal Token (WDR-001, INV-002).</summary>
+    StackLotReservationOpened,
+
+    /// <summary>Cancels a local Cloud Stack Lot Withdrawal Reservation before redemption (WDR-003).</summary>
+    StackLotReservationCancelled,
+
+    /// <summary>
+    /// Redeems a local Cloud Stack Lot Withdrawal Reservation, atomically performing the same
+    /// custody-to-world transition as <see cref="StackWithdrawal"/> and releasing the reservation as
+    /// fulfilled.
+    /// </summary>
+    StackLotReservationRedeemed,
 }

@@ -29,7 +29,7 @@ namespace ACE.Cloud.Persistence;
 /// means a missing/misconfigured trigger cannot silently admit a conflict, and callers observe a
 /// typed <see cref="CloudBoundaryOutcome{T}"/> instead of a raw provider exception.
 /// </summary>
-public sealed class CloudCustodyBoundary
+public sealed partial class CloudCustodyBoundary
 {
     private readonly CloudDbContext _context;
     private readonly CloudComponentVersions? _expectedVersions;
