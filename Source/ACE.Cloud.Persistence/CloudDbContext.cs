@@ -48,6 +48,12 @@ public sealed class CloudDbContext : DbContext
 
     public DbSet<CloudPyrealRemainderWithdrawalBiota> CloudPyrealRemainderWithdrawalBiotas => Set<CloudPyrealRemainderWithdrawalBiota>();
 
+    public DbSet<CloudStackLotWithdrawalReservation> CloudStackLotWithdrawalReservations => Set<CloudStackLotWithdrawalReservation>();
+
+    public DbSet<CloudWithdrawalLocationConfigurationRecord> CloudWithdrawalLocationConfigurations => Set<CloudWithdrawalLocationConfigurationRecord>();
+
+    public DbSet<CloudWithdrawalNamedLandblockRecord> CloudWithdrawalNamedLandblocks => Set<CloudWithdrawalNamedLandblockRecord>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<CloudShardBinding>(entity =>
@@ -538,6 +544,101 @@ public sealed class CloudDbContext : DbContext
                 .OnDelete(DeleteBehavior.Restrict);
 
             entity.Property(biota => biota.BiotaId).IsRequired();
+        });
+
+        modelBuilder.Entity<CloudStackLotWithdrawalReservation>(entity =>
+        {
+            entity.ToTable("CloudStackLotWithdrawalReservation");
+
+            entity.HasKey(reservation => reservation.Id);
+            entity.Property(reservation => reservation.Id).ValueGeneratedNever();
+
+            entity.Property(reservation => reservation.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(reservation => reservation.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // WDR-001/INV-001: at most one active reservation may target the same lot at a time. The
+            // CloudStackLot row for LotId is locked (FOR UPDATE) for the whole opening transaction
+            // (CloudCustodyBoundary.ReserveStackLotForWithdrawalAsync), so concurrent opens for the
+            // same lot already serialize on that lock; this index exists for lookup, not as the sole
+            // enforcement mechanism.
+            entity.Property(reservation => reservation.LotId).IsRequired();
+            entity.HasIndex(reservation => reservation.LotId);
+
+            entity.Property(reservation => reservation.Quantity).IsRequired();
+            entity.Property(reservation => reservation.OwnerId).IsRequired();
+
+            entity.Property(reservation => reservation.TokenHash).IsRequired().HasMaxLength(64);
+            entity.HasIndex(reservation => reservation.TokenHash).IsUnique();
+
+            entity.Property(reservation => reservation.OpenIdempotencyKey).IsRequired();
+            entity.HasIndex(reservation => reservation.OpenIdempotencyKey).IsUnique();
+
+            entity.Property(reservation => reservation.Status).IsRequired().HasConversion<string>().HasMaxLength(16);
+            entity.Property(reservation => reservation.ReleaseReason).HasConversion<string>().HasMaxLength(32);
+
+            entity.Property(reservation => reservation.Version).IsRequired();
+
+            entity.Property(reservation => reservation.CreatedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAdd()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+            entity.Property(reservation => reservation.ExpiresAtUtc).IsRequired();
+            entity.Property(reservation => reservation.ReleasedAtUtc);
+        });
+
+        modelBuilder.Entity<CloudWithdrawalLocationConfigurationRecord>(entity =>
+        {
+            // ARCH-001: exactly one Withdrawal Location configuration row per deployment, the same
+            // singleton shape as CloudShardBinding.
+            entity.ToTable("CloudWithdrawalLocationConfiguration", table =>
+                table.HasCheckConstraint("CK_CloudWithdrawalLocationConfiguration_Singleton", "`Id` = 1"));
+
+            entity.HasKey(config => config.Id);
+            entity.Property(config => config.Id).ValueGeneratedNever();
+
+            entity.Property(config => config.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(config => config.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(config => config.WithdrawAnywhereEnabled).IsRequired();
+            entity.Property(config => config.Version).IsRequired().IsConcurrencyToken();
+
+            entity.Property(config => config.UpdatedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAddOrUpdate()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudWithdrawalNamedLandblockRecord>(entity =>
+        {
+            entity.ToTable("CloudWithdrawalNamedLandblock");
+
+            entity.HasKey(landblock => landblock.Id);
+            entity.Property(landblock => landblock.Id).ValueGeneratedNever();
+
+            entity.Property(landblock => landblock.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasIndex(landblock => landblock.ShardId);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(landblock => landblock.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(landblock => landblock.Landblock).IsRequired();
+            entity.Property(landblock => landblock.Name).IsRequired().HasMaxLength(128);
+
+            entity.Property(landblock => landblock.CreatedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAdd()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
         });
     }
 }

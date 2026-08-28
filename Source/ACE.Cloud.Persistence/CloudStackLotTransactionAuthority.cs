@@ -1,3 +1,4 @@
+using ACE.Cloud.Domain;
 using Microsoft.EntityFrameworkCore;
 
 namespace ACE.Cloud.Persistence;
@@ -75,6 +76,13 @@ public sealed class CloudStackLotTransactionAuthority
                 $"Cloud Stack Lot {lotId} is at version {lot.Version}, not the expected version {expectedVersion}.");
         }
 
+        if (await HasActiveWithdrawalReservationAsync(lotId, cancellationToken))
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return CloudBoundaryOutcome<CloudStackLotSplitResult>.Conflict(
+                $"Cloud Stack Lot {lotId} has an active Withdrawal Reservation and cannot be split until it is redeemed or cancelled.");
+        }
+
         if (quantityToSplit >= lot.Quantity)
         {
             await transaction.RollbackAsync(cancellationToken);
@@ -129,6 +137,13 @@ public sealed class CloudStackLotTransactionAuthority
             await transaction.RollbackAsync(cancellationToken);
             return CloudBoundaryOutcome<CloudStackLot>.Conflict(
                 $"Cloud Stack Lot {lotId} is at version {lot.Version}, not the expected version {expectedVersion}.");
+        }
+
+        if (await HasActiveWithdrawalReservationAsync(lotId, cancellationToken))
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return CloudBoundaryOutcome<CloudStackLot>.Conflict(
+                $"Cloud Stack Lot {lotId} has an active Withdrawal Reservation and cannot be transferred until it is redeemed or cancelled.");
         }
 
         lot.ChangeOwner(newOwnerId);
@@ -200,6 +215,14 @@ public sealed class CloudStackLotTransactionAuthority
             return CloudBoundaryOutcome<CloudStackLot>.Conflict("One or both lots are not at their expected version.");
         }
 
+        if (await HasActiveWithdrawalReservationAsync(keepLotId, cancellationToken) ||
+            await HasActiveWithdrawalReservationAsync(mergeLotId, cancellationToken))
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return CloudBoundaryOutcome<CloudStackLot>.Conflict(
+                "One or both Cloud Stack Lots to merge have an active Withdrawal Reservation and cannot be merged until it is redeemed or cancelled.");
+        }
+
         keepLot.MergeIn(mergeLot.Quantity);
         _context.CloudStackLots.Update(keepLot);
         _context.CloudStackLots.Remove(mergeLot);
@@ -215,6 +238,17 @@ public sealed class CloudStackLotTransactionAuthority
             .Where(l => l.Id == lotId)
             .Select(l => (Guid?)l.CustodyRecordId)
             .SingleOrDefaultAsync(cancellationToken);
+
+    /// <summary>
+    /// True when <paramref name="lotId"/> is the exclusive target of an active Withdrawal
+    /// Reservation (WDR-001/INV-001): a reservation is only exclusive if every lot mutator actually
+    /// checks it, not just a second reservation attempt (<see cref="CloudReservationPolicy.Open"/>).
+    /// Callers must already hold the lot's row lock so this check and the mutation it guards happen
+    /// atomically under the same transaction.
+    /// </summary>
+    private async Task<bool> HasActiveWithdrawalReservationAsync(Guid lotId, CancellationToken cancellationToken) =>
+        await _context.CloudStackLotWithdrawalReservations
+            .AnyAsync(r => r.LotId == lotId && r.Status == CloudReservationStatus.Active, cancellationToken);
 
     private async Task<CloudCustodyRecord?> LockCustodyRecordAsync(Guid custodyRecordId, CancellationToken cancellationToken) =>
         await _context.CloudCustodyRecords

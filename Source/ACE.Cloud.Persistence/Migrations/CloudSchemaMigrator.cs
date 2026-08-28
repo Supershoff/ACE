@@ -30,6 +30,7 @@ public static class CloudSchemaMigrator
         new AddCloudFrozenEnchantments(),
         new AddCloudPyrealRemainder(),
         new AddLayerIdToCloudFrozenEnchantment(),
+        new AddWithdrawalRedemptionSupport(),
     ];
 
     /// <summary>
