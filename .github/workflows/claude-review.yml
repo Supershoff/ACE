@@ -16,6 +16,11 @@ on:
         required: false
         default: false
         type: boolean
+      show_full_output:
+        description: Retain full Claude output while diagnosing a failed review repair
+        required: false
+        default: false
+        type: boolean
       authorize_extra_repair:
         description: Allow one reviewer-authorized repair after the normal three-cycle safety cap
         required: false
@@ -65,8 +70,8 @@ jobs:
           [ -n "${issue_number}" ] || { echo 'PR has no linked issue.'; exit 1; }
 
           marker="<!-- claude-code-review:${head_sha} -->"
-          existing="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/comments?per_page=100" \
-            --jq ".[] | select(.body | contains(\"${marker}\")) | .id")"
+          existing="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/comments?per_page=100" | \
+            jq -r --arg marker "${marker}" '[.[][] | select(.body | contains($marker))][0].id // empty')"
           if [ -n "${existing}" ] && [ "${RETRY_EXISTING}" != true ]; then
             echo 'skip=true' >> "${GITHUB_OUTPUT}"
             exit 0
@@ -84,6 +89,8 @@ jobs:
             echo "head_sha=${head_sha}"
             echo "repair_count=${repair_count}"
             echo "override_count=${override_count}"
+            echo "reuse_review=$([ -n "${existing}" ] && echo true || echo false)"
+            echo "review_comment_id=${existing}"
           } >> "${GITHUB_OUTPUT}"
 
       - name: Checkout the exact tested revision
@@ -108,8 +115,17 @@ jobs:
         run: |
           printf '%s\n' '/.claude-review.md' '/.claude/skills/code-review/' >> .git/info/exclude
 
+      - name: Reuse the published exact-SHA review for a repair retry
+        if: steps.prepare.outputs.skip == 'false' && steps.prepare.outputs.reuse_review == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMENT_ID: ${{ steps.prepare.outputs.review_comment_id }}
+        shell: bash
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/issues/comments/${COMMENT_ID}" --jq .body > .claude-review.md
+
       - name: Have Claude perform a read-only code review
-        if: steps.prepare.outputs.skip == 'false'
+        if: steps.prepare.outputs.skip == 'false' && steps.prepare.outputs.reuse_review != 'true'
         uses: anthropics/claude-code-action@62529b7c89dbb8cfaa838f2c87f2f8459b46fe68 # v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -148,6 +164,7 @@ jobs:
           REPAIR_COUNT: ${{ steps.prepare.outputs.repair_count }}
           AUTHORIZE_EXTRA_REPAIR: ${{ inputs.authorize_extra_repair }}
           OVERRIDE_COUNT: ${{ steps.prepare.outputs.override_count }}
+          REUSE_REVIEW: ${{ steps.prepare.outputs.reuse_review }}
         shell: bash
         run: |
           set -euo pipefail
@@ -168,8 +185,10 @@ jobs:
           esac
 
           marker="<!-- claude-code-review:${HEAD_SHA} -->"
-          { cat .claude-review.md; printf '\n\n%s\n' "${marker}"; } > "${RUNNER_TEMP}/review-comment.md"
-          gh pr comment "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" --body-file "${RUNNER_TEMP}/review-comment.md"
+          if [ "${REUSE_REVIEW}" != true ]; then
+            { cat .claude-review.md; printf '\n\n%s\n' "${marker}"; } > "${RUNNER_TEMP}/review-comment.md"
+            gh pr comment "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" --body-file "${RUNNER_TEMP}/review-comment.md"
+          fi
           git diff --exit-code
           echo "route=${route}" >> "${GITHUB_OUTPUT}"
 
@@ -192,6 +211,7 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           allowed_bots: github-actions
           branch_prefix: claude/review-repair-
+          show_full_output: ${{ inputs.show_full_output }}
           prompt: >-
             Address every [P0]/[P1] defect in .claude-review.md on the existing pull request.
             Read the linked issue, AGENTS.md, CLAUDE.md, and the requested code-review skill.
@@ -289,12 +309,37 @@ jobs:
           PR_NUMBER: ${{ steps.prepare.outputs.pr_number }}
           HEAD_BRANCH: ${{ inputs.head_branch }}
           HEAD_SHA: ${{ steps.prepare.outputs.head_sha }}
+          REVIEW_ROUTE: ${{ steps.classify.outputs.route }}
         shell: bash
         run: |
           set -euo pipefail
           exact_review="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100" | \
             jq -r --arg marker "<!-- claude-code-review:${HEAD_SHA} -->" \
               '[.[][] | select(.body | contains($marker))][0].id // empty')"
+          current_sha="$(gh pr view "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" --json headRefOid --jq .headRefOid)"
+          if [ -n "${exact_review}" ] && [ "${REVIEW_ROUTE}" = repair ] && [ "${current_sha}" = "${HEAD_SHA}" ]; then
+            marker="<!-- claude-review-no-commit:${HEAD_SHA}:"
+            failures="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100" | \
+              jq -r --arg marker "${marker}" '[.[][] | select(.body | contains($marker))] | length')"
+            next=$((failures + 1))
+            if [ "${next}" -ge 3 ]; then
+              gh issue edit "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+                --remove-label automation:in-progress --add-label automation:needs-attention || true
+              gh pr comment "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+                --body "Claude review repair produced no commit three times for ${HEAD_SHA}. Human investigation is required. Inspect ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. ${marker}${next} -->" || true
+              exit 0
+            fi
+
+            gh issue edit "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+              --remove-label automation:needs-attention --add-label automation:in-progress || true
+            gh pr comment "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+              --body "Claude review repair produced no commit for ${HEAD_SHA} on attempt ${next}/3; retrying the published blocking review immediately with full output enabled. Inspect ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. ${marker}${next} -->" || true
+            gh workflow run claude-review.yml --repo "${GITHUB_REPOSITORY}" --ref master \
+              -f head_branch="${HEAD_BRANCH}" -f tested_sha="${HEAD_SHA}" \
+              -f retry_existing=true -f show_full_output=true
+            exit 0
+          fi
+
           if [ -n "${exact_review}" ]; then
             gh issue edit "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
               --remove-label automation:needs-attention --add-label automation:in-progress || true
@@ -321,4 +366,5 @@ jobs:
           gh pr comment "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
             --body "Claude review automation produced no usable verdict for ${HEAD_SHA} on attempt ${next}/3; retrying immediately. Inspect ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. ${marker}${next} -->" || true
           gh workflow run claude-review.yml --repo "${GITHUB_REPOSITORY}" --ref master \
-            -f head_branch="${HEAD_BRANCH}" -f tested_sha="${HEAD_SHA}" -f retry_existing=true
+            -f head_branch="${HEAD_BRANCH}" -f tested_sha="${HEAD_SHA}" \
+            -f retry_existing=true -f show_full_output=true
