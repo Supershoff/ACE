@@ -64,8 +64,9 @@ public sealed class CloudCustodyBoundary
         string shardId,
         Guid ownerId,
         Guid idempotencyKey,
-        CancellationToken cancellationToken = default) =>
-        DepositAsync(biotaId, shardId, ownerId, idempotencyKey, faultInjector: null, cancellationToken);
+        CancellationToken cancellationToken = default,
+        IReadOnlyList<CloudRuntimeEnchantmentSnapshot>? preservationRequirements = null) =>
+        DepositAsync(biotaId, shardId, ownerId, idempotencyKey, faultInjector: null, cancellationToken, preservationRequirements);
 
     /// <summary>
     /// Test-only overload: <paramref name="faultInjector"/> is invoked at every named
@@ -79,12 +80,13 @@ public sealed class CloudCustodyBoundary
         Guid ownerId,
         Guid idempotencyKey,
         Func<CloudBoundaryFaultPoint, Task>? faultInjector,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IReadOnlyList<CloudRuntimeEnchantmentSnapshot>? preservationRequirements = null)
     {
         RequireIdempotencyKey(idempotencyKey);
 
         return CloudBoundaryRetry.ExecuteAsync(
-            () => TryDepositOnceAsync(biotaId, shardId, ownerId, idempotencyKey, faultInjector, cancellationToken),
+            () => TryDepositOnceAsync(biotaId, shardId, ownerId, idempotencyKey, faultInjector, preservationRequirements, cancellationToken),
             cancellationToken: cancellationToken);
     }
 
@@ -173,11 +175,12 @@ public sealed class CloudCustodyBoundary
         Guid ownerId,
         int quantity,
         Guid idempotencyKey,
-        CancellationToken cancellationToken = default) =>
-        DepositStackAsync(biotaId, shardId, ownerId, quantity, idempotencyKey, faultInjector: null, cancellationToken);
+        CancellationToken cancellationToken = default,
+        IReadOnlyList<CloudRuntimeEnchantmentSnapshot>? preservationRequirements = null) =>
+        DepositStackAsync(biotaId, shardId, ownerId, quantity, idempotencyKey, faultInjector: null, cancellationToken, preservationRequirements);
 
     /// <summary>
-    /// Test-only overload; see <see cref="DepositAsync(uint, string, Guid, Guid, Func{CloudBoundaryFaultPoint, Task}, CancellationToken)"/>'s doc comment.
+    /// Test-only overload; see the internal <see cref="DepositAsync"/> overload's doc comment.
     /// </summary>
     internal Task<CloudBoundaryOutcome<CloudStackDepositResult>> DepositStackAsync(
         uint biotaId,
@@ -186,7 +189,8 @@ public sealed class CloudCustodyBoundary
         int quantity,
         Guid idempotencyKey,
         Func<CloudBoundaryFaultPoint, Task>? faultInjector,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyList<CloudRuntimeEnchantmentSnapshot>? preservationRequirements = null)
     {
         RequireIdempotencyKey(idempotencyKey);
 
@@ -196,7 +200,7 @@ public sealed class CloudCustodyBoundary
         }
 
         return CloudBoundaryRetry.ExecuteAsync(
-            () => TryDepositStackOnceAsync(biotaId, shardId, ownerId, quantity, idempotencyKey, faultInjector, cancellationToken),
+            () => TryDepositStackOnceAsync(biotaId, shardId, ownerId, quantity, idempotencyKey, faultInjector, preservationRequirements, cancellationToken),
             cancellationToken: cancellationToken);
     }
 
@@ -687,6 +691,7 @@ public sealed class CloudCustodyBoundary
         Guid ownerId,
         Guid idempotencyKey,
         Func<CloudBoundaryFaultPoint, Task>? faultInjector,
+        IReadOnlyList<CloudRuntimeEnchantmentSnapshot>? preservationRequirements,
         CancellationToken cancellationToken)
     {
         _context.ChangeTracker.Clear();
@@ -724,6 +729,12 @@ public sealed class CloudCustodyBoundary
         var correlationId = Guid.NewGuid();
         var record = new CloudCustodyRecord(biotaId, shardId, ownerId, correlationId);
         _context.CloudCustodyRecords.Add(record);
+
+        var frozenEnchantments = BuildFrozenEnchantments(record.Id, shardId, preservationRequirements);
+        if (frozenEnchantments.Count > 0)
+        {
+            _context.CloudFrozenEnchantments.AddRange(frozenEnchantments);
+        }
 
         try
         {
@@ -862,6 +873,7 @@ public sealed class CloudCustodyBoundary
         int quantity,
         Guid idempotencyKey,
         Func<CloudBoundaryFaultPoint, Task>? faultInjector,
+        IReadOnlyList<CloudRuntimeEnchantmentSnapshot>? preservationRequirements,
         CancellationToken cancellationToken)
     {
         _context.ChangeTracker.Clear();
@@ -897,6 +909,12 @@ public sealed class CloudCustodyBoundary
         var lot = new CloudStackLot(record.Id, shardId, ownerId, quantity);
         _context.CloudCustodyRecords.Add(record);
         _context.CloudStackLots.Add(lot);
+
+        var frozenEnchantments = BuildFrozenEnchantments(record.Id, shardId, preservationRequirements);
+        if (frozenEnchantments.Count > 0)
+        {
+            _context.CloudFrozenEnchantments.AddRange(frozenEnchantments);
+        }
 
         try
         {
@@ -1394,6 +1412,29 @@ public sealed class CloudCustodyBoundary
         command.Parameters.Add(containerParameter);
 
         await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Reduces a deposit's DEP-005 preservation requirements to the <see cref="CloudFrozenEnchantment"/>
+    /// rows to persist alongside <paramref name="custodyRecordId"/>, added to the same
+    /// SaveChangesAsync call as the Cloud Custody Record insert (transaction rule 5): an empty or
+    /// null list produces no rows, matching an item with no active runtime enchantments.
+    /// </summary>
+    private static List<CloudFrozenEnchantment> BuildFrozenEnchantments(
+        Guid custodyRecordId, string shardId, IReadOnlyList<CloudRuntimeEnchantmentSnapshot>? preservationRequirements)
+    {
+        if (preservationRequirements is null || preservationRequirements.Count == 0)
+        {
+            return [];
+        }
+
+        var frozen = new List<CloudFrozenEnchantment>(preservationRequirements.Count);
+        foreach (var requirement in preservationRequirements)
+        {
+            frozen.Add(new CloudFrozenEnchantment(custodyRecordId, shardId, requirement.SpellId, requirement.RemainingDurationSeconds));
+        }
+
+        return frozen;
     }
 
     private static bool IsDuplicateKey(DbUpdateException ex) =>

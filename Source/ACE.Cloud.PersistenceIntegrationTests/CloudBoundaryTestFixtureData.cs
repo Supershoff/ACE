@@ -19,6 +19,7 @@ internal static class CloudBoundaryTestFixtureData
         "CloudCustodyOutboxEvent",
         "CloudStackLotLineageEvent",
         "CloudStackLot",
+        "CloudFrozenEnchantment",
         "CloudCustodyRecord",
         "CloudShardBinding",
     ];

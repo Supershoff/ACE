@@ -162,6 +162,49 @@ public sealed class CloudCustodianDepositRowPolicyTests
     }
 
     [TestMethod]
+    public void Decide_AnEligibleWholeItemWithAnActiveRuntimeEnchantment_CarriesItsPreservationRequirementForward()
+    {
+        // DEP-005: an accepted deposit must carry its Frozen Enchantment preservation requirements
+        // forward from the eligibility snapshot into the deposit decision.
+        var runtimeEnchantment = new CloudRuntimeEnchantmentSnapshot(spellId: 1234, remainingDurationSeconds: 90.5);
+        var snapshot = EligibleSnapshot() with { RuntimeEnchantments = [runtimeEnchantment] };
+
+        var decision = CloudCustodianDepositRowPolicy.Decide(WholeItemRequest(snapshot), Current);
+
+        Assert.AreEqual(CloudCustodianDepositRowDecisionKind.DepositWhole, decision.Kind);
+        Assert.HasCount(1, decision.PreservationRequirements);
+        Assert.AreEqual(runtimeEnchantment, decision.PreservationRequirements[0]);
+    }
+
+    [TestMethod]
+    public void Decide_AnEligibleStackWithAnActiveRuntimeEnchantment_CarriesItsPreservationRequirementForward()
+    {
+        var runtimeEnchantment = new CloudRuntimeEnchantmentSnapshot(spellId: 4321, remainingDurationSeconds: 12.25);
+        var snapshot = EligibleSnapshot() with { RuntimeEnchantments = [runtimeEnchantment] };
+        var request = new CloudCustodianDepositRowRequest(
+            ItemId, submittedAmount: 20, currentStackSize: 20, isStackable: true, isDuplicateInSubmission: false, snapshot);
+
+        var decision = CloudCustodianDepositRowPolicy.Decide(request, Current);
+
+        Assert.AreEqual(CloudCustodianDepositRowDecisionKind.DepositStack, decision.Kind);
+        Assert.HasCount(1, decision.PreservationRequirements);
+        Assert.AreEqual(runtimeEnchantment, decision.PreservationRequirements[0]);
+    }
+
+    [TestMethod]
+    public void Decide_ARejectedRowWithAnActiveRuntimeEnchantment_CarriesNoPreservationRequirement()
+    {
+        // A rejected row never deposits, so it must never claim a Frozen Enchantment requirement.
+        var runtimeEnchantment = new CloudRuntimeEnchantmentSnapshot(spellId: 1234, remainingDurationSeconds: 90.5);
+        var snapshot = EligibleSnapshot() with { IsEquipped = true, RuntimeEnchantments = [runtimeEnchantment] };
+
+        var decision = CloudCustodianDepositRowPolicy.Decide(WholeItemRequest(snapshot), Current);
+
+        Assert.AreEqual(CloudCustodianDepositRowDecisionKind.Reject, decision.Kind);
+        Assert.IsEmpty(decision.PreservationRequirements);
+    }
+
+    [TestMethod]
     public void Decide_RejectsNullRequest()
     {
         Assert.ThrowsExactly<ArgumentNullException>(() => CloudCustodianDepositRowPolicy.Decide(null!, Current));

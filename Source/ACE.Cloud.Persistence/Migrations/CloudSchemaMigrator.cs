@@ -27,6 +27,7 @@ public static class CloudSchemaMigrator
         new AddCloudStackLots(),
         new AddWithdrawalReservationsAndOrderedOutbox(),
         new AddCloudCustodianConfiguration(),
+        new AddCloudFrozenEnchantments(),
     ];
 
     /// <summary>

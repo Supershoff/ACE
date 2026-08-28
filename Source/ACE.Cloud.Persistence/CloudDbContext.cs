@@ -36,6 +36,8 @@ public sealed class CloudDbContext : DbContext
 
     public DbSet<CloudCustodianCustomPositionRecord> CloudCustodianCustomPositions => Set<CloudCustodianCustomPositionRecord>();
 
+    public DbSet<CloudFrozenEnchantment> CloudFrozenEnchantments => Set<CloudFrozenEnchantment>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<CloudShardBinding>(entity =>
@@ -371,6 +373,37 @@ public sealed class CloudDbContext : DbContext
             entity.Property(position => position.PositionRaw).IsRequired().HasMaxLength(255);
 
             entity.Property(position => position.CreatedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAdd()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudFrozenEnchantment>(entity =>
+        {
+            entity.ToTable("CloudFrozenEnchantment");
+
+            entity.HasKey(frozen => frozen.Id);
+            entity.Property(frozen => frozen.Id).ValueGeneratedNever();
+
+            entity.Property(frozen => frozen.CustodyRecordId).IsRequired();
+            entity.HasIndex(frozen => frozen.CustodyRecordId);
+            entity.HasOne<CloudCustodyRecord>()
+                .WithMany()
+                .HasForeignKey(frozen => frozen.CustodyRecordId)
+                .HasPrincipalKey(record => record.Id)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(frozen => frozen.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(frozen => frozen.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(frozen => frozen.SpellId).IsRequired();
+            entity.Property(frozen => frozen.RemainingDurationSeconds).IsRequired();
+
+            entity.Property(frozen => frozen.CreatedAtUtc)
                 .IsRequired()
                 .ValueGeneratedOnAdd()
                 .HasDefaultValueSql("CURRENT_TIMESTAMP");

@@ -8,6 +8,7 @@ using ACE.Cloud.Persistence;
 using ACE.Common;
 using ACE.Database;
 using ACE.Entity.Enum;
+using ACE.Entity.Models;
 using ACE.Server.Entity;
 using ACE.Server.Managers;
 using ACE.Server.Network.GameEvent.Events;
@@ -133,13 +134,17 @@ namespace ACE.Server.WorldObjects
 
                 if (decision.Kind == CloudCustodianDepositRowDecisionKind.DepositStack)
                 {
-                    var outcome = boundary.DepositStackAsync(item.Guid.Full, shardId, ownerId, decision.Quantity, idempotencyKey).GetAwaiter().GetResult();
+                    var outcome = boundary.DepositStackAsync(
+                        item.Guid.Full, shardId, ownerId, decision.Quantity, idempotencyKey,
+                        preservationRequirements: decision.PreservationRequirements).GetAwaiter().GetResult();
                     outcomeKind = outcome.Kind;
                     reason = outcome.Reason;
                 }
                 else
                 {
-                    var outcome = boundary.DepositAsync(item.Guid.Full, shardId, ownerId, idempotencyKey).GetAwaiter().GetResult();
+                    var outcome = boundary.DepositAsync(
+                        item.Guid.Full, shardId, ownerId, idempotencyKey,
+                        preservationRequirements: decision.PreservationRequirements).GetAwaiter().GetResult();
                     outcomeKind = outcome.Kind;
                     reason = outcome.Reason;
                 }
@@ -205,7 +210,51 @@ namespace ACE.Server.WorldObjects
                 isCharacterBoundOrUnsafeStateful: item.Bonded is BondedStatus.Bonded or BondedStatus.Sticky,
                 hasFiniteLifespan: item.Lifespan.HasValue,
                 hasActiveCooldownOrAttachment: false,
-                isCurrentlyTradedOrReserved: isCurrentlyTradedOrReserved);
+                isCurrentlyTradedOrReserved: isCurrentlyTradedOrReserved,
+                runtimeEnchantments: BuildRuntimeEnchantments(item.Biota.PropertiesEnchantmentRegistry.Clone(item.BiotaDatabaseLock)));
+        }
+
+        /// <summary>
+        /// Reduces a live item's active enchantment registry to the Frozen Enchantment preservation
+        /// list DEP-005 requires (<see cref="CloudItemEligibilitySnapshot.RuntimeEnchantments"/>):
+        /// only runtime (temporary) enchantments, each with its currently remaining duration
+        /// (Duration + StartTime -- StartTime ticks backwards toward -Duration every heartbeat, see
+        /// <c>PropertiesEnchantmentRegistryExtensions.HeartBeatEnchantmentsAndReturnExpired</c>).
+        /// Permanent built-in item spells (Duration == -1, an equip-linked enchantment that lasts
+        /// only as long as the item stays equipped) and cooldown pseudo-entries (SpellId greater
+        /// than <see cref="short.MaxValue"/>, the same range <c>EnchantmentManager.GetCooldownSpellID</c>
+        /// reserves) are excluded, matching <c>EnchantmentManager.RemoveAllEnchantments</c>'s own
+        /// exclusion pattern -- DEP-005: "Permanent built-in spells remain ordinary static
+        /// properties." Kept free of any live <c>WorldObject</c>/<c>EnchantmentManager</c> dependency
+        /// (only the plain registry entries it is handed) so it can run in a table-driven unit test.
+        /// </summary>
+        internal static IReadOnlyList<CloudRuntimeEnchantmentSnapshot> BuildRuntimeEnchantments(
+            IEnumerable<PropertiesEnchantmentRegistry> activeEnchantments)
+        {
+            if (activeEnchantments is null)
+            {
+                return [];
+            }
+
+            var preserved = new List<CloudRuntimeEnchantmentSnapshot>();
+
+            foreach (var entry in activeEnchantments)
+            {
+                if (entry.Duration == -1 || entry.SpellId > short.MaxValue)
+                {
+                    continue;
+                }
+
+                var remainingDurationSeconds = entry.Duration + entry.StartTime;
+                if (remainingDurationSeconds <= 0)
+                {
+                    continue;
+                }
+
+                preserved.Add(new CloudRuntimeEnchantmentSnapshot(entry.SpellId, remainingDurationSeconds));
+            }
+
+            return preserved;
         }
     }
 }
