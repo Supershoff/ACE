@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Platforms>x64</Platforms>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MSTest" Version="4.0.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Production code under test lives in ACE.Server (Player.TryRunSynchronousPersist,
+         Player.RunConcurrentlyAsync, Player.BuildRuntimeEnchantments), so these tests cannot move
+         into ACE.Cloud.Domain.Tests the way CloudOwnerIdentityTests did (ACE.Cloud.Domain has no
+         ACE.Server dependency by design, ARCH-012). This project exists so the Cloud Mule CI
+         test-discovery filter, which only runs test projects whose name matches "Cloud", runs
+         these WorldObject-free regression tests; ACE.Server.Tests is intentionally excluded from
+         that filter (docs/agents/automation.md) and they never ran there. -->
+    <ProjectReference Include="..\ACE.Server\ACE.Server.csproj" />
+  </ItemGroup>
+
+</Project>

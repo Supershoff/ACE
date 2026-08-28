@@ -87,6 +87,22 @@ internal static class AceShardTestData
         return count > 0;
     }
 
+    public static async Task<bool> HasWielderAsync(string aceShardConnectionString, uint biotaId)
+    {
+        await using var connection = new MySqlConnection(aceShardConnectionString);
+        await connection.OpenAsync();
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT COUNT(*) FROM biota_properties_i_i_d WHERE object_Id = @objectId AND type = @type;
+            """;
+        command.Parameters.AddWithValue("@objectId", biotaId);
+        command.Parameters.AddWithValue("@type", WielderPropertyType);
+
+        var count = (long)(await command.ExecuteScalarAsync())!;
+        return count > 0;
+    }
+
     public static async Task<bool> HasSpecificContainerAsync(string aceShardConnectionString, uint biotaId, uint containerId)
     {
         await using var connection = new MySqlConnection(aceShardConnectionString);

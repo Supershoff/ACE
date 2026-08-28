@@ -129,6 +129,36 @@ public sealed class CloudCustodyBoundaryFaultInjectionTests
     }
 
     [TestMethod]
+    public async Task CrashBeforeCommit_DuringDeposit_WithWorldPossessionStillPresent_LeavesPossessionIntact_NotOrphaned()
+    {
+        // AC Cloud Mule review of issue #13, finding 1 (P0): Deposit now removes a biota's remaining
+        // world possession atomically with creating its Cloud Custody Record, in the same
+        // transaction. A crash before that transaction commits must leave the biota exactly as it
+        // was -- still world-possessed, no Cloud Custody Record -- never with world possession
+        // already removed but no custody record to show for it (a permanently orphaned biota).
+        var biotaId = NextId();
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, biotaId);
+        await AceShardTestData.GrantContainerAsync(_fixture.AceShardConnectionString, biotaId, containerId: NextId());
+
+        var options = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
+        await using var context = new CloudDbContext(options);
+        var boundary = new CloudCustodyBoundary(context);
+
+        Func<CloudBoundaryFaultPoint, Task> injector = point =>
+            point == CloudBoundaryFaultPoint.BeforeCommit ? throw new CloudBoundarySimulatedCrashException(point) : Task.CompletedTask;
+
+        await Assert.ThrowsExactlyAsync<CloudBoundarySimulatedCrashException>(
+            () => boundary.DepositAsync(biotaId, ShardId, Guid.NewGuid(), Guid.NewGuid(), injector, CancellationToken.None));
+
+        Assert.IsTrue(
+            await AceShardTestData.HasContainerAsync(_fixture.AceShardConnectionString, biotaId),
+            "A crash before commit must not leave the biota's world possession removed without a committed Cloud Custody Record.");
+
+        await using var verifyContext = new CloudDbContext(options);
+        Assert.AreEqual(0, await verifyContext.CloudCustodyRecords.CountAsync(r => r.BiotaId == biotaId), "The crashed deposit must not have created a Cloud Custody Record.");
+    }
+
+    [TestMethod]
     public async Task CrashAfterCustodyChange_DuringWithdrawal_RollsBackBothTheCustodyReleaseAndAnyPossessionGrant()
     {
         var biotaId = NextId();

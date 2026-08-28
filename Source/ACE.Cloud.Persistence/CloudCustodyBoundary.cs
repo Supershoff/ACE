@@ -54,18 +54,22 @@ public sealed class CloudCustodyBoundary
     }
 
     /// <summary>
-    /// Moves a native biota with no current world possession into Cloud custody (ARCH-002,
-    /// ARCH-005). Repeating this call with the same <paramref name="idempotencyKey"/> after a
-    /// caller timeout, retry, or crash returns the original committed result rather than creating a
-    /// second Cloud Custody Record (transaction rule 4).
+    /// Moves a native biota into Cloud custody, atomically clearing any remaining world possession
+    /// (Container, Wielder, or Location) as part of the same commit that creates the Cloud Custody
+    /// Record (ARCH-002, ARCH-005) -- so a caller crash or a rejected commit can never leave the
+    /// biota with neither world possession nor a Cloud Custody Record. Repeating this call with the
+    /// same <paramref name="idempotencyKey"/> after a caller timeout, retry, or crash returns the
+    /// original committed result rather than creating a second Cloud Custody Record (transaction
+    /// rule 4).
     /// </summary>
     public Task<CloudBoundaryOutcome<CloudCustodyRecord>> DepositAsync(
         uint biotaId,
         string shardId,
         Guid ownerId,
         Guid idempotencyKey,
-        CancellationToken cancellationToken = default) =>
-        DepositAsync(biotaId, shardId, ownerId, idempotencyKey, faultInjector: null, cancellationToken);
+        CancellationToken cancellationToken = default,
+        IReadOnlyList<CloudRuntimeEnchantmentSnapshot>? preservationRequirements = null) =>
+        DepositAsync(biotaId, shardId, ownerId, idempotencyKey, faultInjector: null, cancellationToken, preservationRequirements);
 
     /// <summary>
     /// Test-only overload: <paramref name="faultInjector"/> is invoked at every named
@@ -79,12 +83,13 @@ public sealed class CloudCustodyBoundary
         Guid ownerId,
         Guid idempotencyKey,
         Func<CloudBoundaryFaultPoint, Task>? faultInjector,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IReadOnlyList<CloudRuntimeEnchantmentSnapshot>? preservationRequirements = null)
     {
         RequireIdempotencyKey(idempotencyKey);
 
         return CloudBoundaryRetry.ExecuteAsync(
-            () => TryDepositOnceAsync(biotaId, shardId, ownerId, idempotencyKey, faultInjector, cancellationToken),
+            () => TryDepositOnceAsync(biotaId, shardId, ownerId, idempotencyKey, faultInjector, preservationRequirements, cancellationToken),
             cancellationToken: cancellationToken);
     }
 
@@ -159,9 +164,10 @@ public sealed class CloudCustodyBoundary
     }
 
     /// <summary>
-    /// Moves a stackable native biota with no current world possession into Cloud custody as a
-    /// stack Cloud Custody Record plus its initial single Cloud Stack Lot claiming the entire
-    /// quantity for <paramref name="ownerId"/> (ARCH-002, ARCH-005, ARCH-010). <paramref
+    /// Moves a stackable native biota into Cloud custody as a stack Cloud Custody Record plus its
+    /// initial single Cloud Stack Lot claiming the entire quantity for <paramref name="ownerId"/>
+    /// (ARCH-002, ARCH-005, ARCH-010), atomically clearing any remaining world possession as part of
+    /// the same commit (see <see cref="DepositAsync"/>'s matching doc comment). <paramref
     /// name="quantity"/> is the exact quantity ACE observed on the live object at deposit time; this
     /// call also writes it to ace_shard's PropertyInt.StackSize row so the persisted native state
     /// matches (idempotent/no-op if it already does). Repeating this call with the same <paramref
@@ -173,11 +179,12 @@ public sealed class CloudCustodyBoundary
         Guid ownerId,
         int quantity,
         Guid idempotencyKey,
-        CancellationToken cancellationToken = default) =>
-        DepositStackAsync(biotaId, shardId, ownerId, quantity, idempotencyKey, faultInjector: null, cancellationToken);
+        CancellationToken cancellationToken = default,
+        IReadOnlyList<CloudRuntimeEnchantmentSnapshot>? preservationRequirements = null) =>
+        DepositStackAsync(biotaId, shardId, ownerId, quantity, idempotencyKey, faultInjector: null, cancellationToken, preservationRequirements);
 
     /// <summary>
-    /// Test-only overload; see <see cref="DepositAsync(uint, string, Guid, Guid, Func{CloudBoundaryFaultPoint, Task}, CancellationToken)"/>'s doc comment.
+    /// Test-only overload; see the internal <see cref="DepositAsync"/> overload's doc comment.
     /// </summary>
     internal Task<CloudBoundaryOutcome<CloudStackDepositResult>> DepositStackAsync(
         uint biotaId,
@@ -186,7 +193,8 @@ public sealed class CloudCustodyBoundary
         int quantity,
         Guid idempotencyKey,
         Func<CloudBoundaryFaultPoint, Task>? faultInjector,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyList<CloudRuntimeEnchantmentSnapshot>? preservationRequirements = null)
     {
         RequireIdempotencyKey(idempotencyKey);
 
@@ -196,7 +204,7 @@ public sealed class CloudCustodyBoundary
         }
 
         return CloudBoundaryRetry.ExecuteAsync(
-            () => TryDepositStackOnceAsync(biotaId, shardId, ownerId, quantity, idempotencyKey, faultInjector, cancellationToken),
+            () => TryDepositStackOnceAsync(biotaId, shardId, ownerId, quantity, idempotencyKey, faultInjector, preservationRequirements, cancellationToken),
             cancellationToken: cancellationToken);
     }
 
@@ -617,7 +625,7 @@ public sealed class CloudCustodyBoundary
         var ownerId = reservation.OwnerId;
         var correlationId = Guid.NewGuid();
 
-        _context.CloudCustodyRecords.Remove(record);
+        await ReleaseCustodyRecordAsync(record, cancellationToken);
         await _context.SaveChangesAsync(cancellationToken);
 
         await GrantContainerAsync(biotaId, recipientContainerId, cancellationToken);
@@ -687,6 +695,7 @@ public sealed class CloudCustodyBoundary
         Guid ownerId,
         Guid idempotencyKey,
         Func<CloudBoundaryFaultPoint, Task>? faultInjector,
+        IReadOnlyList<CloudRuntimeEnchantmentSnapshot>? preservationRequirements,
         CancellationToken cancellationToken)
     {
         _context.ChangeTracker.Clear();
@@ -707,23 +716,27 @@ public sealed class CloudCustodyBoundary
 
         await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
 
-        if (await HasWorldPossessionAsync(biotaId, cancellationToken))
-        {
-            await transaction.RollbackAsync(cancellationToken);
-            return CloudBoundaryOutcome<CloudCustodyRecord>.Conflict(
-                $"Biota {biotaId} currently has world possession (Container, Wielder, or Location) and cannot enter Cloud custody.");
-        }
-
         await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterValidation);
 
-        // Deposit does not itself remove world possession: HasWorldPossessionAsync above already
-        // requires it to be absent (ACE's Cloud Custodian path is responsible for that earlier
-        // step). This fault point still exists so the protocol shape matches WithdrawAsync's.
+        // Deposit removes world possession itself, on this same transaction/connection
+        // (mirroring GrantContainerAsync's withdrawal-direction counterpart), so the commit below
+        // either performs both the shard-side removal and the Cloud-side custody creation or
+        // neither: a caller crash or Cloud-side rejection can never leave a biota that has already
+        // lost world possession without yet having a Cloud Custody Record (a permanently orphaned,
+        // neither-world-nor-Cloud biota).
+        await RemoveWorldPossessionAsync(biotaId, cancellationToken);
+
         await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterPossessionChange);
 
         var correlationId = Guid.NewGuid();
         var record = new CloudCustodyRecord(biotaId, shardId, ownerId, correlationId);
         _context.CloudCustodyRecords.Add(record);
+
+        var frozenEnchantments = BuildFrozenEnchantments(record.Id, shardId, preservationRequirements);
+        if (frozenEnchantments.Count > 0)
+        {
+            _context.CloudFrozenEnchantments.AddRange(frozenEnchantments);
+        }
 
         try
         {
@@ -833,7 +846,7 @@ public sealed class CloudCustodyBoundary
         // for a biota that still has a CloudCustodyRecord row. Deleting first, on the same
         // connection and transaction, means the trigger's own EXISTS check observes this
         // transaction's own uncommitted delete and lets the grant through.
-        _context.CloudCustodyRecords.Remove(record);
+        await ReleaseCustodyRecordAsync(record, cancellationToken);
         await _context.SaveChangesAsync(cancellationToken);
         await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterCustodyChange);
 
@@ -862,6 +875,7 @@ public sealed class CloudCustodyBoundary
         int quantity,
         Guid idempotencyKey,
         Func<CloudBoundaryFaultPoint, Task>? faultInjector,
+        IReadOnlyList<CloudRuntimeEnchantmentSnapshot>? preservationRequirements,
         CancellationToken cancellationToken)
     {
         _context.ChangeTracker.Clear();
@@ -882,14 +896,13 @@ public sealed class CloudCustodyBoundary
 
         await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
 
-        if (await HasWorldPossessionAsync(biotaId, cancellationToken))
-        {
-            await transaction.RollbackAsync(cancellationToken);
-            return CloudBoundaryOutcome<CloudStackDepositResult>.Conflict(
-                $"Biota {biotaId} currently has world possession (Container, Wielder, or Location) and cannot enter Cloud custody.");
-        }
-
         await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterValidation);
+
+        // See TryDepositOnceAsync's matching comment: removing world possession on this same
+        // transaction/connection, immediately before the Cloud Custody Record insert, is what
+        // makes the deposit atomic and closes the orphan window.
+        await RemoveWorldPossessionAsync(biotaId, cancellationToken);
+
         await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterPossessionChange);
 
         var correlationId = Guid.NewGuid();
@@ -897,6 +910,12 @@ public sealed class CloudCustodyBoundary
         var lot = new CloudStackLot(record.Id, shardId, ownerId, quantity);
         _context.CloudCustodyRecords.Add(record);
         _context.CloudStackLots.Add(lot);
+
+        var frozenEnchantments = BuildFrozenEnchantments(record.Id, shardId, preservationRequirements);
+        if (frozenEnchantments.Count > 0)
+        {
+            _context.CloudFrozenEnchantments.AddRange(frozenEnchantments);
+        }
 
         try
         {
@@ -1037,7 +1056,7 @@ public sealed class CloudCustodyBoundary
         if (isFullStackWithdrawal)
         {
             _context.CloudStackLots.Remove(lot);
-            _context.CloudCustodyRecords.Remove(record);
+            await ReleaseCustodyRecordAsync(record, cancellationToken);
             await _context.SaveChangesAsync(cancellationToken);
             await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterCustodyChange);
 
@@ -1343,33 +1362,40 @@ public sealed class CloudCustodyBoundary
         command.Parameters.Add(parameter);
     }
 
-    private async Task<bool> HasWorldPossessionAsync(uint biotaId, CancellationToken cancellationToken)
+    /// <summary>
+    /// Clears any remaining world possession (Container, Wielder, or Location) for a biota entering
+    /// Cloud custody, on the same connection/transaction as the Cloud Custody Record insert that
+    /// follows it (mirroring <see cref="GrantContainerAsync"/>'s withdrawal-direction counterpart).
+    /// Deleting rather than merely checking-and-rejecting is what makes deposit atomic: a single
+    /// commit performs both the shard-side removal and the Cloud-side custody creation, or neither
+    /// does (transaction rule 5). Idempotent/no-op if the caller had already removed possession.
+    /// </summary>
+    private async Task RemoveWorldPossessionAsync(uint biotaId, CancellationToken cancellationToken)
     {
         var connection = _context.Database.GetDbConnection();
+        var transaction = _context.Database.CurrentTransaction?.GetDbTransaction();
 
-        await using var command = connection.CreateCommand();
-        command.Transaction = _context.Database.CurrentTransaction?.GetDbTransaction();
-        command.CommandText = """
-            SELECT
-                EXISTS (
-                    SELECT 1 FROM ace_shard.biota_properties_i_i_d
-                    WHERE object_Id = @biotaId AND type IN (2, 3)
-                    FOR UPDATE
-                )
-                OR EXISTS (
-                    SELECT 1 FROM ace_shard.biota_properties_position
-                    WHERE object_Id = @biotaId AND position_Type = 1
-                    FOR UPDATE
-                );
-            """;
+        await using (var command = connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText = """
+                DELETE FROM ace_shard.biota_properties_i_i_d
+                WHERE object_Id = @biotaId AND type IN (2, 3);
+                """;
+            AddParameter(command, "@biotaId", biotaId);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
 
-        var parameter = command.CreateParameter();
-        parameter.ParameterName = "@biotaId";
-        parameter.Value = biotaId;
-        command.Parameters.Add(parameter);
-
-        var result = await command.ExecuteScalarAsync(cancellationToken);
-        return result is not null && result is not DBNull && Convert.ToInt64(result) != 0;
+        await using (var command = connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText = """
+                DELETE FROM ace_shard.biota_properties_position
+                WHERE object_Id = @biotaId AND position_Type = 1;
+                """;
+            AddParameter(command, "@biotaId", biotaId);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
     }
 
     private async Task GrantContainerAsync(uint biotaId, uint recipientContainerId, CancellationToken cancellationToken)
@@ -1394,6 +1420,70 @@ public sealed class CloudCustodyBoundary
         command.Parameters.Add(containerParameter);
 
         await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Reduces a deposit's DEP-005 preservation requirements to the <see cref="CloudFrozenEnchantment"/>
+    /// rows to persist alongside <paramref name="custodyRecordId"/>, added to the same
+    /// SaveChangesAsync call as the Cloud Custody Record insert (transaction rule 5): an empty or
+    /// null list produces no rows, matching an item with no active runtime enchantments.
+    /// </summary>
+    private static List<CloudFrozenEnchantment> BuildFrozenEnchantments(
+        Guid custodyRecordId, string shardId, IReadOnlyList<CloudRuntimeEnchantmentSnapshot>? preservationRequirements)
+    {
+        if (preservationRequirements is null || preservationRequirements.Count == 0)
+        {
+            return [];
+        }
+
+        var frozen = new List<CloudFrozenEnchantment>(preservationRequirements.Count);
+        foreach (var requirement in preservationRequirements)
+        {
+            frozen.Add(new CloudFrozenEnchantment(custodyRecordId, shardId, requirement.SpellId, requirement.RemainingDurationSeconds));
+        }
+
+        return frozen;
+    }
+
+    /// <summary>
+    /// Stages a Cloud Custody Record for removal, along with every row that references it and
+    /// would otherwise block the delete or wrongly survive it (issue #13 review, findings 1 and 2):
+    /// <list type="bullet">
+    /// <item>Its <see cref="CloudFrozenEnchantment"/> rows: DEP-005's
+    /// <c>FK_CloudFrozenEnchantment_CloudCustodyRecord_CustodyRecordId</c> is <c>ON DELETE
+    /// RESTRICT</c>, so deleting the custody record without first deleting these would make every
+    /// withdrawal of an item that had an active runtime enchantment at deposit time throw an
+    /// unhandled foreign-key violation.</item>
+    /// <item>Any prior committed Deposit/StackDeposit <see cref="CloudIdempotencyRecord"/> for the
+    /// same biota: <see cref="CloudOwnerIdentity.DepositIdempotencyKey"/> is deterministic in
+    /// (shardId, biotaId) alone, so a future re-deposit of this same biota (legitimate once it is
+    /// back in world possession) recomputes the exact same key. Leaving the old record in place
+    /// would make that re-deposit replay a Cloud Custody Record that no longer exists instead of
+    /// creating a new one.</item>
+    /// </list>
+    /// Staged on the tracked change set only; callers still issue the single SaveChangesAsync that
+    /// actually deletes these rows in the same transaction as the rest of the withdrawal.
+    /// </summary>
+    private async Task ReleaseCustodyRecordAsync(CloudCustodyRecord record, CancellationToken cancellationToken)
+    {
+        var frozenEnchantments = await _context.CloudFrozenEnchantments.AsNoTracking()
+            .Where(f => f.CustodyRecordId == record.Id)
+            .ToListAsync(cancellationToken);
+        if (frozenEnchantments.Count > 0)
+        {
+            _context.CloudFrozenEnchantments.RemoveRange(frozenEnchantments);
+        }
+
+        var priorDepositRecords = await _context.CloudIdempotencyRecords.AsNoTracking()
+            .Where(r => r.BiotaId == record.BiotaId && r.ShardId == record.ShardId
+                && (r.OperationType == CloudBoundaryOperationType.Deposit || r.OperationType == CloudBoundaryOperationType.StackDeposit))
+            .ToListAsync(cancellationToken);
+        if (priorDepositRecords.Count > 0)
+        {
+            _context.CloudIdempotencyRecords.RemoveRange(priorDepositRecords);
+        }
+
+        _context.CloudCustodyRecords.Remove(record);
     }
 
     private static bool IsDuplicateKey(DbUpdateException ex) =>

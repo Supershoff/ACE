@@ -154,6 +154,17 @@ namespace ACE.Server.WorldObjects
                 return;
             }
 
+            // Cloud Custodian sales replace world possession with Cloud custody rather than
+            // reselling or destroying the item, so they never flow through the ordinary
+            // VerifySellItems/ProcessItemsForPurchase path below (AC Cloud Mule issue #13,
+            // DEP-002, ARCH-002, ARCH-005): each row is instead validated and committed
+            // independently against the Cloud eligibility policy and persistence boundary.
+            if (vendor is CloudCustodian custodian)
+            {
+                HandleCloudCustodianDeposit(custodian, itemProfiles);
+                return;
+            }
+
             // perform validations on requested sell items,
             // and filter to list of validated items
 

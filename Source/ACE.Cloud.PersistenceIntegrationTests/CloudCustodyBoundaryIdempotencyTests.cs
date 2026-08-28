@@ -1,3 +1,4 @@
+using ACE.Cloud.Domain;
 using ACE.Cloud.Persistence;
 using Microsoft.EntityFrameworkCore;
 
@@ -174,6 +175,41 @@ public sealed class CloudCustodyBoundaryIdempotencyTests
 
         var actualResult = await slowDeposit;
         Assert.AreEqual(requeried.Value!.Id, actualResult.Value!.Id);
+    }
+
+    [TestMethod]
+    public async Task Deposit_OfABiotaPreviouslyWithdrawnFromCloudCustody_CreatesANewCustodyRecord_InsteadOfConflicting()
+    {
+        // Issue #13 review, finding 2: CloudOwnerIdentity.DepositIdempotencyKey is deterministic in
+        // (shardId, biotaId) alone. Once a biota is withdrawn back to world possession it can
+        // legitimately be re-deposited, but re-submitting it recomputes the exact same idempotency
+        // key as the original deposit. Without voiding that stale record at withdrawal time, the
+        // re-deposit finds it, tries to replay it, and throws CloudCustodyConflictException because
+        // the original CloudCustodyRecord row no longer exists.
+        var biotaId = NextId();
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, biotaId);
+
+        var options = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
+        await using var context = new CloudDbContext(options);
+        var boundary = new CloudCustodyBoundary(context);
+
+        var depositKey = CloudOwnerIdentity.DepositIdempotencyKey(ShardId, biotaId);
+
+        var firstDeposit = await boundary.DepositAsync(biotaId, ShardId, Guid.NewGuid(), depositKey);
+        Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, firstDeposit.Kind, firstDeposit.Reason);
+
+        var withdrawOutcome = await boundary.WithdrawAsync(firstDeposit.Value!.Id, expectedVersion: 1, NextId(), Guid.NewGuid());
+        Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, withdrawOutcome.Kind, withdrawOutcome.Reason);
+
+        var secondDeposit = await boundary.DepositAsync(biotaId, ShardId, Guid.NewGuid(), depositKey);
+
+        Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, secondDeposit.Kind, secondDeposit.Reason);
+        Assert.AreNotEqual(
+            firstDeposit.Value!.Id, secondDeposit.Value!.Id,
+            "Re-depositing after a withdrawal must create a new Cloud Custody Record, not replay the withdrawn one.");
+
+        await using var verifyContext = new CloudDbContext(options);
+        Assert.AreEqual(1, await verifyContext.CloudCustodyRecords.CountAsync(r => r.BiotaId == biotaId));
     }
 
     [TestMethod]
