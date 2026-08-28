@@ -11,6 +11,13 @@ internal static class CloudBoundaryTestFixtureData
 {
     private static readonly string[] TablesInDeleteOrder =
     [
+        "CloudDisplayCharacterSelectionHistoryEvent",
+        "CloudDisplayCharacterSelection",
+        "CloudAccountLinkLedgerEvent",
+        "CloudAccountLinkIdempotencyRecord",
+        "CloudActiveAccountLinkMarker",
+        "CloudAccountLink",
+        "CloudOwnershipGroup",
         "CloudWebSession",
         "CloudAuthGrantConsumption",
         "CloudCustodianCustomPosition",

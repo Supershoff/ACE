@@ -66,6 +66,20 @@ public sealed class CloudDbContext : DbContext
 
     public DbSet<CloudWebSession> CloudWebSessions => Set<CloudWebSession>();
 
+    public DbSet<CloudOwnershipGroup> CloudOwnershipGroups => Set<CloudOwnershipGroup>();
+
+    public DbSet<CloudAccountLink> CloudAccountLinks => Set<CloudAccountLink>();
+
+    public DbSet<CloudActiveAccountLinkMarker> CloudActiveAccountLinkMarkers => Set<CloudActiveAccountLinkMarker>();
+
+    public DbSet<CloudAccountLinkIdempotencyRecord> CloudAccountLinkIdempotencyRecords => Set<CloudAccountLinkIdempotencyRecord>();
+
+    public DbSet<CloudAccountLinkLedgerEvent> CloudAccountLinkLedgerEvents => Set<CloudAccountLinkLedgerEvent>();
+
+    public DbSet<CloudDisplayCharacterSelection> CloudDisplayCharacterSelections => Set<CloudDisplayCharacterSelection>();
+
+    public DbSet<CloudDisplayCharacterSelectionHistoryEvent> CloudDisplayCharacterSelectionHistoryEvents => Set<CloudDisplayCharacterSelectionHistoryEvent>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<CloudShardBinding>(entity =>
@@ -805,6 +819,223 @@ public sealed class CloudDbContext : DbContext
             entity.Property(session => session.ExpiresAtUtc).IsRequired();
             entity.Property(session => session.LastSeenAtUtc).IsRequired();
             entity.Property(session => session.RevokedAtUtc);
+        });
+
+        modelBuilder.Entity<CloudOwnershipGroup>(entity =>
+        {
+            entity.ToTable("CloudOwnershipGroup");
+
+            entity.HasKey(group => group.Id);
+            entity.Property(group => group.Id).ValueGeneratedNever();
+
+            entity.Property(group => group.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(group => group.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // AUTH-005: exactly one ownership group per Main Account per shard.
+            entity.Property(group => group.MainAccountId).IsRequired();
+            entity.HasIndex(group => new { group.ShardId, group.MainAccountId }).IsUnique();
+
+            entity.Property(group => group.CreatedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAdd()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudAccountLink>(entity =>
+        {
+            entity.ToTable("CloudAccountLink");
+
+            entity.HasKey(link => link.Id);
+            entity.Property(link => link.Id).ValueGeneratedNever();
+
+            entity.Property(link => link.OwnershipGroupId).IsRequired();
+            entity.HasIndex(link => link.OwnershipGroupId);
+            entity.HasOne<CloudOwnershipGroup>()
+                .WithMany()
+                .HasForeignKey(link => link.OwnershipGroupId)
+                .HasPrincipalKey(group => group.Id)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(link => link.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(link => link.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // Not unique: this table retains every historical link/unlink cycle for the same
+            // account (audit); CloudActiveAccountLinkMarker enforces "at most one active link".
+            entity.Property(link => link.LinkedAccountId).IsRequired();
+            entity.HasIndex(link => new { link.ShardId, link.LinkedAccountId });
+
+            entity.Property(link => link.Status).IsRequired().HasConversion<string>().HasMaxLength(16);
+
+            entity.Property(link => link.LinkedAtUtc).IsRequired();
+            entity.Property(link => link.UnlinkedAtUtc);
+        });
+
+        modelBuilder.Entity<CloudActiveAccountLinkMarker>(entity =>
+        {
+            entity.ToTable("CloudActiveAccountLinkMarker");
+
+            // The primary key itself is AUTH-006's actual enforcement: at most one active link per
+            // account per shard (this entity's own doc comment explains why a filtered unique index
+            // on CloudAccountLink cannot play this role instead).
+            entity.HasKey(marker => new { marker.ShardId, marker.AccountId });
+
+            entity.Property(marker => marker.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(marker => marker.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(marker => marker.AccountId).IsRequired();
+
+            entity.Property(marker => marker.AccountLinkId).IsRequired();
+            entity.HasOne<CloudAccountLink>()
+                .WithMany()
+                .HasForeignKey(marker => marker.AccountLinkId)
+                .HasPrincipalKey(link => link.Id)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(marker => marker.OwnershipGroupId).IsRequired();
+            entity.HasIndex(marker => marker.OwnershipGroupId);
+            entity.HasOne<CloudOwnershipGroup>()
+                .WithMany()
+                .HasForeignKey(marker => marker.OwnershipGroupId)
+                .HasPrincipalKey(group => group.Id)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(marker => marker.CreatedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAdd()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudAccountLinkIdempotencyRecord>(entity =>
+        {
+            entity.ToTable("CloudAccountLinkIdempotencyRecord");
+
+            entity.HasKey(record => record.IdempotencyKey);
+            entity.Property(record => record.IdempotencyKey).ValueGeneratedNever();
+
+            entity.Property(record => record.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(record => record.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(record => record.OperationType).IsRequired().HasConversion<string>().HasMaxLength(16);
+            entity.Property(record => record.MainAccountId).IsRequired();
+            entity.Property(record => record.SourceAccountId).IsRequired();
+            entity.Property(record => record.IsApproved).IsRequired();
+            entity.Property(record => record.RejectionCode).IsRequired().HasConversion<string>().HasMaxLength(32);
+
+            // Not foreign keys: a rejected attempt leaves both null, and CloudAccountLink retains
+            // every historical row so this reference always stays resolvable when present anyway.
+            entity.Property(record => record.AccountLinkId);
+            entity.Property(record => record.OwnershipGroupId);
+
+            entity.Property(record => record.CorrelationId).IsRequired();
+
+            entity.Property(record => record.CreatedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAdd()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudAccountLinkLedgerEvent>(entity =>
+        {
+            entity.ToTable("CloudAccountLinkLedgerEvent");
+
+            entity.HasKey(evt => evt.Id);
+            entity.Property(evt => evt.Id).ValueGeneratedNever();
+
+            entity.Property(evt => evt.CorrelationId).IsRequired();
+            entity.HasIndex(evt => evt.CorrelationId);
+
+            entity.Property(evt => evt.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(evt => evt.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(evt => evt.EventType).IsRequired().HasConversion<string>().HasMaxLength(16);
+            entity.Property(evt => evt.MainAccountId).IsRequired();
+            entity.HasIndex(evt => evt.MainAccountId);
+            entity.Property(evt => evt.SourceAccountId).IsRequired();
+            entity.Property(evt => evt.Reason).HasMaxLength(512);
+
+            entity.Property(evt => evt.OccurredAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAdd()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudDisplayCharacterSelection>(entity =>
+        {
+            entity.ToTable("CloudDisplayCharacterSelection");
+
+            // AUTH-003: exactly one current Display Character pointer per ownership group.
+            entity.HasKey(selection => selection.OwnershipGroupId);
+            entity.Property(selection => selection.OwnershipGroupId).ValueGeneratedNever();
+            entity.HasOne<CloudOwnershipGroup>()
+                .WithOne()
+                .HasForeignKey<CloudDisplayCharacterSelection>(selection => selection.OwnershipGroupId)
+                .HasPrincipalKey<CloudOwnershipGroup>(group => group.Id)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(selection => selection.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(selection => selection.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(selection => selection.CharacterId);
+            entity.Property(selection => selection.CharacterName).HasMaxLength(64);
+            entity.Property(selection => selection.TotalLogins);
+            entity.Property(selection => selection.Version).IsRequired().IsConcurrencyToken();
+
+            entity.Property(selection => selection.SelectedAtUtc).IsRequired();
+        });
+
+        modelBuilder.Entity<CloudDisplayCharacterSelectionHistoryEvent>(entity =>
+        {
+            entity.ToTable("CloudDisplayCharacterSelectionHistoryEvent");
+
+            entity.HasKey(evt => evt.Id);
+            entity.Property(evt => evt.Id).ValueGeneratedNever();
+
+            entity.Property(evt => evt.CorrelationId).IsRequired();
+            entity.HasIndex(evt => evt.CorrelationId);
+
+            entity.Property(evt => evt.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(evt => evt.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(evt => evt.OwnershipGroupId).IsRequired();
+            entity.HasIndex(evt => evt.OwnershipGroupId);
+
+            entity.Property(evt => evt.Reason).IsRequired().HasConversion<string>().HasMaxLength(24);
+            entity.Property(evt => evt.CharacterId);
+            entity.Property(evt => evt.CharacterName).HasMaxLength(64);
+            entity.Property(evt => evt.TotalLogins);
+
+            entity.Property(evt => evt.OccurredAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAdd()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
         });
     }
 }
