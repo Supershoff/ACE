@@ -625,7 +625,7 @@ public sealed class CloudCustodyBoundary
         var ownerId = reservation.OwnerId;
         var correlationId = Guid.NewGuid();
 
-        _context.CloudCustodyRecords.Remove(record);
+        await ReleaseCustodyRecordAsync(record, cancellationToken);
         await _context.SaveChangesAsync(cancellationToken);
 
         await GrantContainerAsync(biotaId, recipientContainerId, cancellationToken);
@@ -846,7 +846,7 @@ public sealed class CloudCustodyBoundary
         // for a biota that still has a CloudCustodyRecord row. Deleting first, on the same
         // connection and transaction, means the trigger's own EXISTS check observes this
         // transaction's own uncommitted delete and lets the grant through.
-        _context.CloudCustodyRecords.Remove(record);
+        await ReleaseCustodyRecordAsync(record, cancellationToken);
         await _context.SaveChangesAsync(cancellationToken);
         await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterCustodyChange);
 
@@ -1056,7 +1056,7 @@ public sealed class CloudCustodyBoundary
         if (isFullStackWithdrawal)
         {
             _context.CloudStackLots.Remove(lot);
-            _context.CloudCustodyRecords.Remove(record);
+            await ReleaseCustodyRecordAsync(record, cancellationToken);
             await _context.SaveChangesAsync(cancellationToken);
             await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterCustodyChange);
 
@@ -1443,6 +1443,47 @@ public sealed class CloudCustodyBoundary
         }
 
         return frozen;
+    }
+
+    /// <summary>
+    /// Stages a Cloud Custody Record for removal, along with every row that references it and
+    /// would otherwise block the delete or wrongly survive it (issue #13 review, findings 1 and 2):
+    /// <list type="bullet">
+    /// <item>Its <see cref="CloudFrozenEnchantment"/> rows: DEP-005's
+    /// <c>FK_CloudFrozenEnchantment_CloudCustodyRecord_CustodyRecordId</c> is <c>ON DELETE
+    /// RESTRICT</c>, so deleting the custody record without first deleting these would make every
+    /// withdrawal of an item that had an active runtime enchantment at deposit time throw an
+    /// unhandled foreign-key violation.</item>
+    /// <item>Any prior committed Deposit/StackDeposit <see cref="CloudIdempotencyRecord"/> for the
+    /// same biota: <see cref="CloudOwnerIdentity.DepositIdempotencyKey"/> is deterministic in
+    /// (shardId, biotaId) alone, so a future re-deposit of this same biota (legitimate once it is
+    /// back in world possession) recomputes the exact same key. Leaving the old record in place
+    /// would make that re-deposit replay a Cloud Custody Record that no longer exists instead of
+    /// creating a new one.</item>
+    /// </list>
+    /// Staged on the tracked change set only; callers still issue the single SaveChangesAsync that
+    /// actually deletes these rows in the same transaction as the rest of the withdrawal.
+    /// </summary>
+    private async Task ReleaseCustodyRecordAsync(CloudCustodyRecord record, CancellationToken cancellationToken)
+    {
+        var frozenEnchantments = await _context.CloudFrozenEnchantments.AsNoTracking()
+            .Where(f => f.CustodyRecordId == record.Id)
+            .ToListAsync(cancellationToken);
+        if (frozenEnchantments.Count > 0)
+        {
+            _context.CloudFrozenEnchantments.RemoveRange(frozenEnchantments);
+        }
+
+        var priorDepositRecords = await _context.CloudIdempotencyRecords.AsNoTracking()
+            .Where(r => r.BiotaId == record.BiotaId && r.ShardId == record.ShardId
+                && (r.OperationType == CloudBoundaryOperationType.Deposit || r.OperationType == CloudBoundaryOperationType.StackDeposit))
+            .ToListAsync(cancellationToken);
+        if (priorDepositRecords.Count > 0)
+        {
+            _context.CloudIdempotencyRecords.RemoveRange(priorDepositRecords);
+        }
+
+        _context.CloudCustodyRecords.Remove(record);
     }
 
     private static bool IsDuplicateKey(DbUpdateException ex) =>

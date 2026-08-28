@@ -116,4 +116,36 @@ public sealed class CloudFrozenEnchantmentPersistenceTests
         Assert.AreEqual(42, frozen.SpellId);
         Assert.AreEqual(30.0, frozen.RemainingDurationSeconds);
     }
+
+    [TestMethod]
+    public async Task Withdraw_AnItemDepositedWithFrozenEnchantments_SucceedsAndRemovesTheFrozenEnchantmentRows()
+    {
+        // Issue #13 review, finding 1: CloudFrozenEnchantment.CustodyRecordId's foreign key is
+        // ON DELETE RESTRICT, so removing a CloudCustodyRecord that still has CloudFrozenEnchantment
+        // rows attached must throw unless those rows are deleted first. Without that cleanup this
+        // withdrawal throws a DbUpdateException instead of committing.
+        var biotaId = NextBiotaId();
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, biotaId);
+
+        var options = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
+        var recipientContainerId = NextBiotaId();
+
+        await using var context = new CloudDbContext(options);
+        var boundary = new CloudCustodyBoundary(context);
+
+        var preservationRequirements = new[] { new CloudRuntimeEnchantmentSnapshot(spellId: 777, remainingDurationSeconds: 45.0) };
+
+        var depositOutcome = await boundary.DepositAsync(
+            biotaId, ShardId, Guid.NewGuid(), Guid.NewGuid(), preservationRequirements: preservationRequirements);
+        Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, depositOutcome.Kind, depositOutcome.Reason);
+        var custodyRecordId = depositOutcome.Value!.Id;
+
+        var withdrawOutcome = await boundary.WithdrawAsync(custodyRecordId, expectedVersion: 1, recipientContainerId, Guid.NewGuid());
+
+        Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, withdrawOutcome.Kind, withdrawOutcome.Reason);
+
+        await using var verifyContext = new CloudDbContext(options);
+        Assert.AreEqual(0, await verifyContext.CloudFrozenEnchantments.CountAsync(f => f.CustodyRecordId == custodyRecordId));
+        Assert.AreEqual(0, await verifyContext.CloudCustodyRecords.CountAsync(r => r.Id == custodyRecordId));
+    }
 }
