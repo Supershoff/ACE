@@ -16,6 +16,11 @@ on:
         required: false
         default: false
         type: boolean
+      authorize_extra_repair:
+        description: Allow one reviewer-authorized repair after the normal three-cycle safety cap
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: claude-review-${{ inputs.head_branch }}
@@ -66,12 +71,16 @@ jobs:
 
           repair_count="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/comments?per_page=100" \
             --jq '[.[] | select(.body | contains("<!-- claude-review-repair:"))] | length')"
+          override_marker="<!-- claude-review-limit-override:${head_sha}:"
+          override_count="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/comments?per_page=100" | \
+            jq -r --arg marker "${override_marker}" '[.[][] | select(.body | contains($marker))] | length')"
           {
             echo 'skip=false'
             echo "pr_number=${pr_number}"
             echo "issue_number=${issue_number}"
             echo "head_sha=${head_sha}"
             echo "repair_count=${repair_count}"
+            echo "override_count=${override_count}"
           } >> "${GITHUB_OUTPUT}"
 
       - name: Checkout the exact tested revision
@@ -134,6 +143,8 @@ jobs:
           PR_NUMBER: ${{ steps.prepare.outputs.pr_number }}
           HEAD_SHA: ${{ steps.prepare.outputs.head_sha }}
           REPAIR_COUNT: ${{ steps.prepare.outputs.repair_count }}
+          AUTHORIZE_EXTRA_REPAIR: ${{ inputs.authorize_extra_repair }}
+          OVERRIDE_COUNT: ${{ steps.prepare.outputs.override_count }}
         shell: bash
         run: |
           set -euo pipefail
@@ -143,7 +154,12 @@ jobs:
             'VERDICT: CLEAN') route=clean ;;
             'VERDICT: BLOCKING')
               grep -Eq '\[P[01]\]' .claude-review.md || { echo 'Blocking verdict has no P0/P1 finding.'; exit 1; }
-              if [ "${REPAIR_COUNT}" -ge 3 ]; then route=stopped; else route=repair; fi
+              if [ "${REPAIR_COUNT}" -ge 3 ] && \
+                { [ "${AUTHORIZE_EXTRA_REPAIR}" != true ] || [ "${OVERRIDE_COUNT}" -gt 0 ]; }; then
+                route=stopped
+              else
+                route=repair
+              fi
               ;;
             *) echo "Invalid Claude verdict: ${verdict}"; exit 1 ;;
           esac
@@ -153,6 +169,17 @@ jobs:
           gh pr comment "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" --body-file "${RUNNER_TEMP}/review-comment.md"
           git diff --exit-code
           echo "route=${route}" >> "${GITHUB_OUTPUT}"
+
+      - name: Record reviewer-authorized extra repair
+        if: steps.classify.outputs.route == 'repair' && inputs.authorize_extra_repair == true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.prepare.outputs.pr_number }}
+          HEAD_SHA: ${{ steps.prepare.outputs.head_sha }}
+        shell: bash
+        run: |
+          gh pr comment "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+            --body "A reviewer validated the remaining exact-SHA blocking finding and authorized one additional automated repair for ${HEAD_SHA}. The normal three-cycle cap remains unchanged for subsequent reviews. <!-- claude-review-limit-override:${HEAD_SHA}:${GITHUB_RUN_ID} -->"
 
       - name: Have Claude repair blocking findings
         if: steps.classify.outputs.route == 'repair'
