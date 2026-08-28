@@ -142,6 +142,61 @@ public sealed class CloudAllegianceVaultBoundaryTests
         Assert.AreEqual(newVaultOwnerId, lot.OwnerId);
     }
 
+    /// <summary>
+    /// Red -&gt; Green regression test for issue #17's review, finding 2 (P1): a successful Vault
+    /// Absorption reassigned ownership directly and committed, with no Activity Ledger entry and no
+    /// Custody Outbox event -- unlike every other Cloud ownership transfer this codebase performs
+    /// (compare <see cref="CloudCustodyBoundary"/>'s deposit/withdrawal family, which always appends
+    /// both in the same transaction). Without an outbox event, the companion web's read model --
+    /// rebuilt purely by replaying the Custody Outbox -- silently diverges from actual ownership after
+    /// every successful Absorption: the absorbed items still appear owned by the old vault identity in
+    /// any projection built from outbox replay alone.
+    /// </summary>
+    [TestMethod]
+    public async Task AbsorbAsync_MovesWholeItemsAndStackLots_AppendsActivityLedgerAndCustodyOutboxEvents()
+    {
+        var options = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
+        var oldMonarchId = NextId();
+        var newMonarchId = NextId();
+        var oldVaultOwnerId = CloudOwnerIdentity.ForAllegianceVault(ShardId, oldMonarchId);
+        var newVaultOwnerId = CloudOwnerIdentity.ForAllegianceVault(ShardId, newMonarchId);
+
+        var wholeItemBiotaId = NextId();
+        var stackBiotaId = NextId();
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, wholeItemBiotaId);
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, stackBiotaId);
+
+        await using var context = new CloudDbContext(options);
+        var boundary = new CloudCustodyBoundary(context);
+        var vaultGateway = new CloudAllegianceVaultGateway(context);
+        await boundary.DepositAsync(wholeItemBiotaId, ShardId, oldVaultOwnerId, Guid.NewGuid());
+        await boundary.DepositStackAsync(stackBiotaId, ShardId, oldVaultOwnerId, quantity: 10, Guid.NewGuid());
+
+        var outcome = await vaultGateway.AbsorbAsync(ShardId, oldMonarchId, newMonarchId);
+        Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, outcome.Kind, outcome.Reason);
+
+        var ledgerEvents = await context.CloudActivityLedgerEvents.AsNoTracking()
+            .Where(e => e.EventType == CloudBoundaryOperationType.VaultAbsorption && e.OwnerId == newVaultOwnerId)
+            .ToListAsync();
+        var outboxEvents = await context.CloudCustodyOutboxEvents.AsNoTracking()
+            .Where(e => e.EventType == CloudBoundaryOperationType.VaultAbsorption && e.OwnerId == newVaultOwnerId)
+            .ToListAsync();
+
+        var expectedBiotaIds = new[] { wholeItemBiotaId, stackBiotaId };
+
+        CollectionAssert.AreEquivalent(
+            expectedBiotaIds,
+            ledgerEvents.Select(e => e.BiotaId).ToList(),
+            "A successful Vault Absorption must append an Activity Ledger entry for every moved item, "
+                + "recording provenance (CONTEXT.md: 'preserves each item's provenance ... in history').");
+
+        CollectionAssert.AreEquivalent(
+            expectedBiotaIds,
+            outboxEvents.Select(e => e.BiotaId).ToList(),
+            "A successful Vault Absorption must append a Custody Outbox event for every moved item, or the "
+                + "companion web's read model silently diverges from actual ownership after every Absorption.");
+    }
+
     [TestMethod]
     public async Task AbsorbAsync_OnAnAlreadyEmptySourceVault_SucceedsAsANoOp()
     {

@@ -97,11 +97,83 @@ public sealed class CloudAllegianceVaultGateway
             lot.ChangeOwner(destinationVaultOwnerId);
         }
 
+        var stackLotBackingBiotaIds = await _context.CloudCustodyRecords
+            .Where(r => stackLots.Select(l => l.CustodyRecordId).Contains(r.Id))
+            .ToDictionaryAsync(r => r.Id, r => r.BiotaId, cancellationToken);
+
+        var movedBiotaIds = custodyRecords.Select(r => r.BiotaId)
+            .Concat(stackLots.Select(l => stackLotBackingBiotaIds[l.CustodyRecordId]))
+            .ToList();
+
+        await AppendAbsorptionLedgerAndOutboxAsync(shardId, destinationVaultOwnerId, movedBiotaIds, cancellationToken);
+
         await _context.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
 
         return CloudBoundaryOutcome<CloudVaultAbsorptionResult>.Committed(
             new CloudVaultAbsorptionResult(custodyRecords.Count, stackLots.Count));
+    }
+
+    /// <summary>
+    /// Appends one <see cref="CloudActivityLedgerEvent"/> and one matching
+    /// <see cref="CloudCustodyOutboxEvent"/> per moved item (issue #17 review, finding 2 / P1),
+    /// analogous to <see cref="CloudCustodyBoundary"/>'s own append-ledger-and-outbox pattern for
+    /// every other Cloud ownership transfer, so a successful Vault Absorption preserves provenance
+    /// (CONTEXT.md) and lets the companion web's read model catch up by replaying the Custody Outbox
+    /// instead of silently diverging from actual ownership.
+    /// </summary>
+    private async Task AppendAbsorptionLedgerAndOutboxAsync(
+        string shardId, Guid destinationVaultOwnerId, IReadOnlyList<uint> movedBiotaIds, CancellationToken cancellationToken)
+    {
+        if (movedBiotaIds.Count == 0)
+        {
+            return;
+        }
+
+        var correlationId = Guid.NewGuid();
+
+        foreach (var biotaId in movedBiotaIds)
+        {
+            _context.CloudActivityLedgerEvents.Add(new CloudActivityLedgerEvent(
+                correlationId, shardId, CloudBoundaryOperationType.VaultAbsorption, biotaId, destinationVaultOwnerId, CloudBoundaryOutcomeKind.Committed));
+        }
+        await _context.SaveChangesAsync(cancellationToken);
+
+        foreach (var biotaId in movedBiotaIds)
+        {
+            var sequenceNumber = await ReserveNextOutboxSequenceNumberAsync(cancellationToken);
+            _context.CloudCustodyOutboxEvents.Add(new CloudCustodyOutboxEvent(
+                correlationId, shardId, CloudBoundaryOperationType.VaultAbsorption, biotaId, destinationVaultOwnerId, sequenceNumber));
+        }
+    }
+
+    /// <summary>
+    /// Locks <see cref="CloudCustodyOutboxSequence"/>'s single row and returns the next durable order
+    /// position, the same locking approach <see cref="CloudCustodyBoundary"/> uses for every other
+    /// Custody Outbox append (ARCH-007).
+    /// </summary>
+    private async Task<long> ReserveNextOutboxSequenceNumberAsync(CancellationToken cancellationToken)
+    {
+        var connection = _context.Database.GetDbConnection();
+        var transaction = _context.Database.CurrentTransaction?.GetDbTransaction();
+
+        long reserved;
+        await using (var read = connection.CreateCommand())
+        {
+            read.Transaction = transaction;
+            read.CommandText = "SELECT NextValue FROM CloudCustodyOutboxSequence WHERE Id = 1 FOR UPDATE;";
+            reserved = Convert.ToInt64(await read.ExecuteScalarAsync(cancellationToken));
+        }
+
+        await using (var update = connection.CreateCommand())
+        {
+            update.Transaction = transaction;
+            update.CommandText = "UPDATE CloudCustodyOutboxSequence SET NextValue = @nextValue WHERE Id = 1;";
+            CloudRawSqlHelpers.AddParameter(update, "@nextValue", reserved + 1);
+            await update.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        return reserved;
     }
 
     /// <summary>

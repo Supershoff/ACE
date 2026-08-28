@@ -59,4 +59,10 @@ public enum CloudBoundaryOperationType
     /// fulfilled.
     /// </summary>
     StackLotReservationRedeemed,
+
+    /// <summary>
+    /// Moves one whole-item Cloud Custody Record or Cloud Stack Lot from a former monarch's
+    /// Allegiance Vault into their new monarch's, as part of a Vault Absorption (VAULT-004).
+    /// </summary>
+    VaultAbsorption,
 }

@@ -1,3 +1,4 @@
+using System.Net;
 using System.Reflection;
 using System.Threading;
 using ACE.Cloud.Domain;
@@ -5,8 +6,11 @@ using ACE.Cloud.Persistence;
 using ACE.Cloud.PersistenceIntegrationTests;
 using ACE.Common;
 using ACE.Database;
+using ACE.Database.Models.Shard;
 using ACE.Server.Entity;
 using ACE.Server.Managers;
+using ACE.Server.Network;
+using ACE.Server.Network.Managers;
 using MySqlConnector;
 
 namespace ACE.Cloud.AceCharacterIntegrationTests;
@@ -99,6 +103,20 @@ public sealed class CharacterDeletionMonarchVaultGuardTests
         var shardProperty = typeof(DatabaseManager).GetProperty(nameof(DatabaseManager.Shard), BindingFlags.Public | BindingFlags.Static)
             ?? throw new InvalidOperationException("DatabaseManager.Shard was not found.");
         shardProperty.GetSetMethod(nonPublic: true)!.Invoke(null, new object?[] { serializedShardDatabase });
+
+        // Session.CheckCharactersForDeletion (issue #17 review, finding 1) constructs a real Session,
+        // whose NetworkSession constructor calls SocketManager.GetMatchedConnectionListener. That
+        // reads SocketManager's private static `listeners` array, which only SocketManager.Initialize
+        // (a real socket bind, never invoked by this disposable fixture) ever populates; without this,
+        // it is null and the lookup throws a NullReferenceException. An empty array reproduces exactly
+        // what a real deployment sees for an unmatched connection (GetMatchedConnectionListener finding
+        // no match returns null) without binding any real socket.
+        var socketManagerListenersField = typeof(SocketManager).GetField("listeners", BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new InvalidOperationException("SocketManager.listeners was not found.");
+        if (socketManagerListenersField.GetValue(null) == null)
+        {
+            socketManagerListenersField.SetValue(null, Array.Empty<ConnectionListener>());
+        }
 
         await using var connection = new MySqlConnection(_fixture.CloudConnectionString);
         await connection.OpenAsync();
@@ -201,6 +219,104 @@ public sealed class CharacterDeletionMonarchVaultGuardTests
         Assert.IsFalse(
             decision.IsAllowed,
             "A monarch never loaded into AllegianceManager's cache this session must still have their nonempty-vault deletion blocked (VAULT-005).");
+    }
+
+    /// <summary>
+    /// Red -&gt; Green regression test for issue #17's review, finding 1 (P1): VAULT-005's guard is
+    /// re-checked at self-service delete *request* time (<see cref="CharacterHandler.CharacterDelete"/>),
+    /// but the actual, irreversible finalization that happens later --
+    /// <see cref="Session.CheckCharactersForDeletion"/>, called on every subsequent character-list
+    /// refresh once <see cref="Character.DeleteTime"/> has elapsed -- never re-ran the guard. A vault
+    /// could be contributed to by any other current allegiance member during the (default one hour)
+    /// restore window, so a monarch whose vault was empty at request time could still have their
+    /// character irreversibly deleted with a nonempty vault. This reproduces that precondition
+    /// directly: a monarch character already past its DeleteTime, with a nonempty vault, handed to
+    /// <see cref="Session.CheckCharactersForDeletion"/> exactly as the login character-list refresh
+    /// path does.
+    /// </summary>
+    [TestMethod]
+    public async Task CheckCharactersForDeletion_ForAMonarchPastDeleteTime_WithANonemptyVault_DoesNotFinalizeTheDeletion()
+    {
+        // SeedMonarchNeverLoadedThisSessionAsync always seeds its monarch character under
+        // ace_shard.character.account_Id = 1; a real account row is required here (unlike the other
+        // tests in this class) because this test drives the finalization path all the way through
+        // PlayerManager.ProcessDeletedPlayer on an unguarded run, which resolves the character's
+        // ace_auth account. INSERT IGNORE keeps this idempotent across every test in this class that
+        // reuses the same fixed account ID.
+        await InsertAccountIfNotExistsAsync(accountId: 1, accountName: "old-monarch-account");
+
+        var monarchId = await SeedMonarchNeverLoadedThisSessionAsync();
+
+        var vaultOwnerId = CloudOwnerIdentity.ForAllegianceVault(ShardId, monarchId);
+        var itemBiotaId = NextId();
+        await InsertBiotaAsync(itemBiotaId);
+
+        var options = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
+        await using (var context = new CloudDbContext(options))
+        {
+            var boundary = new CloudCustodyBoundary(context);
+            var deposit = await boundary.DepositAsync(itemBiotaId, ShardId, vaultOwnerId, Guid.NewGuid());
+            Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, deposit.Kind, deposit.Reason);
+        }
+
+        // The same provisional state CharacterHandler.CharacterDelete leaves behind: DeleteTime set in
+        // the past (the restore window has already elapsed) but IsDeleted still false.
+        var character = new Character
+        {
+            Id = monarchId,
+            AccountId = 1,
+            Name = "OldMonarch",
+            IsDeleted = false,
+            DeleteTime = (ulong)(Time.GetUnixTime() - 10),
+        };
+
+        var session = new Session(new ConnectionListener(IPAddress.Loopback, 0), new IPEndPoint(IPAddress.Loopback, 0), clientId: 1, serverId: 1);
+        session.Characters.Add(character);
+
+        session.CheckCharactersForDeletion();
+
+        Assert.IsFalse(
+            character.IsDeleted,
+            "A monarch's deletion must not be finalized while their Allegiance Vault is still nonempty (VAULT-005), even once "
+                + "the restore window has elapsed.");
+
+        Assert.Contains(
+            character,
+            session.Characters,
+            "A blocked finalization must leave the character in the session's pending-deletion list, not silently drop it.");
+
+        Assert.IsNotNull(
+            PlayerManager.GetOfflinePlayer(monarchId),
+            "PlayerManager must not have processed this character as deleted while its vault deletion was blocked.");
+
+        await using var verifyContext = new CloudDbContext(CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString));
+        var vaultGateway = new CloudAllegianceVaultGateway(verifyContext);
+        Assert.IsFalse(
+            await vaultGateway.GetIsEmptyAsync(ShardId, monarchId),
+            "The Allegiance Vault's contents must survive a blocked finalization.");
+    }
+
+    /// <summary>
+    /// Seeds a minimal ace_auth.account row so <see cref="OfflinePlayer.Account"/> resolves (its
+    /// constructor calls <c>DatabaseManager.Authentication.GetAccountById</c>), which
+    /// <see cref="PlayerManager.ProcessDeletedPlayer"/> requires. Idempotent, since this file's
+    /// character-seeding helper always uses the same fixed account IDs across every test in this class.
+    /// </summary>
+    private static async Task InsertAccountIfNotExistsAsync(uint accountId, string accountName)
+    {
+        var authConnectionString = new MySqlConnectionStringBuilder(_fixture.AceShardConnectionString) { Database = "ace_auth" }.ConnectionString;
+
+        await using var connection = new MySqlConnection(authConnectionString);
+        await connection.OpenAsync();
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT IGNORE INTO account (accountId, accountName, passwordHash, accessLevel)
+            VALUES (@accountId, @accountName, 'test', 0);
+            """;
+        command.Parameters.AddWithValue("@accountId", accountId);
+        command.Parameters.AddWithValue("@accountName", accountName);
+        await command.ExecuteNonQueryAsync();
     }
 
     private static async Task InsertCharacterAsync(uint characterId, uint accountId, string name)
