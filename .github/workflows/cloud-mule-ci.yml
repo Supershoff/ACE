@@ -164,7 +164,10 @@ jobs:
   automation-handoff:
     name: Automation handoff
     needs: [policy, dotnet, web]
-    if: always() && startsWith(github.head_ref || github.ref_name, 'claude/')
+    if: >-
+      always() &&
+      (startsWith(github.head_ref || github.ref_name, 'claude/') ||
+      startsWith(github.head_ref || github.ref_name, 'cloud-mule/issue-'))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

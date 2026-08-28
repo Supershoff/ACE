@@ -42,7 +42,8 @@ jobs:
           set -euo pipefail
 
           active_pr="$(gh pr list --repo "${GITHUB_REPOSITORY}" --state open --limit 100 \
-            --json number,headRefName --jq 'first(.[] | select(.headRefName | startswith("claude/")) | .number) // empty')"
+            --json number,headRefName \
+            --jq 'first(.[] | select((.headRefName | startswith("claude/")) or (.headRefName | startswith("cloud-mule/issue-"))) | .number) // empty')"
           if [ -n "${active_pr}" ]; then
             echo "A Claude PR (#${active_pr}) is already open; serialization holds."
             exit 0
