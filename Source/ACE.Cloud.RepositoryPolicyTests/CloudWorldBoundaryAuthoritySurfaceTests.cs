@@ -33,6 +33,18 @@ public sealed class CloudWorldBoundaryAuthoritySurfaceTests
         nameof(CloudCustodyBoundary.TryGetActiveWithdrawalReservationAsync),
         nameof(CloudCustodyBoundary.RedeemWithdrawalReservationAsync),
         nameof(CloudCustodyBoundary.TryGetWithdrawalRedemptionOutcomeAsync),
+
+        // Deliberate authority-boundary review (issue #14, DEP-006): a Raw Pyreal Deposit
+        // conversion and a raw Pyreal Remainder withdrawal are World Boundary Authority operations,
+        // not Cloud Transaction Authority ones -- they create/delete native biotas (new MMDs, the
+        // consumed raw coin stack, delivered coin stacks) exactly like every other allow-listed
+        // operation above, never a marketplace ownership/reservation concept (no Listing, Bid,
+        // Auction, Settle, Vault, Sharing, Grant, Currency, or Offer semantics).
+        nameof(CloudCustodyBoundary.GetPyrealRemainderAsync),
+        nameof(CloudCustodyBoundary.ConvertPyrealDepositAsync),
+        nameof(CloudCustodyBoundary.TryGetPyrealConversionOutcomeAsync),
+        nameof(CloudCustodyBoundary.WithdrawPyrealRemainderAsync),
+        nameof(CloudCustodyBoundary.TryGetPyrealRemainderWithdrawalOutcomeAsync),
     };
 
     /// <summary>

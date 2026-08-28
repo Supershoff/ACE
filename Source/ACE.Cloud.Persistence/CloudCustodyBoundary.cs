@@ -403,6 +403,180 @@ public sealed class CloudCustodyBoundary
         return existing is null ? null : ReplayWithdrawalReservationRedemption(existing);
     }
 
+    /// <summary>
+    /// Reads an account's current Pyreal Remainder (DEP-006), 0 if it has never deposited raw
+    /// Pyreals. Callers use this to decide how many MMD biotas to allocate/materialize
+    /// <em>before</em> calling <see cref="ConvertPyrealDepositAsync"/> -- this read is not itself
+    /// transactionally authoritative (the remainder can change before that call locks it), so a
+    /// racing concurrent conversion for the same owner still gets caught and refused as a Conflict
+    /// by that call's own locked revalidation, never silently under- or over-converted.
+    /// </summary>
+    public async Task<long> GetPyrealRemainderAsync(string shardId, Guid ownerId, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(shardId))
+        {
+            throw new ArgumentException("Reading a Pyreal Remainder requires a Cloud Shard ID.", nameof(shardId));
+        }
+
+        if (ownerId == Guid.Empty)
+        {
+            throw new ArgumentException("Reading a Pyreal Remainder requires an owner.", nameof(ownerId));
+        }
+
+        var remainder = await _context.CloudPyrealRemainders.AsNoTracking()
+            .SingleOrDefaultAsync(r => r.OwnerId == ownerId && r.ShardId == shardId, cancellationToken);
+        return remainder?.RemainderAmount ?? 0;
+    }
+
+    /// <summary>
+    /// Converts a raw Pyreal Deposit into MMDs plus an updated Pyreal Remainder (DEP-006), atomically
+    /// consuming <paramref name="rawBiotaId"/> (the raw Pyreal coin-stack biota, already removed from
+    /// world possession by the caller exactly like an ordinary deposit) and creating a whole-item
+    /// Cloud Custody Record for each of <paramref name="mmdBiotaIds"/> -- native biotas the ACE-side
+    /// caller must have already allocated (ACE's own GUID allocator, ARCH-002/ARCH-010) and
+    /// synchronously persisted to ace_shard with no Container/Wielder/Location, exactly like a normal
+    /// off-world Custodian deposit row. This method never allocates a GUID or creates a biota row
+    /// itself; it only ever creates Cloud Custody Records for biotas the caller already made.
+    ///
+    /// The exact expected MMD count is recomputed here, under this account's locked Pyreal Remainder
+    /// row, from <see cref="PyrealConversionPolicy.Convert"/>: if <paramref name="mmdBiotaIds"/>'s
+    /// count does not match that recomputed count -- for example because a concurrent conversion for
+    /// the same owner committed first and moved the remainder the caller's non-transactional read in
+    /// <see cref="GetPyrealRemainderAsync"/> did not see -- this call refuses with a Conflict and
+    /// commits nothing; the caller must re-read the remainder and retry with freshly allocated MMDs
+    /// (mirroring <see cref="WithdrawLotAsync"/>'s established materializedBiotaId mismatch handling).
+    /// Repeating this call with the same <paramref name="idempotencyKey"/> replays the original
+    /// committed result instead of converting twice (transaction rule 4).
+    /// </summary>
+    public Task<CloudBoundaryOutcome<CloudPyrealConversionResult>> ConvertPyrealDepositAsync(
+        uint rawBiotaId,
+        string shardId,
+        Guid ownerId,
+        long rawPyrealAmount,
+        IReadOnlyList<uint> mmdBiotaIds,
+        Guid idempotencyKey,
+        CancellationToken cancellationToken = default) =>
+        ConvertPyrealDepositAsync(rawBiotaId, shardId, ownerId, rawPyrealAmount, mmdBiotaIds, idempotencyKey, faultInjector: null, cancellationToken);
+
+    /// <summary>
+    /// Test-only overload; see the internal <see cref="DepositAsync"/> overload's doc comment.
+    /// </summary>
+    internal Task<CloudBoundaryOutcome<CloudPyrealConversionResult>> ConvertPyrealDepositAsync(
+        uint rawBiotaId,
+        string shardId,
+        Guid ownerId,
+        long rawPyrealAmount,
+        IReadOnlyList<uint> mmdBiotaIds,
+        Guid idempotencyKey,
+        Func<CloudBoundaryFaultPoint, Task>? faultInjector,
+        CancellationToken cancellationToken)
+    {
+        RequireIdempotencyKey(idempotencyKey);
+
+        if (rawBiotaId == 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(rawBiotaId), "A Pyreal conversion requires the real raw Pyreal biota GUID it consumes.");
+        }
+
+        if (rawPyrealAmount <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(rawPyrealAmount), "A Pyreal conversion requires a positive raw amount.");
+        }
+
+        ArgumentNullException.ThrowIfNull(mmdBiotaIds);
+
+        if (mmdBiotaIds.Any(id => id == 0))
+        {
+            throw new ArgumentException("Every MMD biota GUID must be real.", nameof(mmdBiotaIds));
+        }
+
+        return CloudBoundaryRetry.ExecuteAsync(
+            () => TryConvertPyrealDepositOnceAsync(rawBiotaId, shardId, ownerId, rawPyrealAmount, mmdBiotaIds, idempotencyKey, faultInjector, cancellationToken),
+            cancellationToken: cancellationToken);
+    }
+
+    /// <summary>
+    /// Returns the committed result of a Pyreal conversion previously started with
+    /// <paramref name="idempotencyKey"/>, or null if none has committed yet (transaction rule 8).
+    /// </summary>
+    public async Task<CloudBoundaryOutcome<CloudPyrealConversionResult>?> TryGetPyrealConversionOutcomeAsync(
+        Guid idempotencyKey, CancellationToken cancellationToken = default)
+    {
+        var existing = await _context.CloudPyrealConversionRecords.AsNoTracking()
+            .SingleOrDefaultAsync(r => r.IdempotencyKey == idempotencyKey, cancellationToken);
+        return existing is null ? null : await ReplayPyrealConversionAsync(existing, cancellationToken);
+    }
+
+    /// <summary>
+    /// Withdraws <paramref name="amount"/> from an account's Pyreal Remainder as raw Pyreal coin
+    /// stacks (DEP-006), the same minimal direct-container-grant shape as <see cref="WithdrawAsync"/>
+    /// (no Withdrawal Token/reservation TTL here; see
+    /// <see cref="PyrealRemainderWithdrawalPolicy"/>'s doc comment for that scope decision).
+    /// <paramref name="deliveryBiotaIds"/> are native Pyreal coin-stack biotas the ACE-side caller
+    /// must have already created (ACE's own factory/GUID allocator) with no Container/Wielder/
+    /// Location and a combined Value/StackUnitValue*StackSize summing to exactly
+    /// <paramref name="amount"/> -- this method never invents Pyreals or a Marketplace Unit; it only
+    /// ever grants biotas the caller already made and whose summed value it revalidates under this
+    /// account's locked Pyreal Remainder row. A mismatched sum, or a request for more than the
+    /// currently locked remainder actually holds (<see cref="PyrealRemainderWithdrawalPolicy"/>'s
+    /// "capacity failure"), refuses with a Conflict and commits nothing -- the remainder stays
+    /// exactly as it was and the request may be retried. Repeating this call with the same
+    /// <paramref name="idempotencyKey"/> replays the original committed result (transaction rule 4).
+    /// </summary>
+    public Task<CloudBoundaryOutcome<CloudPyrealRemainderWithdrawalResult>> WithdrawPyrealRemainderAsync(
+        string shardId,
+        Guid ownerId,
+        long amount,
+        IReadOnlyList<uint> deliveryBiotaIds,
+        uint recipientContainerId,
+        Guid idempotencyKey,
+        CancellationToken cancellationToken = default) =>
+        WithdrawPyrealRemainderAsync(shardId, ownerId, amount, deliveryBiotaIds, recipientContainerId, idempotencyKey, faultInjector: null, cancellationToken);
+
+    /// <summary>
+    /// Test-only overload; see the internal <see cref="DepositAsync"/> overload's doc comment.
+    /// </summary>
+    internal Task<CloudBoundaryOutcome<CloudPyrealRemainderWithdrawalResult>> WithdrawPyrealRemainderAsync(
+        string shardId,
+        Guid ownerId,
+        long amount,
+        IReadOnlyList<uint> deliveryBiotaIds,
+        uint recipientContainerId,
+        Guid idempotencyKey,
+        Func<CloudBoundaryFaultPoint, Task>? faultInjector,
+        CancellationToken cancellationToken)
+    {
+        RequireIdempotencyKey(idempotencyKey);
+
+        if (recipientContainerId == 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(recipientContainerId), "A withdrawal requires a real recipient container GUID.");
+        }
+
+        ArgumentNullException.ThrowIfNull(deliveryBiotaIds);
+
+        if (deliveryBiotaIds.Count == 0 || deliveryBiotaIds.Any(id => id == 0))
+        {
+            throw new ArgumentException("A Pyreal Remainder withdrawal requires at least one real delivery biota GUID.", nameof(deliveryBiotaIds));
+        }
+
+        return CloudBoundaryRetry.ExecuteAsync(
+            () => TryWithdrawPyrealRemainderOnceAsync(shardId, ownerId, amount, deliveryBiotaIds, recipientContainerId, idempotencyKey, faultInjector, cancellationToken),
+            cancellationToken: cancellationToken);
+    }
+
+    /// <summary>
+    /// Returns the committed result of a Pyreal Remainder withdrawal previously started with
+    /// <paramref name="idempotencyKey"/>, or null if none has committed yet (transaction rule 8).
+    /// </summary>
+    public async Task<CloudBoundaryOutcome<CloudPyrealRemainderWithdrawalResult>?> TryGetPyrealRemainderWithdrawalOutcomeAsync(
+        Guid idempotencyKey, CancellationToken cancellationToken = default)
+    {
+        var existing = await _context.CloudPyrealRemainderWithdrawalRecords.AsNoTracking()
+            .SingleOrDefaultAsync(r => r.IdempotencyKey == idempotencyKey, cancellationToken);
+        return existing is null ? null : await ReplayPyrealRemainderWithdrawalAsync(existing, cancellationToken);
+    }
+
     private async Task<CloudBoundaryOutcome<CloudWithdrawalReservation>> TryReserveForWithdrawalOnceAsync(
         uint biotaId, string shardId, Guid ownerId, string tokenHash, TimeSpan timeToLive, Guid idempotencyKey, CancellationToken cancellationToken)
     {
@@ -1108,6 +1282,318 @@ public sealed class CloudCustodyBoundary
 
         return CloudBoundaryOutcome<CloudStackWithdrawalResult>.Committed(
             new CloudStackWithdrawalResult(deliveredBiotaId, recipientContainerId, ownerId, quantityToWithdraw));
+    }
+
+    private async Task<CloudBoundaryOutcome<CloudPyrealConversionResult>> TryConvertPyrealDepositOnceAsync(
+        uint rawBiotaId,
+        string shardId,
+        Guid ownerId,
+        long rawPyrealAmount,
+        IReadOnlyList<uint> mmdBiotaIds,
+        Guid idempotencyKey,
+        Func<CloudBoundaryFaultPoint, Task>? faultInjector,
+        CancellationToken cancellationToken)
+    {
+        _context.ChangeTracker.Clear();
+
+        await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.BeforeLocks);
+
+        var incompatible = await CheckProtocolCompatibilityAsync<CloudPyrealConversionResult>(cancellationToken);
+        if (incompatible is not null)
+        {
+            return incompatible;
+        }
+
+        var existing = await _context.CloudPyrealConversionRecords.AsNoTracking()
+            .SingleOrDefaultAsync(r => r.IdempotencyKey == idempotencyKey, cancellationToken);
+        if (existing is not null)
+        {
+            return await ReplayPyrealConversionAsync(existing, cancellationToken);
+        }
+
+        await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+
+        var remainder = await EnsureAndLockPyrealRemainderAsync(shardId, ownerId, cancellationToken);
+        var remainderBefore = remainder.RemainderAmount;
+        var conversion = PyrealConversionPolicy.Convert(remainderBefore, rawPyrealAmount);
+
+        if (conversion.MmdCount != mmdBiotaIds.Count)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+
+            // The remainder can have moved since the caller's earlier, non-transactional
+            // GetPyrealRemainderAsync read (a concurrent conversion for the same owner committed in
+            // between) -- this is a real Conflict, not a bug, and no idempotency-key replay applies
+            // because nothing committed under this key. The caller must re-read the remainder and
+            // retry with a freshly allocated MMD count.
+            return CloudBoundaryOutcome<CloudPyrealConversionResult>.Conflict(
+                $"Expected {conversion.MmdCount} MMD biota(s) for this conversion (remainder {remainderBefore} + {rawPyrealAmount} raw Pyreals), but {mmdBiotaIds.Count} were supplied.");
+        }
+
+        await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterValidation);
+
+        // CONTEXT.md: "Raw Pyreal conversion is the only automatic consolidation or replacement of
+        // deposited stackable assets" -- the raw coin stack's entire value is now exactly represented
+        // by the new MMDs plus the updated remainder, so it never becomes a Cloud Custody Record
+        // itself. Removing world possession first and deleting the now-fully-consumed biota on this
+        // same connection/transaction mirrors DepositAsync's atomicity: a crash or rejected commit
+        // can never leave it half-consumed.
+        await RemoveWorldPossessionAsync(rawBiotaId, cancellationToken);
+        await DeleteBiotaAsync(rawBiotaId, cancellationToken);
+
+        var correlationId = Guid.NewGuid();
+        var mmdCustodyRecords = new List<CloudCustodyRecord>(mmdBiotaIds.Count);
+
+        foreach (var mmdBiotaId in mmdBiotaIds)
+        {
+            // Idempotent/no-op for a freshly materialized MMD biota that never had world possession
+            // (RemoveWorldPossessionAsync's doc comment) -- kept so every biota entering custody goes
+            // through the exact same path.
+            await RemoveWorldPossessionAsync(mmdBiotaId, cancellationToken);
+
+            var mmdRecord = new CloudCustodyRecord(mmdBiotaId, shardId, ownerId, correlationId);
+            _context.CloudCustodyRecords.Add(mmdRecord);
+            mmdCustodyRecords.Add(mmdRecord);
+        }
+
+        try
+        {
+            await _context.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException ex) when (IsDuplicateKey(ex))
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return CloudBoundaryOutcome<CloudPyrealConversionResult>.Conflict(
+                "One of the supplied MMD biotas already has a Cloud Custody Record.");
+        }
+
+        await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterCustodyChange);
+
+        // The conversion itself is anchored on the consumed raw biota; each MMD additionally gets
+        // its own ordinary Deposit-typed ledger/outbox event (CloudBoundaryOperationType.PyrealConversion's
+        // doc comment) so the companion web sees new MMDs exactly like any other deposited Cloud Item.
+        await AppendLedgerAndOutboxAsync(correlationId, shardId, CloudBoundaryOperationType.PyrealConversion, rawBiotaId, ownerId, faultInjector, cancellationToken);
+        foreach (var mmdRecord in mmdCustodyRecords)
+        {
+            await AppendLedgerAndOutboxAsync(correlationId, shardId, CloudBoundaryOperationType.Deposit, mmdRecord.BiotaId, ownerId, faultInjector, cancellationToken);
+        }
+
+        remainder.Replace(conversion.NewRemainder);
+        _context.CloudPyrealRemainders.Update(remainder);
+
+        _context.CloudPyrealConversionMmds.AddRange(
+            mmdCustodyRecords.Select(record => new CloudPyrealConversionMmd(idempotencyKey, record.BiotaId, record.Id)));
+
+        _context.CloudPyrealConversionRecords.Add(
+            new CloudPyrealConversionRecord(idempotencyKey, shardId, ownerId, rawBiotaId, rawPyrealAmount, remainderBefore, conversion.NewRemainder, correlationId));
+        await _context.SaveChangesAsync(cancellationToken);
+
+        await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.BeforeCommit);
+        await transaction.CommitAsync(cancellationToken);
+        await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterCommit);
+
+        return CloudBoundaryOutcome<CloudPyrealConversionResult>.Committed(new CloudPyrealConversionResult(mmdCustodyRecords, conversion.NewRemainder));
+    }
+
+    private async Task<CloudBoundaryOutcome<CloudPyrealRemainderWithdrawalResult>> TryWithdrawPyrealRemainderOnceAsync(
+        string shardId,
+        Guid ownerId,
+        long amount,
+        IReadOnlyList<uint> deliveryBiotaIds,
+        uint recipientContainerId,
+        Guid idempotencyKey,
+        Func<CloudBoundaryFaultPoint, Task>? faultInjector,
+        CancellationToken cancellationToken)
+    {
+        _context.ChangeTracker.Clear();
+
+        await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.BeforeLocks);
+
+        var incompatible = await CheckProtocolCompatibilityAsync<CloudPyrealRemainderWithdrawalResult>(cancellationToken);
+        if (incompatible is not null)
+        {
+            return incompatible;
+        }
+
+        var existing = await _context.CloudPyrealRemainderWithdrawalRecords.AsNoTracking()
+            .SingleOrDefaultAsync(r => r.IdempotencyKey == idempotencyKey, cancellationToken);
+        if (existing is not null)
+        {
+            return await ReplayPyrealRemainderWithdrawalAsync(existing, cancellationToken);
+        }
+
+        await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+
+        var remainder = await EnsureAndLockPyrealRemainderAsync(shardId, ownerId, cancellationToken);
+        var remainderBefore = remainder.RemainderAmount;
+
+        // ADM-004 / transaction rule 9: the maintenance gate is revalidated at the exact instant the
+        // remainder row is locked, not only earlier in the request pipeline. This boundary has no
+        // live Global Cloud Maintenance aggregate to read yet (a later administration issue adds
+        // one), so it is always Open today -- the same scope boundary WithdrawAsync already accepts.
+        var decision = PyrealRemainderWithdrawalPolicy.Decide(remainderBefore, amount, CloudMutationGateState.Open);
+
+        if (decision.Kind != PyrealRemainderWithdrawalDecisionKind.Approved)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return CloudBoundaryOutcome<CloudPyrealRemainderWithdrawalResult>.Conflict(
+                decision.Kind == PyrealRemainderWithdrawalDecisionKind.Frozen
+                    ? "Cloud mutations are currently frozen for maintenance."
+                    : $"Cannot withdraw {amount} from a Pyreal Remainder of only {decision.AvailableRemainder}.");
+        }
+
+        var deliveredSum = 0L;
+        foreach (var deliveryBiotaId in deliveryBiotaIds)
+        {
+            deliveredSum += await ReadBiotaCoinValueAsync(deliveryBiotaId, cancellationToken);
+        }
+
+        if (deliveredSum != amount)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return CloudBoundaryOutcome<CloudPyrealRemainderWithdrawalResult>.Conflict(
+                $"The supplied delivery biota(s) sum to {deliveredSum} Pyreals, not the requested {amount}.");
+        }
+
+        await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterValidation);
+
+        var correlationId = Guid.NewGuid();
+
+        foreach (var deliveryBiotaId in deliveryBiotaIds)
+        {
+            await GrantContainerAsync(deliveryBiotaId, recipientContainerId, cancellationToken);
+        }
+
+        await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterPossessionChange);
+
+        remainder.Replace(decision.NewRemainder);
+        _context.CloudPyrealRemainders.Update(remainder);
+
+        await AppendLedgerAndOutboxAsync(
+            correlationId, shardId, CloudBoundaryOperationType.PyrealRemainderWithdrawal, deliveryBiotaIds[0], ownerId, faultInjector, cancellationToken);
+
+        _context.CloudPyrealRemainderWithdrawalRecords.Add(
+            new CloudPyrealRemainderWithdrawalRecord(
+                idempotencyKey, shardId, ownerId, amount, remainderBefore, decision.NewRemainder, recipientContainerId, correlationId));
+        _context.CloudPyrealRemainderWithdrawalBiotas.AddRange(
+            deliveryBiotaIds.Select(biotaId => new CloudPyrealRemainderWithdrawalBiota(idempotencyKey, biotaId)));
+        await _context.SaveChangesAsync(cancellationToken);
+
+        await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.BeforeCommit);
+        await transaction.CommitAsync(cancellationToken);
+        await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterCommit);
+
+        return CloudBoundaryOutcome<CloudPyrealRemainderWithdrawalResult>.Committed(
+            new CloudPyrealRemainderWithdrawalResult(deliveryBiotaIds, recipientContainerId, decision.NewRemainder));
+    }
+
+    /// <summary>
+    /// Locks an account's Pyreal Remainder row for the whole boundary transaction, creating it with
+    /// a zero balance first if this is the account's first ever conversion/withdrawal. The insert
+    /// uses MariaDB's <c>INSERT ... ON DUPLICATE KEY UPDATE</c> upsert idiom specifically because it
+    /// blocks on (rather than immediately erroring against) a concurrent transaction racing the same
+    /// owner's first row, so a losing concurrent caller simply waits for the winner to commit or
+    /// roll back and then locks the same row the winner created, instead of needing its own
+    /// duplicate-key recovery branch.
+    /// </summary>
+    private async Task<CloudPyrealRemainder> EnsureAndLockPyrealRemainderAsync(string shardId, Guid ownerId, CancellationToken cancellationToken)
+    {
+        var connection = _context.Database.GetDbConnection();
+        var transaction = _context.Database.CurrentTransaction?.GetDbTransaction();
+
+        await using (var upsert = connection.CreateCommand())
+        {
+            upsert.Transaction = transaction;
+            upsert.CommandText = """
+                INSERT INTO CloudPyrealRemainder (OwnerId, ShardId, RemainderAmount, Version)
+                VALUES (@ownerId, @shardId, 0, 1)
+                ON DUPLICATE KEY UPDATE OwnerId = OwnerId;
+                """;
+            AddParameter(upsert, "@ownerId", ownerId.ToString());
+            AddParameter(upsert, "@shardId", shardId);
+            await upsert.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        return await _context.CloudPyrealRemainders
+            .FromSqlInterpolated($"SELECT * FROM CloudPyrealRemainder WHERE OwnerId = {ownerId} AND ShardId = {shardId} FOR UPDATE")
+            .SingleAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Reads a coin-type biota's total Pyreal value (its <c>Value</c> property, PropertyInt 19),
+    /// which ACE keeps equal to <c>StackUnitValue * StackSize</c> for a coin stack -- exactly what
+    /// <see cref="TryWithdrawPyrealRemainderOnceAsync"/> revalidates the caller-supplied delivery
+    /// biotas' summed value against.
+    /// </summary>
+    private async Task<long> ReadBiotaCoinValueAsync(uint biotaId, CancellationToken cancellationToken)
+    {
+        var connection = _context.Database.GetDbConnection();
+
+        await using var command = connection.CreateCommand();
+        command.Transaction = _context.Database.CurrentTransaction?.GetDbTransaction();
+        command.CommandText = """
+            SELECT value FROM ace_shard.biota_properties_int WHERE object_Id = @objectId AND type = 19;
+            """;
+        AddParameter(command, "@objectId", biotaId);
+
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is null ? 0 : Convert.ToInt64(result);
+    }
+
+    /// <summary>
+    /// Deletes a fully consumed biota outright (as opposed to <see cref="RemoveWorldPossessionAsync"/>,
+    /// which only clears world possession). Only ever used for the raw Pyreal coin-stack biota a
+    /// conversion consumes: its entire value has already been exactly re-materialized as MMDs plus
+    /// the updated remainder, so nothing is lost by removing the now-empty original. Every
+    /// ace_shard child property table cascades on biota deletion (ShardBase.sql), and the
+    /// ProtectCloudCustodyBiotaFromDeletion trigger only blocks deleting a biota that still has a
+    /// CloudCustodyRecord -- this biota never gets one.
+    /// </summary>
+    private async Task DeleteBiotaAsync(uint biotaId, CancellationToken cancellationToken)
+    {
+        var connection = _context.Database.GetDbConnection();
+
+        await using var command = connection.CreateCommand();
+        command.Transaction = _context.Database.CurrentTransaction?.GetDbTransaction();
+        command.CommandText = "DELETE FROM ace_shard.biota WHERE id = @id;";
+        AddParameter(command, "@id", biotaId);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private async Task<CloudBoundaryOutcome<CloudPyrealConversionResult>> ReplayPyrealConversionAsync(
+        CloudPyrealConversionRecord existing, CancellationToken cancellationToken)
+    {
+        var mmds = await _context.CloudPyrealConversionMmds.AsNoTracking()
+            .Where(m => m.ConversionIdempotencyKey == existing.IdempotencyKey)
+            .ToListAsync(cancellationToken);
+
+        var custodyRecordIds = mmds.Select(m => m.CustodyRecordId).ToList();
+        var custodyRecords = await _context.CloudCustodyRecords.AsNoTracking()
+            .Where(r => custodyRecordIds.Contains(r.Id))
+            .ToListAsync(cancellationToken);
+
+        if (custodyRecords.Count != mmds.Count)
+        {
+            // ARCH-006 commits the conversion record, its MMD rows, and every MMD custody record in
+            // the same transaction, so a mismatch here means that invariant was broken out of band.
+            throw new CloudCustodyConflictException(
+                $"Idempotency key {existing.IdempotencyKey} committed a Pyreal conversion whose MMD custody records no longer all exist.");
+        }
+
+        return CloudBoundaryOutcome<CloudPyrealConversionResult>.Committed(
+            new CloudPyrealConversionResult(custodyRecords, existing.RemainderAfter));
+    }
+
+    private async Task<CloudBoundaryOutcome<CloudPyrealRemainderWithdrawalResult>> ReplayPyrealRemainderWithdrawalAsync(
+        CloudPyrealRemainderWithdrawalRecord existing, CancellationToken cancellationToken)
+    {
+        var deliveredBiotaIds = await _context.CloudPyrealRemainderWithdrawalBiotas.AsNoTracking()
+            .Where(b => b.WithdrawalIdempotencyKey == existing.IdempotencyKey)
+            .Select(b => b.BiotaId)
+            .ToListAsync(cancellationToken);
+
+        return CloudBoundaryOutcome<CloudPyrealRemainderWithdrawalResult>.Committed(
+            new CloudPyrealRemainderWithdrawalResult(deliveredBiotaIds, existing.RecipientContainerId, existing.RemainderAfter));
     }
 
     private async Task AppendLedgerAndOutboxAsync(

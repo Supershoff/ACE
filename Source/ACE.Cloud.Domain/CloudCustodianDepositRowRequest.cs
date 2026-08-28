@@ -28,13 +28,22 @@ public sealed record CloudCustodianDepositRowRequest
 
     public CloudItemEligibilitySnapshot Snapshot { get; init; }
 
+    /// <summary>
+    /// Set only for a raw Pyreal coin-stack row (DEP-006): the exact total Pyreal value ACE
+    /// observed on the live coin stack at deposit time (its <c>Value</c>, which ACE keeps equal to
+    /// <c>StackUnitValue * StackSize</c> for a coin stack -- not its coin count). Null for every
+    /// other row, which deposits as an ordinary Cloud Item instead of converting.
+    /// </summary>
+    public long? RawPyrealAmount { get; init; }
+
     public CloudCustodianDepositRowRequest(
         CloudItemId itemId,
         int submittedAmount,
         int currentStackSize,
         bool isStackable,
         bool isDuplicateInSubmission,
-        CloudItemEligibilitySnapshot snapshot)
+        CloudItemEligibilitySnapshot snapshot,
+        long? rawPyrealAmount = null)
     {
         ArgumentNullException.ThrowIfNull(itemId);
         ArgumentNullException.ThrowIfNull(snapshot);
@@ -45,5 +54,6 @@ public sealed record CloudCustodianDepositRowRequest
         IsStackable = isStackable;
         IsDuplicateInSubmission = isDuplicateInSubmission;
         Snapshot = snapshot;
+        RawPyrealAmount = rawPyrealAmount;
     }
 }

@@ -34,4 +34,16 @@ public enum CloudBoundaryOperationType
     /// transition as <see cref="Withdrawal"/> and releasing the reservation as fulfilled.
     /// </summary>
     WithdrawalReservationRedeemed,
+
+    /// <summary>
+    /// Converts a raw Pyreal coin-stack deposit into MMDs plus an updated Pyreal Remainder
+    /// (DEP-006). Each created MMD also gets its own ordinary <see cref="Deposit"/>-typed ledger and
+    /// outbox event, sharing this event's correlation ID, so the companion web sees new MMDs exactly
+    /// like any other deposited Cloud Item; this event anchors the conversion itself (consumed raw
+    /// biota, amounts) at the ledger level.
+    /// </summary>
+    PyrealConversion,
+
+    /// <summary>Withdraws all or part of an account's Pyreal Remainder as raw Pyreal coin stacks (DEP-006).</summary>
+    PyrealRemainderWithdrawal,
 }

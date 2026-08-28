@@ -50,6 +50,17 @@ public static class CloudCustodianDepositRowPolicy
             return CloudCustodianDepositRowDecision.Reject(request.ItemId, eligibility.PlayerMessage!, eligibility.RejectionCode);
         }
 
+        // DEP-006: a raw Pyreal coin-stack row never deposits as itself; it converts into MMDs plus
+        // an updated Pyreal Remainder instead. RawPyrealAmount is set only by ACE-side code that has
+        // already identified this row as the Pyreal coin-stack weenie (WCID 273), so this check
+        // never misclassifies an ordinary stackable item.
+        if (request.RawPyrealAmount is { } rawPyrealAmount)
+        {
+            return rawPyrealAmount > 0
+                ? CloudCustodianDepositRowDecision.ConvertPyreal(request.ItemId, rawPyrealAmount)
+                : CloudCustodianDepositRowDecision.Reject(request.ItemId, "That is not a valid quantity to deposit.");
+        }
+
         return request.IsStackable
             ? CloudCustodianDepositRowDecision.DepositStack(request.ItemId, request.CurrentStackSize, eligibility.PreservationRequirements)
             : CloudCustodianDepositRowDecision.DepositWhole(request.ItemId, eligibility.PreservationRequirements);

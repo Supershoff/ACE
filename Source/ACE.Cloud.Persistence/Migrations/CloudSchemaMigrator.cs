@@ -28,6 +28,7 @@ public static class CloudSchemaMigrator
         new AddWithdrawalReservationsAndOrderedOutbox(),
         new AddCloudCustodianConfiguration(),
         new AddCloudFrozenEnchantments(),
+        new AddCloudPyrealRemainder(),
     ];
 
     /// <summary>

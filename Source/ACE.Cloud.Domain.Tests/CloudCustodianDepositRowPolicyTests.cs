@@ -59,6 +59,49 @@ public sealed class CloudCustodianDepositRowPolicyTests
     }
 
     [TestMethod]
+    public void Decide_ARawPyrealCoinStackRow_ConvertsInsteadOfDepositingItself()
+    {
+        // DEP-006: a raw Pyreal coin-stack row never becomes a Cloud Item; it converts into MMDs
+        // plus an updated Pyreal Remainder.
+        var request = new CloudCustodianDepositRowRequest(
+            ItemId, submittedAmount: 500, currentStackSize: 500, isStackable: true, isDuplicateInSubmission: false,
+            EligibleSnapshot(), rawPyrealAmount: 900_000);
+
+        var decision = CloudCustodianDepositRowPolicy.Decide(request, Current);
+
+        Assert.AreEqual(CloudCustodianDepositRowDecisionKind.ConvertPyreal, decision.Kind);
+        Assert.AreEqual(900_000, decision.RawPyrealAmount);
+        Assert.AreEqual(ItemId, decision.ItemId);
+    }
+
+    [TestMethod]
+    public void Decide_ARawPyrealRowWithAZeroValue_IsRejectedRatherThanConverted()
+    {
+        var request = new CloudCustodianDepositRowRequest(
+            ItemId, submittedAmount: 500, currentStackSize: 500, isStackable: true, isDuplicateInSubmission: false,
+            EligibleSnapshot(), rawPyrealAmount: 0);
+
+        var decision = CloudCustodianDepositRowPolicy.Decide(request, Current);
+
+        Assert.AreEqual(CloudCustodianDepositRowDecisionKind.Reject, decision.Kind);
+    }
+
+    [TestMethod]
+    public void Decide_ARawPyrealRowThatFailsEligibility_IsRejectedRatherThanConverted()
+    {
+        // Even a raw Pyreal row still passes through the full DEP-003/DEP-004 eligibility corpus
+        // first (for example a coin stack somehow flagged as currently traded/reserved).
+        var request = new CloudCustodianDepositRowRequest(
+            ItemId, submittedAmount: 500, currentStackSize: 500, isStackable: true, isDuplicateInSubmission: false,
+            EligibleSnapshot() with { IsCurrentlyTradedOrReserved = true }, rawPyrealAmount: 900_000);
+
+        var decision = CloudCustodianDepositRowPolicy.Decide(request, Current);
+
+        Assert.AreEqual(CloudCustodianDepositRowDecisionKind.Reject, decision.Kind);
+        Assert.AreEqual(CloudEligibilityRejectionCode.AlreadyTradedOrReserved, decision.RejectionCode);
+    }
+
+    [TestMethod]
     public void Decide_APartialStackAmount_IsRejectedRatherThanSilentlySplit()
     {
         // ADR-0002: CloudCustodyBoundary never partially deposits a fraction of a live biota's stack
