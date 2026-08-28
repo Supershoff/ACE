@@ -62,6 +62,10 @@ public sealed class CloudDbContext : DbContext
 
     public DbSet<CloudMonarchDeletionDiagnostic> CloudMonarchDeletionDiagnostics => Set<CloudMonarchDeletionDiagnostic>();
 
+    public DbSet<CloudAuthGrantConsumption> CloudAuthGrantConsumptions => Set<CloudAuthGrantConsumption>();
+
+    public DbSet<CloudWebSession> CloudWebSessions => Set<CloudWebSession>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<CloudShardBinding>(entity =>
@@ -748,6 +752,59 @@ public sealed class CloudDbContext : DbContext
                 .IsRequired()
                 .ValueGeneratedOnAdd()
                 .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudAuthGrantConsumption>(entity =>
+        {
+            entity.ToTable("CloudAuthGrantConsumption");
+
+            // AUTH-002: the primary key is the grant's own nonce, so a replayed grant cannot insert
+            // a second row for the same nonce (the actual one-use enforcement).
+            entity.HasKey(consumption => consumption.Nonce);
+            entity.Property(consumption => consumption.Nonce).ValueGeneratedNever();
+
+            entity.Property(consumption => consumption.AccountId).IsRequired();
+
+            entity.Property(consumption => consumption.ConsumedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAdd()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudWebSession>(entity =>
+        {
+            entity.ToTable("CloudWebSession");
+
+            entity.HasKey(session => session.Id);
+            entity.Property(session => session.Id).ValueGeneratedNever();
+
+            entity.Property(session => session.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(session => session.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(session => session.AccountId).IsRequired();
+            entity.HasIndex(session => session.AccountId);
+
+            entity.Property(session => session.SecretHash).IsRequired().HasMaxLength(64);
+            entity.HasIndex(session => session.SecretHash).IsUnique();
+
+            entity.Property(session => session.CsrfToken).IsRequired().HasMaxLength(64);
+
+            // Not a foreign key: the prior session a rotation replaced remains queryable for audit,
+            // but nothing requires it to still exist.
+            entity.Property(session => session.RotatedFromSessionId);
+
+            entity.Property(session => session.CreatedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAdd()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+            entity.Property(session => session.ExpiresAtUtc).IsRequired();
+            entity.Property(session => session.LastSeenAtUtc).IsRequired();
+            entity.Property(session => session.RevokedAtUtc);
         });
     }
 }

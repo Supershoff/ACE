@@ -6,4 +6,13 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- AUTH-002: the bcrypt primitive (ACE.Common.Cryptography.BCryptProvider) is the one piece of
+         "AccountExtensions.PasswordMatches behavior" this pure domain project reuses. ACE.Common is
+         a standalone leaf library (no ProjectReferences of its own) with no world-object coupling,
+         unlike ACE.Database, which owns the write-capable Account repository the Auth Bridge must
+         never reference (see ACE.Cloud.AuthBridge.csproj). -->
+    <ProjectReference Include="..\ACE.Common\ACE.Common.csproj" />
+  </ItemGroup>
+
 </Project>

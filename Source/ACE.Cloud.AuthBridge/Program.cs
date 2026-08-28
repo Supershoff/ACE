@@ -13,6 +13,15 @@ var authBridgeOptions = builder.Configuration.GetSection(AuthBridgeOptions.Secti
 var selfVersion = new CloudComponentVersions(
     authBridgeOptions.ComponentVersion, authBridgeOptions.ComponentVersion, authBridgeOptions.ComponentVersion);
 
+builder.Services.AddSingleton(authBridgeOptions);
+builder.Services.AddSingleton<IAceAuthAccountReader>(
+    _ => new AceAuthAccountReader(authBridgeOptions.AceAuthConnectionString));
+builder.Services.AddSingleton(_ => CloudPrivateServiceKeyRingFactory.Create(
+    authBridgeOptions.ActiveServiceKeyId, authBridgeOptions.ActiveServiceKeySecret,
+    authBridgeOptions.PreviousServiceKeyId, authBridgeOptions.PreviousServiceKeySecret));
+builder.Services.AddSingleton(_ => new CloudLoginAttemptRateLimiter(
+    authBridgeOptions.MaxLoginAttemptsPerWindow, TimeSpan.FromSeconds(authBridgeOptions.LoginRateLimitWindowSeconds)));
+
 builder.Services.AddHttpClient<ICloudWorldBoundaryHealthProbe, HttpCloudWorldBoundaryHealthProbe>();
 builder.Services.AddSingleton(new CloudWorldBoundaryProbeOptions { HealthEndpoint = authBridgeOptions.WorldBoundaryHealthEndpoint });
 builder.Services.AddScoped(serviceProvider =>
@@ -29,5 +38,9 @@ builder.Services.AddScoped(serviceProvider =>
 var app = builder.Build();
 
 app.MapCloudDiagnosticsEndpoints(selfVersion);
+app.MapAuthGrantEndpoints();
 
 app.Run();
+
+// Exposed so ACE.Cloud.AuthBridge.Tests can host this app in-memory via WebApplicationFactory<Program>.
+public partial class Program;
