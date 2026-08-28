@@ -63,34 +63,57 @@ namespace ACE.Server.WorldObjects
                 return;
             }
 
-            // WDR-004, revalidated again by the boundary's own commit-time locking for the custody
-            // side; this first check exists so an obviously-unsafe redemption never even attempts the
-            // Cloud round trip.
-            var safeStateResult = CloudWithdrawalSafeStatePolicy.Evaluate(BuildWithdrawalSafeStateSnapshot());
-            if (!safeStateResult.IsSafe)
-            {
-                SendTransientError(safeStateResult.Reason!);
-                return;
-            }
+            TryRunCloudWithdrawalRedeem(
+                () =>
+                {
+                    // WDR-004, revalidated again by the boundary's own commit-time locking for the
+                    // custody side; this first check exists so an obviously-unsafe redemption never
+                    // even attempts the Cloud round trip.
+                    var safeStateResult = CloudWithdrawalSafeStatePolicy.Evaluate(BuildWithdrawalSafeStateSnapshot());
+                    if (!safeStateResult.IsSafe)
+                    {
+                        SendTransientError(safeStateResult.Reason!);
+                        return;
+                    }
 
-            // WDR-006.
-            if (!CloudWithdrawalLocationPolicy.IsEligible(BuildWithdrawalLocationSnapshot(shardId)))
-            {
-                SendTransientError("You cannot redeem a Withdrawal Token here.");
-                return;
-            }
+                    // WDR-006.
+                    if (!CloudWithdrawalLocationPolicy.IsEligible(BuildWithdrawalLocationSnapshot(shardId)))
+                    {
+                        SendTransientError("You cannot redeem a Withdrawal Token here.");
+                        return;
+                    }
 
-            var tokenHash = CloudWithdrawalTokenHasher.Hash(tokenSecret);
-            var ownerId = CloudOwnerIdentity.ForAccount(shardId, Session.AccountId);
+                    var tokenHash = CloudWithdrawalTokenHasher.Hash(tokenSecret);
+                    var ownerId = CloudOwnerIdentity.ForAccount(shardId, Session.AccountId);
 
+                    RedeemAsync(shardId, ownerId, tokenHash).GetAwaiter().GetResult();
+                },
+                ex =>
+                {
+                    cloudWithdrawalLog.Error($"[CLOUD WITHDRAWAL] Redemption for player {Name} threw.", ex);
+                    SendTransientError("That Withdrawal Token could not be redeemed. Please try again.");
+                });
+        }
+
+        /// <summary>
+        /// Runs <paramref name="redeem"/> and reports any exception it throws to
+        /// <paramref name="onException"/> instead of letting it propagate (AC Cloud Mule review of
+        /// issue #16/PR #111, finding [P1]: an exception from the safe-state, location, token-hash,
+        /// or owner-identity checks used to escape this method's try/catch -- which only wrapped
+        /// <see cref="RedeemAsync"/> -- straight into <c>GameActionTalk.Handle</c>'s generic
+        /// command-exception handler, which logs the raw command text, i.e. the plaintext Withdrawal
+        /// Token secret, to the server's Error log). Kept free of any live Session/Player dependency
+        /// so it can run in a unit test.
+        /// </summary>
+        internal static void TryRunCloudWithdrawalRedeem(Action redeem, Action<Exception> onException)
+        {
             try
             {
-                RedeemAsync(shardId, ownerId, tokenHash).GetAwaiter().GetResult();
+                redeem();
             }
             catch (Exception ex)
             {
-                cloudWithdrawalLog.Error($"[CLOUD WITHDRAWAL] Redemption for player {Name} threw.", ex);
-                SendTransientError("That Withdrawal Token could not be redeemed. Please try again.");
+                onException(ex);
             }
         }
 

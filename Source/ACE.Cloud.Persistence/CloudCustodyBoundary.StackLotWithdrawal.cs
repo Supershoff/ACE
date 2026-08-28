@@ -414,6 +414,17 @@ public sealed partial class CloudCustodyBoundary
                 $"Cloud Stack Lot {reservation.LotId} no longer exists to withdraw.");
         }
 
+        // Defense in depth alongside CloudStackLotTransactionAuthority's exclusivity check: never
+        // trust the quantity captured when the reservation was opened for what to actually deliver.
+        // Re-derive it from the lot this transaction just locked, mirroring the
+        // `quantityToWithdraw > lot.Quantity` guard TryWithdrawLotOnceAsync already has.
+        if (lot.Quantity != reservation.Quantity)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return CloudBoundaryOutcome<CloudStackWithdrawalResult>.Conflict(
+                $"Cloud Stack Lot {reservation.LotId} quantity changed from {reservation.Quantity} to {lot.Quantity} since its Withdrawal Reservation was opened; this reservation can no longer be redeemed safely.");
+        }
+
         var quantityToWithdraw = reservation.Quantity;
         var siblingCount = await _context.CloudStackLots
             .CountAsync(l => l.CustodyRecordId == record.Id && l.Id != lot.Id, cancellationToken);
