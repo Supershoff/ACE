@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- AUTH-002: the ACE Auth Bridge is a small independently hosted private service that remains
+         available during ACE world restarts. It never references ACE.Server (no world-object
+         coupling) and never references ACE.Database (no native-biota mutation repositories, and no
+         reuse of ACE.Database's own account write path; it authenticates against a read-only
+         ace_auth identity of its own, distinct from ACE.Server's). It has no Cloud schema access at
+         all, so it does not reference ACE.Cloud.Persistence directly (ACE.Cloud.Hosting only pulls
+         it in for the Backend-oriented checks this host does not use). -->
+    <ProjectReference Include="..\ACE.Cloud.Domain\ACE.Cloud.Domain.csproj" />
+    <ProjectReference Include="..\ACE.Cloud.Hosting\ACE.Cloud.Hosting.csproj" />
+  </ItemGroup>
+
+</Project>

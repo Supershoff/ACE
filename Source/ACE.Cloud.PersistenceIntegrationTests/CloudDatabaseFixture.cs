@@ -17,6 +17,7 @@ public sealed class CloudDatabaseFixture : IAsyncDisposable
 
     private const string CloudSchemaName = "ace_cloud";
     private const string ShardSchemaName = "ace_shard";
+    private const string AuthSchemaName = "ace_auth";
 
     private readonly MariaDbContainer _container;
 
@@ -34,6 +35,13 @@ public sealed class CloudDatabaseFixture : IAsyncDisposable
     /// hold a connection like this (ARCH-004).
     /// </summary>
     public string AceShardConnectionString => BuildConnectionString(ShardSchemaName);
+
+    /// <summary>
+    /// A connection string to ACE's own auth database, scoped to the same disposable server as
+    /// <see cref="CloudConnectionString"/>. Only Red/Green tests proving ARCH-004's "cannot update
+    /// auth password fields" invariant should use this directly.
+    /// </summary>
+    public string AceAuthConnectionString => BuildConnectionString(AuthSchemaName);
 
     public static async Task<CloudDatabaseFixture> StartAsync()
     {
