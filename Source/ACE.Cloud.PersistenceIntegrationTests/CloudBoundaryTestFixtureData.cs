@@ -11,6 +11,8 @@ internal static class CloudBoundaryTestFixtureData
 {
     private static readonly string[] TablesInDeleteOrder =
     [
+        "CloudCustodianCustomPosition",
+        "CloudCustodianConfiguration",
         "CloudWithdrawalReservation",
         "CloudIdempotencyRecord",
         "CloudActivityLedgerEvent",

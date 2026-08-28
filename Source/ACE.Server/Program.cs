@@ -314,6 +314,9 @@ namespace ACE.Server
             log.Info("Initializing WorldManager...");
             WorldManager.Initialize();
 
+            log.Info("Initializing CloudCustodianManager...");
+            CloudCustodianManager.Initialize();
+
             log.Info("Initializing EventManager...");
             EventManager.Initialize();
 

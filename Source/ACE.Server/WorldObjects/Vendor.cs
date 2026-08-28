@@ -598,7 +598,7 @@ namespace ACE.Server.WorldObjects
             return cost;
         }
 
-        public int CalculatePayoutCoinAmount(Dictionary<uint, WorldObject> items)
+        public virtual int CalculatePayoutCoinAmount(Dictionary<uint, WorldObject> items)
         {
             var payout = 0;
 
@@ -609,11 +609,23 @@ namespace ACE.Server.WorldObjects
         }
 
         /// <summary>
+        /// Called by Player_Commerce.HandleActionSellItem before any item leaves the player's
+        /// inventory or any payout is created, so an override can reject the entire sale commit with
+        /// no side effects at all. The default implementation always allows the sale, preserving
+        /// ordinary vendor behavior unchanged.
+        /// </summary>
+        public virtual bool ValidateSaleCommit(Player player, out string rejectionMessage)
+        {
+            rejectionMessage = null;
+            return true;
+        }
+
+        /// <summary>
         /// This will either add the item to the vendors temporary sellables, or destroy it.<para />
         /// In both cases, the item will be removed from the database.<para />
         /// The item should already have been removed from the players inventory
         /// </summary>
-        public void ProcessItemsForPurchase(Player player, Dictionary<uint, WorldObject> items)
+        public virtual void ProcessItemsForPurchase(Player player, Dictionary<uint, WorldObject> items)
         {
             foreach (var item in items.Values)
             {

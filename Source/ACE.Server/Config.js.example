@@ -178,6 +178,16 @@
       "Password": "",
       "EnableDetailedErrors": false,
       "EnableSensitiveDataLogging": false
+    },
+    // Only consulted when CloudMule.Enabled is true below.
+    "Cloud": {
+      "Host": "127.0.0.1",
+      "Port": 3306,
+      "Database": "ace_cloud",
+      "Username": "root",
+      "Password": "",
+      "EnableDetailedErrors": false,
+      "EnableSensitiveDataLogging": false
     }
   },
   // This section can trigger events that may happen before the world starts up, or after it shuts down
@@ -236,5 +246,19 @@
 
     // Upon server startup, precache all DAT files that would be sent as compressed data
     "PrecacheCompressedDATFiles": false
+  },
+
+  // AC Cloud Mule is an opt-in, self-hosted extension (see CONTEXT.md). This section is inert unless Enabled.
+  "CloudMule": {
+    "Enabled": false,
+
+    // This deployment's immutable Cloud Shard ID (ARCH-001), matching the CloudShardBinding row
+    // already bootstrapped in the ace_cloud schema this server connects to via MySql.Cloud above.
+    "ShardId": "",
+
+    // An existing Vendor-type WeenieClassId in this server's ace_world database that Cloud Custodians
+    // spawn from (only their visual/model appearance is reused; name and merchandise properties are
+    // overridden). Cloud Custodians do not spawn while this is left at 0.
+    "CustodianBaseWeenieClassId": 0
   }
 }

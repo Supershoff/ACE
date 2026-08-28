@@ -141,6 +141,19 @@ namespace ACE.Server.WorldObjects
                 return;
             }
 
+            // revalidated before anything else so an override (Cloud Custodian's stale-configuration
+            // check) can reject the entire commit with zero side effects: no item removal, no payout
+            // creation, no vendor bookkeeping.
+            if (!vendor.ValidateSaleCommit(this, out var rejectionMessage))
+            {
+                if (!string.IsNullOrWhiteSpace(rejectionMessage))
+                    SendTransientError(rejectionMessage);
+
+                Session.Network.EnqueueSend(new GameEventInventoryServerSaveFailed(Session, Guid.Full));
+                SendUseDoneEvent();
+                return;
+            }
+
             // perform validations on requested sell items,
             // and filter to list of validated items
 
