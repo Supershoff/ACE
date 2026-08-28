@@ -518,7 +518,7 @@ namespace ACE.Server.WorldObjects
                     continue;
                 }
 
-                preserved.Add(new CloudRuntimeEnchantmentSnapshot(entry.SpellId, remainingDurationSeconds));
+                preserved.Add(new CloudRuntimeEnchantmentSnapshot(entry.SpellId, remainingDurationSeconds, entry.LayerId));
             }
 
             return preserved;

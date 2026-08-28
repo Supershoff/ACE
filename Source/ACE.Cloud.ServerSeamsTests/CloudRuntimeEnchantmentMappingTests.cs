@@ -29,6 +29,30 @@ public class CloudRuntimeEnchantmentMappingTests
         Assert.AreEqual(90, preserved[0].RemainingDurationSeconds);
     }
 
+    /// <summary>
+    /// AC Cloud Mule issue #15 review, P1: two layers of the same spell (e.g. independent DoTs from
+    /// different casters, a supported <c>EnchantmentManager.Add</c> case) must preserve their own
+    /// distinct LayerId rather than being indistinguishable by SpellId alone -- otherwise a later
+    /// resume step cannot tell which registry row a preserved snapshot belongs to.
+    /// </summary>
+    [TestMethod]
+    public void BuildRuntimeEnchantments_TwoLayersOfTheSameSpell_PreservesEachLayersOwnLayerId()
+    {
+        var entries = new List<PropertiesEnchantmentRegistry>
+        {
+            new() { SpellId = 500, LayerId = 1, Duration = 60, StartTime = -30 },
+            new() { SpellId = 500, LayerId = 2, Duration = 90, StartTime = -40 },
+        };
+
+        var preserved = Player.BuildRuntimeEnchantments(entries);
+
+        Assert.AreEqual(2, preserved.Count);
+        Assert.AreEqual(1, preserved[0].LayerId);
+        Assert.AreEqual(30, preserved[0].RemainingDurationSeconds);
+        Assert.AreEqual(2, preserved[1].LayerId);
+        Assert.AreEqual(50, preserved[1].RemainingDurationSeconds);
+    }
+
     [TestMethod]
     public void BuildRuntimeEnchantments_APermanentEquipLinkedSpell_IsExcluded()
     {

@@ -411,6 +411,7 @@ public sealed class CloudDbContext : DbContext
                 .OnDelete(DeleteBehavior.Restrict);
 
             entity.Property(frozen => frozen.SpellId).IsRequired();
+            entity.Property(frozen => frozen.LayerId).IsRequired();
             entity.Property(frozen => frozen.RemainingDurationSeconds).IsRequired();
 
             entity.Property(frozen => frozen.CreatedAtUtc)

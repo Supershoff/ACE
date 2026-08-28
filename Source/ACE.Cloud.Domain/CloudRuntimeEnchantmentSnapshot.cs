@@ -12,9 +12,20 @@ public sealed record CloudRuntimeEnchantmentSnapshot
 {
     public int SpellId { get; init; }
 
+    /// <summary>
+    /// The registry row's real per-spell identity alongside <see cref="SpellId"/>
+    /// (<c>biota_properties_enchantment_registry</c>'s composite key and its
+    /// <c>wcid_enchantmentregistry_objectId_spellId_layerId_uidx</c> unique index both include it):
+    /// multiple layers of the same spell on the same object are an explicit, supported
+    /// <c>EnchantmentManager.Add</c> case (e.g. multiple casters' independent DoTs), so this must be
+    /// preserved and threaded back through to resume the correct layer's remaining duration rather
+    /// than every layer sharing that <see cref="SpellId"/>.
+    /// </summary>
+    public ushort LayerId { get; init; }
+
     public double RemainingDurationSeconds { get; init; }
 
-    public CloudRuntimeEnchantmentSnapshot(int spellId, double remainingDurationSeconds)
+    public CloudRuntimeEnchantmentSnapshot(int spellId, double remainingDurationSeconds, ushort layerId = 0)
     {
         if (remainingDurationSeconds < 0)
         {
@@ -23,6 +34,7 @@ public sealed record CloudRuntimeEnchantmentSnapshot
         }
 
         SpellId = spellId;
+        LayerId = layerId;
         RemainingDurationSeconds = remainingDurationSeconds;
     }
 }
