@@ -1,3 +1,4 @@
+using ACE.Cloud.Domain;
 using ACE.Cloud.Persistence;
 using Microsoft.EntityFrameworkCore;
 
@@ -69,6 +70,41 @@ public sealed class CloudStackLotMaterializationTests
         Assert.AreEqual(0, await verifyContext.CloudStackLots.CountAsync(l => l.CustodyRecordId == depositOutcome.Value!.CustodyRecord.Id));
         Assert.AreEqual(0, await verifyContext.CloudCustodyRecords.CountAsync(r => r.Id == depositOutcome.Value!.CustodyRecord.Id));
         Assert.AreEqual(0, await verifyContext.CloudStackLotLineageEvents.CountAsync(e => e.ParentBiotaId == biotaId), "No materialization occurred, so no lineage event should exist.");
+    }
+
+    /// <summary>
+    /// AC Cloud Mule issue #15 (DEP-005): a full-lot withdrawal releases custody through the exact
+    /// same <c>ReleaseCustodyRecordAsync</c> path a whole-item withdrawal uses, so it must resume any
+    /// Frozen Enchantments the stack deposit preserved just as exactly.
+    /// </summary>
+    [TestMethod]
+    public async Task FullWithdrawal_OfALotDepositedWithFrozenEnchantments_ResumesTheExactPreservedRemainingDuration()
+    {
+        var biotaId = NextId();
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, biotaId);
+        await AceShardTestData.InsertEnchantmentRegistryRowAsync(_fixture.AceShardConnectionString, biotaId, spellId: 321, startTime: -999.0, duration: 1200.0);
+
+        var options = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
+        var ownerId = Guid.NewGuid();
+        var recipientContainerId = NextId();
+
+        await using var context = new CloudDbContext(options);
+        var boundary = new CloudCustodyBoundary(context);
+
+        var preservationRequirements = new[] { new CloudRuntimeEnchantmentSnapshot(spellId: 321, remainingDurationSeconds: 45.0) };
+
+        var depositOutcome = await boundary.DepositStackAsync(
+            biotaId, ShardId, ownerId, 25, Guid.NewGuid(), preservationRequirements: preservationRequirements);
+        var lot = depositOutcome.Value!.Lot;
+
+        var withdrawOutcome = await boundary.WithdrawLotAsync(
+            lot.Id, lot.Version, quantityToWithdraw: 25, recipientContainerId, materializedBiotaId: null, Guid.NewGuid());
+
+        Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, withdrawOutcome.Kind, withdrawOutcome.Reason);
+
+        var startTime = await AceShardTestData.GetEnchantmentStartTimeAsync(_fixture.AceShardConnectionString, biotaId, 321);
+        Assert.IsNotNull(startTime);
+        Assert.AreEqual(45.0, 1200.0 + startTime!.Value, 0.0001);
     }
 
     [TestMethod]

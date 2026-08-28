@@ -81,6 +81,79 @@ internal static class AceShardTestData
         await command.ExecuteNonQueryAsync();
     }
 
+    /// <summary>
+    /// Seeds one native runtime-enchantment registry row (DEP-005) so a test can deposit an item
+    /// whose ace_shard row's <c>start_Time</c> deliberately disagrees with the live remaining
+    /// duration a Cloud Custodian deposit captures -- modeling ACE's periodic autosave lag between
+    /// a live <c>WorldObject</c>'s in-memory <c>EnchantmentManager</c> and its last-persisted
+    /// ace_shard row (`Player.BuildRuntimeEnchantments`'s doc comment).
+    /// </summary>
+    public static async Task InsertEnchantmentRegistryRowAsync(
+        string aceShardConnectionString, uint biotaId, int spellId, double startTime, double duration, ushort layerId = 0, uint casterObjectId = 0)
+    {
+        await using var connection = new MySqlConnection(aceShardConnectionString);
+        await connection.OpenAsync();
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO biota_properties_enchantment_registry
+                (object_Id, enchantment_Category, spell_Id, layer_Id, has_Spell_Set_Id, spell_Category, power_Level,
+                 start_Time, duration, caster_Object_Id, degrade_Modifier, degrade_Limit, last_Time_Degraded,
+                 stat_Mod_Type, stat_Mod_Key, stat_Mod_Value, spell_Set_Id)
+            VALUES
+                (@objectId, 0, @spellId, @layerId, 0, 0, 0, @startTime, @duration, @casterObjectId, 0, 0, 0, 0, 0, 0, 0);
+            """;
+        command.Parameters.AddWithValue("@objectId", biotaId);
+        command.Parameters.AddWithValue("@spellId", spellId);
+        command.Parameters.AddWithValue("@layerId", layerId);
+        command.Parameters.AddWithValue("@startTime", startTime);
+        command.Parameters.AddWithValue("@duration", duration);
+        command.Parameters.AddWithValue("@casterObjectId", casterObjectId);
+        await command.ExecuteNonQueryAsync();
+    }
+
+    /// <summary>
+    /// Reads a native runtime-enchantment registry row's persisted <c>start_Time</c>, or null if no
+    /// row matches -- what a test asserts against to prove a Frozen Enchantment neither ticks during
+    /// Cloud custody nor resumes from a stale value at withdrawal (DEP-005).
+    /// </summary>
+    public static async Task<double?> GetEnchantmentStartTimeAsync(string aceShardConnectionString, uint biotaId, int spellId)
+    {
+        await using var connection = new MySqlConnection(aceShardConnectionString);
+        await connection.OpenAsync();
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT start_Time FROM biota_properties_enchantment_registry
+            WHERE object_Id = @objectId AND spell_Id = @spellId;
+            """;
+        command.Parameters.AddWithValue("@objectId", biotaId);
+        command.Parameters.AddWithValue("@spellId", spellId);
+
+        var result = await command.ExecuteScalarAsync();
+        return result is null or DBNull ? null : Convert.ToDouble(result);
+    }
+
+    /// <summary>
+    /// Counts a biota's native runtime-enchantment registry rows for a given spell, used to prove a
+    /// Frozen Enchantment's ace_shard row is never removed while its biota is in Cloud custody.
+    /// </summary>
+    public static async Task<long> CountEnchantmentRegistryRowsAsync(string aceShardConnectionString, uint biotaId, int spellId)
+    {
+        await using var connection = new MySqlConnection(aceShardConnectionString);
+        await connection.OpenAsync();
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT COUNT(*) FROM biota_properties_enchantment_registry
+            WHERE object_Id = @objectId AND spell_Id = @spellId;
+            """;
+        command.Parameters.AddWithValue("@objectId", biotaId);
+        command.Parameters.AddWithValue("@spellId", spellId);
+
+        return (long)(await command.ExecuteScalarAsync())!;
+    }
+
     public static Task GrantContainerAsync(string aceShardConnectionString, uint biotaId, uint containerId) =>
         InsertIidPropertyAsync(aceShardConnectionString, biotaId, ContainerPropertyType, containerId);
 

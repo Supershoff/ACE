@@ -1909,6 +1909,45 @@ public sealed class CloudCustodyBoundary
     }
 
     /// <summary>
+    /// Resumes ACE heartbeat processing for every Frozen Enchantment preserved for a withdrawn
+    /// biota (DEP-005: "resumes ACE heartbeat processing from the same remaining duration"), on the
+    /// same connection/transaction as the rest of the withdrawal. ace_shard's own registry row is
+    /// never touched while custody lasts (<see cref="RemoveWorldPossessionAsync"/>'s doc comment), so
+    /// it can still disagree with the exact live value <see cref="CloudRuntimeEnchantmentSnapshot"/>
+    /// captured at deposit time -- ACE's periodic autosave can persist a biota's enchantment registry
+    /// on a different cadence than the in-memory countdown itself decreases
+    /// (<c>Player.BuildRuntimeEnchantments</c>'s doc comment). Overwriting <c>start_Time</c> here with
+    /// <c>RemainingDurationSeconds - duration</c> (the same "Duration + StartTime" arithmetic
+    /// <c>EnchantmentManager.HeartBeat</c> and <c>HeartBeatEnchantmentsAndReturnExpired</c> use)
+    /// reproduces the exact preserved remaining duration regardless of that lag, without extending or
+    /// shortening it -- <c>duration</c> itself is left untouched because nothing ever changed it
+    /// during custody. Runs once per withdrawal, immediately before the caller stages the matching
+    /// <see cref="CloudFrozenEnchantment"/> rows for deletion in the same transaction, so a retried
+    /// idempotency key can never re-apply it a second time.
+    /// </summary>
+    private async Task ResumeFrozenEnchantmentsAsync(
+        uint biotaId, IReadOnlyList<CloudFrozenEnchantment> frozenEnchantments, CancellationToken cancellationToken)
+    {
+        var connection = _context.Database.GetDbConnection();
+        var transaction = _context.Database.CurrentTransaction?.GetDbTransaction();
+
+        foreach (var frozenEnchantment in frozenEnchantments)
+        {
+            await using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = """
+                UPDATE ace_shard.biota_properties_enchantment_registry
+                SET start_Time = @remainingDurationSeconds - duration
+                WHERE object_Id = @biotaId AND spell_Id = @spellId;
+                """;
+            AddParameter(command, "@biotaId", biotaId);
+            AddParameter(command, "@spellId", frozenEnchantment.SpellId);
+            AddParameter(command, "@remainingDurationSeconds", frozenEnchantment.RemainingDurationSeconds);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+    }
+
+    /// <summary>
     /// Reduces a deposit's DEP-005 preservation requirements to the <see cref="CloudFrozenEnchantment"/>
     /// rows to persist alongside <paramref name="custodyRecordId"/>, added to the same
     /// SaveChangesAsync call as the Cloud Custody Record insert (transaction rule 5): an empty or
@@ -1939,7 +1978,9 @@ public sealed class CloudCustodyBoundary
     /// <c>FK_CloudFrozenEnchantment_CloudCustodyRecord_CustodyRecordId</c> is <c>ON DELETE
     /// RESTRICT</c>, so deleting the custody record without first deleting these would make every
     /// withdrawal of an item that had an active runtime enchantment at deposit time throw an
-    /// unhandled foreign-key violation.</item>
+    /// unhandled foreign-key violation. Before they are deleted, <see cref="ResumeFrozenEnchantmentsAsync"/>
+    /// writes each one's preserved remaining duration back into ace_shard so ACE resumes heartbeat
+    /// processing from the exact frozen value (issue #15, DEP-005) rather than losing it.</item>
     /// <item>Any prior committed Deposit/StackDeposit <see cref="CloudIdempotencyRecord"/> for the
     /// same biota: <see cref="CloudOwnerIdentity.DepositIdempotencyKey"/> is deterministic in
     /// (shardId, biotaId) alone, so a future re-deposit of this same biota (legitimate once it is
@@ -1957,6 +1998,7 @@ public sealed class CloudCustodyBoundary
             .ToListAsync(cancellationToken);
         if (frozenEnchantments.Count > 0)
         {
+            await ResumeFrozenEnchantmentsAsync(record.BiotaId, frozenEnchantments, cancellationToken);
             _context.CloudFrozenEnchantments.RemoveRange(frozenEnchantments);
         }
 
