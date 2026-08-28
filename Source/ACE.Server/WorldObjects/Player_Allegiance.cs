@@ -1,6 +1,7 @@
 using System;
 using System.Linq;
 
+using ACE.Cloud.Domain;
 using ACE.Entity;
 using ACE.Entity.Enum;
 using ACE.Entity.Enum.Properties;
@@ -96,6 +97,8 @@ namespace ACE.Server.WorldObjects
 
             log.InfoFormat("[ALLEGIANCE] {0} ({1}) swearing allegiance to {2} ({3})", Name, Level, patron.Name, patron.Level);
 
+            var priorMonarchId = MonarchId;
+
             PatronId = targetGuid;
 
             var monarchGuid = AllegianceManager.GetMonarch(patron).Guid.Full;
@@ -107,6 +110,9 @@ namespace ACE.Server.WorldObjects
             // handle special case: monarch swearing into another allegiance
             if (Allegiance != null && Allegiance.MonarchId == Guid.Full)
                 HandleMonarchSwear();
+
+            // VAULT-001: refresh the companion's allegiance-membership projection.
+            CloudIdentityEventManager.PublishAllegianceEvent(Guid.Full, CloudIdentityEventType.AllegianceSworn, monarchGuid, priorMonarchId);
 
             SaveBiotaToDatabase();
 
@@ -142,6 +148,11 @@ namespace ACE.Server.WorldObjects
         /// </summary>
         public void HandleMonarchSwear()
         {
+            // VAULT-004: absorb this monarch's Allegiance Vault into their new monarch's before the
+            // old allegiance tree below is rewritten to point at that new monarch.
+            CloudIdentityEventManager.AbsorbVault(Guid.Full, MonarchId.Value);
+            CloudIdentityEventManager.PublishAllegianceEvent(Guid.Full, CloudIdentityEventType.AllegianceMonarchChanged, MonarchId, priorMonarchId: Guid.Full);
+
             // walk the allegiance tree from this node, update monarch ids
             AllegianceNode.Walk((node) =>
             {
@@ -180,6 +191,9 @@ namespace ACE.Server.WorldObjects
             // target can be either patron or vassal
             var isPatron = PatronId == target.Guid.Full;
             var isVassal = target.PatronId == Guid.Full;
+
+            var priorMonarchIdForSelf = MonarchId;
+            var priorMonarchIdForTarget = target.MonarchId;
 
             // break ties
             if (isVassal)
@@ -235,6 +249,12 @@ namespace ACE.Server.WorldObjects
 
             // rebuild allegiance tree structures
             AllegianceManager.OnBreakAllegiance(this, target);
+
+            // VAULT-001: refresh the companion's allegiance-membership projection for both sides of
+            // the break. HandleNoAllegiance above may have already cleared either side's MonarchId,
+            // so both current values are read only now, after every mutation above has settled.
+            CloudIdentityEventManager.PublishAllegianceEvent(Guid.Full, CloudIdentityEventType.AllegianceBroken, MonarchId, priorMonarchIdForSelf);
+            CloudIdentityEventManager.PublishAllegianceEvent(target.Guid.Full, CloudIdentityEventType.AllegianceBroken, target.MonarchId, priorMonarchIdForTarget);
 
             if (isVassal)
             {

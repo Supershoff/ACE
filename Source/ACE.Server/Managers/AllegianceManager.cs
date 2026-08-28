@@ -42,6 +42,22 @@ namespace ACE.Server.Managers
         }
 
         /// <summary>
+        /// Whether <paramref name="player"/> is currently the monarch of a real allegiance (i.e. at
+        /// least one other player has sworn to them), derived live via <see cref="GetAllegiance"/>
+        /// rather than the possibly-stale <see cref="IPlayer.Allegiance"/> cache. That cache is only
+        /// populated by <see cref="LoadPlayer"/>, which only ever runs for a character that has
+        /// logged in during this server process's uptime (<c>PlayerManager.SwitchPlayerFromOfflineToOnline</c>);
+        /// <c>PlayerManager.Initialize()</c> bulk-constructs every <see cref="ACE.Server.Entity.OfflinePlayer"/>
+        /// at startup without ever calling <see cref="LoadPlayer"/>, so callers that read
+        /// <c>player.Allegiance</c> directly silently treat every not-yet-logged-in-this-session
+        /// monarch as a non-monarch (AC Cloud Mule issue #17 review, VAULT-005).
+        /// </summary>
+        public static bool IsMonarch(IPlayer player)
+        {
+            return player != null && GetAllegiance(player)?.MonarchId == player.Guid.Full;
+        }
+
+        /// <summary>
         /// Returns the full allegiance structure for any player
         /// </summary>
         /// <param name="player">A player at any level of an allegiance</param>

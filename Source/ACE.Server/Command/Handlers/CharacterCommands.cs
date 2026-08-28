@@ -64,17 +64,30 @@ namespace ACE.Server.Command.Handlers
                 return;
             }
 
+            // VAULT-005: block deletion of a monarch character while their Allegiance Vault is
+            // nonempty, before this admin-forced deletion becomes effective either online or offline.
+            var isMonarch = AllegianceManager.IsMonarch(foundPlayer);
+            var deletionDecision = CloudIdentityEventManager.CheckMonarchDeletion(foundPlayer.Guid.Full, isMonarch);
+            if (!deletionDecision.IsAllowed)
+            {
+                CommandHandlerHelper.WriteOutputInfo(session, $"Unable to delete character {foundPlayer.Name} (0x{foundPlayer.Guid}): {deletionDecision.Reason}", ChatMessageType.Broadcast);
+                return;
+            }
+
             if (isOnline && foundPlayer is Player player)
             {
                 player.Character.DeleteTime = (ulong)Time.GetUnixTime();
                 player.Character.IsDeleted = true;
-                player.CharacterChangesDetected = true;                
+                player.CharacterChangesDetected = true;
                 player.Session.LogOffPlayer(true);
                 PlayerManager.HandlePlayerDelete(player.Character.Id);
 
                 var success = PlayerManager.ProcessDeletedPlayer(player.Character.Id);
                 if (success)
+                {
                     CommandHandlerHelper.WriteOutputInfo(session, $"Successfully {(isOnline ? "booted and " : "")}deleted character {foundPlayer.Name} (0x{foundPlayer.Guid}).", ChatMessageType.Broadcast);
+                    CloudIdentityEventManager.PublishCharacterDeleted(player.Character.Id, player.Character.AccountId, player.Character.Name, player.Character.TotalLogins);
+                }
                 else
                     CommandHandlerHelper.WriteOutputInfo(session, $"Unable to {(isOnline ? "boot and " : "")}delete character {foundPlayer.Name} (0x{foundPlayer.Guid}) due to PlayerManager failure.", ChatMessageType.Broadcast);
             }
@@ -99,7 +112,10 @@ namespace ACE.Server.Command.Handlers
                                 {
                                     var success = PlayerManager.ProcessDeletedPlayer(character.Id);
                                     if (success)
+                                    {
                                         CommandHandlerHelper.WriteOutputInfo(session, $"Successfully {(isOnline ? "booted and " : "")}deleted character {foundPlayer.Name} (0x{foundPlayer.Guid}).", ChatMessageType.Broadcast);
+                                        CloudIdentityEventManager.PublishCharacterDeleted(character.Id, character.AccountId, character.Name, character.TotalLogins);
+                                    }
                                     else
                                         CommandHandlerHelper.WriteOutputInfo(session, $"Unable to {(isOnline ? "boot and " : "")}delete character {foundPlayer.Name} (0x{foundPlayer.Guid}) due to PlayerManager failure.", ChatMessageType.Broadcast);
                                 });

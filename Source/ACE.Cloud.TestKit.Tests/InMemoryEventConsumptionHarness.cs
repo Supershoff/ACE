@@ -8,16 +8,18 @@ namespace ACE.Cloud.TestKit.Tests;
 /// A minimal, storage-agnostic reference implementation of
 /// <see cref="ICloudEventConsumptionHarness{TPayload}"/>: a projection that applies an envelope
 /// only when its version is strictly higher than the highest version already applied, which is the
-/// idempotent, order-tolerant consumption rule ARCH-007 requires of a real outbox consumer.
+/// idempotent, order-tolerant consumption rule ARCH-007 requires of a real outbox consumer. Generic
+/// over its payload type so the exact same reference consumer proves this rule for every outbox's
+/// event shape (custody, and -- issue #17 -- identity/allegiance) without duplicating this logic.
 /// </summary>
-public sealed class InMemoryEventConsumptionHarness : ICloudEventConsumptionHarness<string>
+public sealed class InMemoryEventConsumptionHarness<TPayload> : ICloudEventConsumptionHarness<TPayload>
 {
     private static readonly CloudShardId ShardId = new("us1");
 
     private readonly object _gate = new();
     private CloudAggregateVersion? _appliedVersion;
 
-    public Task ApplyAsync(CloudEventEnvelope<string> envelope)
+    public Task ApplyAsync(CloudEventEnvelope<TPayload> envelope)
     {
         lock (_gate)
         {
@@ -38,6 +40,6 @@ public sealed class InMemoryEventConsumptionHarness : ICloudEventConsumptionHarn
         }
     }
 
-    public CloudEventEnvelope<string> CreateEnvelope(CloudAggregateVersion version, string payload) =>
+    public CloudEventEnvelope<TPayload> CreateEnvelope(CloudAggregateVersion version, TPayload payload) =>
         new(ShardId, version, new CloudIdempotencyKey(Guid.NewGuid()), DateTimeOffset.UtcNow, payload);
 }

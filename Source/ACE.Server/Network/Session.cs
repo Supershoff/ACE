@@ -197,13 +197,30 @@ namespace ACE.Server.Network
         {
             for (int i = Characters.Count - 1; i >= 0; i--)
             {
-                if (Characters[i].DeleteTime > 0 && Time.GetUnixTime() > Characters[i].DeleteTime)
+                var character = Characters[i];
+
+                if (character.DeleteTime > 0 && Time.GetUnixTime() > character.DeleteTime)
                 {
-                    Characters[i].IsDeleted = true;
+                    // VAULT-005: the request-time guard in CharacterHandler.CharacterDelete /
+                    // CharacterCommands.HandleCharacterForcedDelete only checked the vault's state at
+                    // the moment deletion was requested, up to char_delete_time seconds before this
+                    // irreversible finalization. Any other current allegiance member could have
+                    // contributed to the vault during that window, so the guard must be re-run live
+                    // here, immediately before the character is actually, permanently deleted.
+                    var offlinePlayer = PlayerManager.GetOfflinePlayer(character.Id);
+                    var isMonarch = AllegianceManager.IsMonarch(offlinePlayer);
+                    var deletionDecision = CloudIdentityEventManager.CheckMonarchDeletion(character.Id, isMonarch);
+                    if (!deletionDecision.IsAllowed)
+                    {
+                        log.Warn($"AC Cloud Mule: refusing to finalize deletion of character 0x{character.Id:X8} ({character.Name}): {deletionDecision.Reason}");
+                        continue;
+                    }
 
-                    DatabaseManager.Shard.SaveCharacter(Characters[i], new ReaderWriterLockSlim(), null);
+                    character.IsDeleted = true;
 
-                    PlayerManager.ProcessDeletedPlayer(Characters[i].Id);
+                    DatabaseManager.Shard.SaveCharacter(character, new ReaderWriterLockSlim(), null);
+
+                    PlayerManager.ProcessDeletedPlayer(character.Id);
 
                     Characters.RemoveAt(i);
                 }

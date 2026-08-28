@@ -79,4 +79,42 @@ public sealed class CloudOwnerIdentityTests
     {
         Assert.AreNotEqual(Guid.Empty, CloudOwnerIdentity.DepositIdempotencyKey("us1", 1));
     }
+
+    [TestMethod]
+    public void ForAllegianceVault_IsDeterministic_ForTheSameShardAndMonarch()
+    {
+        var first = CloudOwnerIdentity.ForAllegianceVault("us1", 42);
+        var second = CloudOwnerIdentity.ForAllegianceVault("us1", 42);
+
+        Assert.AreEqual(first, second);
+    }
+
+    [TestMethod]
+    public void ForAllegianceVault_DiffersAcrossMonarchs()
+    {
+        var monarchOne = CloudOwnerIdentity.ForAllegianceVault("us1", 1);
+        var monarchTwo = CloudOwnerIdentity.ForAllegianceVault("us1", 2);
+
+        Assert.AreNotEqual(monarchOne, monarchTwo);
+    }
+
+    [TestMethod]
+    public void ForAllegianceVault_DiffersAcrossShards()
+    {
+        var shardOne = CloudOwnerIdentity.ForAllegianceVault("us1", 42);
+        var shardTwo = CloudOwnerIdentity.ForAllegianceVault("us2", 42);
+
+        Assert.AreNotEqual(shardOne, shardTwo);
+    }
+
+    [TestMethod]
+    public void ForAllegianceVault_NeverCollidesWithForAccount_EvenWithOverlappingInputs()
+    {
+        // A monarch's own Main Account owner ID and their Allegiance Vault owner ID must never
+        // collide, or personal and vault custody records would be indistinguishable.
+        var accountOwnerId = CloudOwnerIdentity.ForAccount("us1", 42);
+        var vaultOwnerId = CloudOwnerIdentity.ForAllegianceVault("us1", 42);
+
+        Assert.AreNotEqual(accountOwnerId, vaultOwnerId);
+    }
 }

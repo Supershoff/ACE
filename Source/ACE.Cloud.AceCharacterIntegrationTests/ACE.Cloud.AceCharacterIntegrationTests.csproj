@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MSTest" Version="4.0.2" />
+    <PackageReference Include="MySqlConnector" Version="2.6.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Production code under test: PlayerManager/OfflinePlayer/AllegianceManager (ACE.Server) and
+         CloudIdentityEventManager's VAULT-005 guard, driven together against a real disposable
+         ace_shard/ace_cloud fixture — exactly the seam issue #17's review flagged as untested (the
+         call sites derive "is this character currently a monarch" from IPlayer.Allegiance, a cache
+         only ever populated for a character that logged in this server process; PlayerManager's
+         ordinary offline bulk-load at startup never populates it). ACE.Cloud.ServerSeamsTests
+         deliberately avoids constructing WorldObjects/OfflinePlayer (see its own doc comment), and
+         ACE.Cloud.AceCustodyIntegrationTests deliberately avoids referencing ACE.Server, so neither
+         can exercise this path; this project exists specifically to close that gap. Reuses
+         CloudDatabaseFixture rather than duplicating its Testcontainers/schema bootstrap. -->
+    <ProjectReference Include="..\ACE.Server\ACE.Server.csproj" />
+    <ProjectReference Include="..\ACE.Cloud.Persistence\ACE.Cloud.Persistence.csproj" />
+    <ProjectReference Include="..\ACE.Cloud.PersistenceIntegrationTests\ACE.Cloud.PersistenceIntegrationTests.csproj" />
+  </ItemGroup>
+
+</Project>

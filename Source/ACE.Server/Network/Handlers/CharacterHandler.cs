@@ -309,6 +309,15 @@ namespace ACE.Server.Network.Handlers
                 return;
             }
 
+            // VAULT-005: block deletion of a monarch character while their Allegiance Vault is
+            // nonempty, before this character's deletion becomes even provisionally effective.
+            var isMonarch = AllegianceManager.IsMonarch(offlinePlayer);
+            if (!CloudIdentityEventManager.CheckMonarchDeletion(character.Id, isMonarch).IsAllowed)
+            {
+                session.SendCharacterError(CharacterError.Delete);
+                return;
+            }
+
             session.Network.EnqueueSend(new GameMessageCharacterDelete());
 
             var charRestoreTime = PropertyManager.GetLong("char_delete_time", 3600).Item;
@@ -322,6 +331,9 @@ namespace ACE.Server.Network.Handlers
                     session.Network.EnqueueSend(new GameMessageCharacterList(session.Characters, session));
 
                     PlayerManager.HandlePlayerDelete(character.Id);
+
+                    // AUTH-003: refresh the companion's Display Character projection.
+                    CloudIdentityEventManager.PublishCharacterDeleted(character.Id, character.AccountId, character.Name, character.TotalLogins);
                 }
                 else
                     session.SendCharacterError(CharacterError.Delete);

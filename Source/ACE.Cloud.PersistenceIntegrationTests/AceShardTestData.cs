@@ -11,6 +11,7 @@ internal static class AceShardTestData
 {
     private const short ContainerPropertyType = 2; // PropertyInstanceId.Container
     private const short WielderPropertyType = 3; // PropertyInstanceId.Wielder
+    private const short MonarchPropertyType = 26; // PropertyInstanceId.Monarch
     private const short LocationPositionType = 1; // PositionType.Location
     private const short StackSizePropertyType = 12; // PropertyInt.StackSize
     private const short ValuePropertyType = 19; // PropertyInt.Value
@@ -161,11 +162,60 @@ internal static class AceShardTestData
         return (long)(await command.ExecuteScalarAsync())!;
     }
 
+    /// <summary>
+    /// Seeds one native ace_shard.character row (issue #17), the minimal columns
+    /// <c>CloudCustodyBoundary.CharacterExistsAndIsNotDeletedAsync</c> and AUTH-003's Display
+    /// Character projection care about.
+    /// </summary>
+    public static async Task InsertCharacterAsync(
+        string aceShardConnectionString, uint characterId, uint accountId, string name, int totalLogins = 0, bool isDeleted = false)
+    {
+        await using var connection = new MySqlConnection(aceShardConnectionString);
+        await connection.OpenAsync();
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO `character` (id, account_Id, name, is_Plussed, is_Deleted, delete_Time, last_Login_Timestamp, total_Logins)
+            VALUES (@id, @accountId, @name, 0, @isDeleted, 0, 0, @totalLogins);
+            """;
+        command.Parameters.AddWithValue("@id", characterId);
+        command.Parameters.AddWithValue("@accountId", accountId);
+        command.Parameters.AddWithValue("@name", name);
+        command.Parameters.AddWithValue("@isDeleted", isDeleted);
+        command.Parameters.AddWithValue("@totalLogins", totalLogins);
+        await command.ExecuteNonQueryAsync();
+    }
+
+    /// <summary>
+    /// Physically removes a native ace_shard.character row, modeling an out-of-band deletion that
+    /// bypasses ACE's own guarded deletion path entirely (VAULT-005's recovery scenario) rather than
+    /// the ordinary soft-delete (<c>is_Deleted</c>/<c>delete_Time</c>) flow.
+    /// </summary>
+    public static async Task DeleteCharacterRowAsync(string aceShardConnectionString, uint characterId)
+    {
+        await using var connection = new MySqlConnection(aceShardConnectionString);
+        await connection.OpenAsync();
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = "DELETE FROM `character` WHERE id = @id;";
+        command.Parameters.AddWithValue("@id", characterId);
+        await command.ExecuteNonQueryAsync();
+    }
+
     public static Task GrantContainerAsync(string aceShardConnectionString, uint biotaId, uint containerId) =>
         InsertIidPropertyAsync(aceShardConnectionString, biotaId, ContainerPropertyType, containerId);
 
     public static Task GrantWielderAsync(string aceShardConnectionString, uint biotaId, uint wielderId) =>
         InsertIidPropertyAsync(aceShardConnectionString, biotaId, WielderPropertyType, wielderId);
+
+    /// <summary>
+    /// Sets a character's persisted Monarch instance property (issue #17), modeling what
+    /// <c>Player.SwearAllegiance</c> persists when a character swears allegiance to someone else --
+    /// including a former monarch swearing into another allegiance (VAULT-004's trigger for Vault
+    /// Absorption).
+    /// </summary>
+    public static Task GrantMonarchAsync(string aceShardConnectionString, uint characterId, uint monarchId) =>
+        InsertIidPropertyAsync(aceShardConnectionString, characterId, MonarchPropertyType, monarchId);
 
     public static async Task GrantLocationAsync(string aceShardConnectionString, uint biotaId)
     {

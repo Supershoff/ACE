@@ -37,6 +37,18 @@ public static class CloudOwnerIdentity
     public static Guid DepositIdempotencyKey(string shardId, uint biotaId) =>
         DeterministicGuid($"ACE.Cloud.CustodianDeposit:{shardId}:{biotaId}");
 
+    /// <summary>
+    /// A stable per-monarch Allegiance Vault owner ID (deterministic; never random), the "Allegiance
+    /// Vault" case <see cref="CloudAccountId"/>'s doc comment anticipates. Every contribution/take/
+    /// absorption for the allegiance currently led by <paramref name="monarchCharacterId"/> resolves
+    /// to the same <see cref="Guid"/>, so vault contents can be stored as ordinary Cloud Custody
+    /// Records/Cloud Stack Lots owned by this identity without a separate vault-membership table
+    /// (VAULT-001, VAULT-002). Vault Absorption (VAULT-004) is then an ordinary ownership transfer
+    /// from the former monarch's vault identity to the new monarch's vault identity.
+    /// </summary>
+    public static Guid ForAllegianceVault(string shardId, uint monarchCharacterId) =>
+        DeterministicGuid($"ACE.Cloud.AllegianceVault:{shardId}:{monarchCharacterId}");
+
     private static Guid DeterministicGuid(string seed)
     {
         var hash = MD5.HashData(Encoding.UTF8.GetBytes(seed));
