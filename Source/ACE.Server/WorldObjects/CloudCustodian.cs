@@ -16,12 +16,13 @@ namespace ACE.Server.WorldObjects
     /// despawned exclusively by <see cref="CloudCustodianManager"/> on the world thread; nothing else
     /// constructs one.
     ///
-    /// Real deposit-into-Cloud-custody routing (DEP-002, DEP-003, eligibility, ledger/outbox) is a
-    /// dedicated handler added by a later issue that replaces <see cref="Vendor.ProcessItemsForPurchase"/>
-    /// (see AC Cloud Mule issue #13). Until that handler exists, this class deliberately keeps every
-    /// sold item intact -- neither destroyed nor resold -- rather than routing it through ordinary
-    /// Vendor commerce, which would either destroy the item outright or silently resell it to other
-    /// players; both are unacceptable for an item a player believes they are depositing off-world.
+    /// Real deposit-into-Cloud-custody routing (DEP-002, DEP-003, eligibility, ledger/outbox) is
+    /// <see cref="Player.HandleCloudCustodianDeposit"/> (AC Cloud Mule issue #13):
+    /// <see cref="Player_Commerce.HandleActionSellItem"/> routes every sale to a
+    /// <see cref="CloudCustodian"/> there instead of the ordinary <see cref="Vendor.ProcessItemsForPurchase"/>
+    /// resell/destroy path, so <see cref="ProcessItemsForPurchase"/> below is never reached in
+    /// production; it exists only as a defensive guard against a future caller accidentally
+    /// reintroducing that path for this vendor type.
     /// </summary>
     public class CloudCustodian : Vendor
     {
@@ -56,13 +57,12 @@ namespace ACE.Server.WorldObjects
         {
             Name = "Cloud Custodian";
 
-            // Nothing is offered for sale (DEP-001: never a personal vendor with resale inventory)
-            // and, until issue #13's dedicated deposit handler exists, nothing is accepted for sale
-            // either: MerchandiseItemTypes = 0 makes Player_Commerce.VerifySellItems' existing
-            // `(acceptedItemTypes & wo.ItemType) == 0` check reject every row through ACE's own,
-            // already-tested vendor validation, before ProcessItemsForPurchase below is ever reached
-            // in ordinary play. These are all still non-null so ValidateVendorRequirements() passes
-            // and the vendor window opens normally.
+            // Nothing is offered for sale (DEP-001: never a personal vendor with resale inventory).
+            // MerchandiseItemTypes/MinValue/MaxValue no longer gate incoming sell rows -- Player_Commerce
+            // .HandleActionSellItem routes every Cloud Custodian sale to Player.HandleCloudCustodianDeposit
+            // before VerifySellItems ever runs, and Cloud eligibility is decided by
+            // CloudItemEligibilityPolicy instead of an ItemType bitmask -- but these are still kept
+            // non-null so ValidateVendorRequirements() passes and the vendor window opens normally.
             MerchandiseItemTypes = 0;
             MerchandiseMinValue = 0;
             MerchandiseMaxValue = 0;
@@ -92,19 +92,16 @@ namespace ACE.Server.WorldObjects
         public override int CalculatePayoutCoinAmount(Dictionary<uint, WorldObject> items) => 0;
 
         /// <summary>
-        /// Never resells (no ordinary vendor resale inventory) and never destroys a sold item -- see
-        /// this class's doc comment for why real custody deposit is deliberately not implemented
-        /// here yet.
+        /// Never reached in production: <see cref="Player_Commerce.HandleActionSellItem"/> routes
+        /// every Cloud Custodian sale to <see cref="Player.HandleCloudCustodianDeposit"/> before
+        /// reaching this call. Ordinary <see cref="Vendor.ProcessItemsForPurchase"/> resell/destroy
+        /// semantics are unsafe for a Cloud deposit, so this override throws rather than silently
+        /// falling back to them.
         /// </summary>
         public override void ProcessItemsForPurchase(Player player, Dictionary<uint, WorldObject> items)
         {
-            foreach (var item in items.Values)
-            {
-                item.ContainerId = Guid.Full;
-                item.CalculateObjDesc();
-            }
-
-            ApproachVendor(player, VendorType.Sell);
+            throw new InvalidOperationException(
+                "CloudCustodian.ProcessItemsForPurchase must never be called; Cloud Custodian sales route through Player.HandleCloudCustodianDeposit.");
         }
     }
 }
