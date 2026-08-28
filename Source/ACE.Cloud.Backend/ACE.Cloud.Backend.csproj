@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- ARCH-012/OPS-001: an independently deployable companion service, never launched by
+         ACE.Server and never referenced by it. -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- ARCH-003/ARCH-004: the Cloud Transaction Authority backend references only pure shared
+         contracts, the Cloud domain, and the restricted Cloud persistence gateway, never
+         ACE.Server or ACE.Database, which would couple it to live ACE world objects or native-biota
+         mutation repositories. ACE.Cloud.RepositoryPolicyTests/CloudCompanionHostIndependenceTests
+         enforces this at the compiled-assembly level. -->
+    <ProjectReference Include="..\ACE.Cloud.Domain\ACE.Cloud.Domain.csproj" />
+    <ProjectReference Include="..\ACE.Cloud.Contracts\ACE.Cloud.Contracts.csproj" />
+    <ProjectReference Include="..\ACE.Cloud.Persistence\ACE.Cloud.Persistence.csproj" />
+    <ProjectReference Include="..\ACE.Cloud.Hosting\ACE.Cloud.Hosting.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -82,4 +82,53 @@ public sealed class CloudCompanionPrivilegeTests
 
         Assert.AreEqual(MySqlErrorCode.TableAccessDenied, deniedAccess.ErrorCode);
     }
+
+    /// <summary>
+    /// Red -> Green test for issue #18's Red section: "integration tests proving Cloud service
+    /// credentials can transact the dedicated schema but cannot update auth password fields or
+    /// native biota tables" -- the "auth password fields" half, which
+    /// <see cref="CompanionIdentity_CannotWriteNativeAceShardTables_EvenThoughItCanWriteTheCloudSchema"/>
+    /// never covered.
+    /// </summary>
+    [TestMethod]
+    public async Task CompanionIdentity_CannotUpdateAceAuthPasswordFields()
+    {
+        var username = "cloud_web_" + Guid.NewGuid().ToString("N")[..12];
+        var password = Guid.NewGuid().ToString("N");
+        var companionConnectionString = await _fixture.CreateRestrictedCompanionConnectionStringAsync(username, password);
+
+        var accountId = await AceAuthTestData.InsertAccountAsync(_fixture.AceAuthConnectionString);
+
+        await using var companionConnection = new MySqlConnection(companionConnectionString);
+        await companionConnection.OpenAsync();
+
+        await using var writeAceAuth = companionConnection.CreateCommand();
+        writeAceAuth.CommandText = "UPDATE ace_auth.account SET passwordHash = @hash WHERE accountId = @accountId;";
+        writeAceAuth.Parameters.AddWithValue("@hash", "attacker-controlled-hash");
+        writeAceAuth.Parameters.AddWithValue("@accountId", accountId);
+
+        var deniedAccess = await Assert.ThrowsExactlyAsync<MySqlException>(() => writeAceAuth.ExecuteNonQueryAsync());
+
+        Assert.AreEqual(MySqlErrorCode.TableAccessDenied, deniedAccess.ErrorCode,
+            "ARCH-004: the companion database identity must be refused by MariaDB itself when it touches ace_auth.account, "
+                + "not merely by application-level convention -- AUTH-002 requires the Cloud backend to never write passwords.");
+    }
+
+    [TestMethod]
+    public async Task CompanionIdentity_CannotEvenSelectFromAceAuthAccountTable()
+    {
+        var username = "cloud_web_" + Guid.NewGuid().ToString("N")[..12];
+        var password = Guid.NewGuid().ToString("N");
+        var companionConnectionString = await _fixture.CreateRestrictedCompanionConnectionStringAsync(username, password);
+
+        await using var companionConnection = new MySqlConnection(companionConnectionString);
+        await companionConnection.OpenAsync();
+
+        await using var readAceAuth = companionConnection.CreateCommand();
+        readAceAuth.CommandText = "SELECT COUNT(*) FROM ace_auth.account;";
+
+        var deniedAccess = await Assert.ThrowsExactlyAsync<MySqlException>(() => readAceAuth.ExecuteScalarAsync());
+
+        Assert.AreEqual(MySqlErrorCode.TableAccessDenied, deniedAccess.ErrorCode);
+    }
 }

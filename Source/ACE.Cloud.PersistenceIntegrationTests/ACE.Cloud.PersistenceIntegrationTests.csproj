@@ -22,6 +22,7 @@
     <ProjectReference Include="..\ACE.Cloud.Contracts\ACE.Cloud.Contracts.csproj" />
     <ProjectReference Include="..\ACE.Cloud.Persistence\ACE.Cloud.Persistence.csproj" />
     <ProjectReference Include="..\ACE.Cloud.TestKit\ACE.Cloud.TestKit.csproj" />
+    <ProjectReference Include="..\ACE.Cloud.Hosting\ACE.Cloud.Hosting.csproj" />
   </ItemGroup>
 
 </Project>

@@ -17,6 +17,7 @@ public sealed class CloudDatabaseFixture : IAsyncDisposable
 
     private const string CloudSchemaName = "ace_cloud";
     private const string ShardSchemaName = "ace_shard";
+    private const string AuthSchemaName = "ace_auth";
 
     private readonly MariaDbContainer _container;
 
@@ -34,6 +35,13 @@ public sealed class CloudDatabaseFixture : IAsyncDisposable
     /// hold a connection like this (ARCH-004).
     /// </summary>
     public string AceShardConnectionString => BuildConnectionString(ShardSchemaName);
+
+    /// <summary>
+    /// A connection string to ACE's own auth database, scoped to the same disposable server as
+    /// <see cref="CloudConnectionString"/>. Only Red/Green tests proving ARCH-004's "cannot update
+    /// auth password fields" invariant should use this directly.
+    /// </summary>
+    public string AceAuthConnectionString => BuildConnectionString(AuthSchemaName);
 
     public static async Task<CloudDatabaseFixture> StartAsync()
     {
@@ -99,6 +107,50 @@ public sealed class CloudDatabaseFixture : IAsyncDisposable
         var builder = new MySqlConnectionStringBuilder(_container.GetConnectionString())
         {
             Database = CloudSchemaName,
+            UserID = username,
+            Password = password,
+        };
+
+        return builder.ConnectionString;
+    }
+
+    /// <summary>
+    /// Provisions a MariaDB identity granted only <c>SELECT</c> on <c>ace_auth.account</c> and
+    /// nothing else, and returns a connection string authenticating as it. This models the narrowly
+    /// privileged read-only identity <c>AuthBridgeOptions.AceAuthConnectionString</c>'s doc comment
+    /// requires (AUTH-002: the Auth Bridge reuses ACE's own password verifier and so needs read
+    /// access to the hash/salt, but must never be able to write them); tests use it to prove that
+    /// restriction is an enforced database grant, distinct from the Backend/Worker's
+    /// <see cref="CreateRestrictedCompanionConnectionStringAsync"/> identity, which has no
+    /// <c>ace_auth</c> access at all. <paramref name="username"/> and <paramref name="password"/>
+    /// are caller-generated test-only random tokens, not real operator secrets.
+    /// </summary>
+    public async Task<string> CreateRestrictedAuthBridgeConnectionStringAsync(string username, string password)
+    {
+        await using var connection = new MySqlConnection(BuildConnectionString(database: null));
+        await connection.OpenAsync();
+
+        await using (var createUser = connection.CreateCommand())
+        {
+            createUser.CommandText = $"CREATE USER IF NOT EXISTS '{username}'@'%' IDENTIFIED BY '{password}';";
+            await createUser.ExecuteNonQueryAsync();
+        }
+
+        await using (var grant = connection.CreateCommand())
+        {
+            grant.CommandText = $"GRANT SELECT ON `{AuthSchemaName}`.`account` TO '{username}'@'%';";
+            await grant.ExecuteNonQueryAsync();
+        }
+
+        await using (var flush = connection.CreateCommand())
+        {
+            flush.CommandText = "FLUSH PRIVILEGES;";
+            await flush.ExecuteNonQueryAsync();
+        }
+
+        var builder = new MySqlConnectionStringBuilder(_container.GetConnectionString())
+        {
+            Database = AuthSchemaName,
             UserID = username,
             Password = password,
         };

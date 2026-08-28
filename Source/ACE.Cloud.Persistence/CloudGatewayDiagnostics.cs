@@ -42,6 +42,16 @@ public sealed class CloudGatewayDiagnostics
     }
 
     /// <summary>
+    /// Whether this deployment has a <see cref="CloudShardBinding"/> row at all (ARCH-001, OPS-002).
+    /// Callers that need to tell "Operator Bootstrap has not run yet" apart from "a version actually
+    /// mismatches" (issue #18's distinct "missing shard identity" and "migration mismatch"/"incompatible
+    /// ACE protocol" startup diagnostics) should check this before calling
+    /// <see cref="CheckProtocolCompatibilityAsync"/>, which reports both cases the same way.
+    /// </summary>
+    public async Task<bool> HasShardBindingAsync(CancellationToken cancellationToken = default) =>
+        await _context.CloudShardBindings.AsNoTracking().AnyAsync(cancellationToken);
+
+    /// <summary>
     /// Compares this deployment's currently applied <see cref="CloudShardBinding"/> versions
     /// against <paramref name="expected"/> (OPS-002). Returns an incompatible result -- rather than
     /// throwing -- both when the versions genuinely differ and when no CloudShardBinding row exists
