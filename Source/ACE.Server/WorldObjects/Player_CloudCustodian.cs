@@ -12,6 +12,7 @@ using ACE.Database;
 using ACE.Entity.Enum;
 using ACE.Entity.Models;
 using ACE.Server.Entity;
+using ACE.Server.Factories;
 using ACE.Server.Managers;
 using ACE.Server.Network.GameEvent.Events;
 using ACE.Server.Network.GameMessages.Messages;
@@ -69,7 +70,8 @@ namespace ACE.Server.WorldObjects
                     currentStackSize: item.StackSize ?? 1,
                     isStackable: item.StackSize.HasValue,
                     isDuplicateInSubmission: isDuplicate,
-                    BuildEligibilitySnapshot(item));
+                    BuildEligibilitySnapshot(item),
+                    rawPyrealAmount: IsRawPyrealCoinStack(item) ? (long)(item.Value ?? 0) : null);
 
                 var decision = CloudCustodianDepositRowPolicy.Decide(request, saleWindow);
 
@@ -86,7 +88,14 @@ namespace ACE.Server.WorldObjects
                 }
             }
 
-            var depositedCount = pendingDeposits.Count == 0 ? 0 : CommitPendingCloudDeposits(custodian, pendingDeposits);
+            // DEP-006: a raw Pyreal row mutates the account's single Pyreal Remainder rather than an
+            // independent biota, so those rows commit one at a time (never concurrently with each
+            // other) after every ordinary row has already committed concurrently as before.
+            var ordinaryDeposits = pendingDeposits.Where(p => p.Decision.Kind != CloudCustodianDepositRowDecisionKind.ConvertPyreal).ToList();
+            var pyrealConversions = pendingDeposits.Where(p => p.Decision.Kind == CloudCustodianDepositRowDecisionKind.ConvertPyreal).ToList();
+
+            var depositedCount = ordinaryDeposits.Count == 0 ? 0 : CommitPendingCloudDeposits(custodian, ordinaryDeposits);
+            depositedCount += pyrealConversions.Count == 0 ? 0 : CommitPendingPyrealConversions(custodian, pyrealConversions);
 
             if (depositedCount == 0)
             {
@@ -198,6 +207,185 @@ namespace ACE.Server.WorldObjects
             catch (Exception ex)
             {
                 cloudCustodianLog.Error($"[CLOUD CUSTODIAN] Deposit of 0x{pending.Item.Guid.Full:X8}:{pending.Item.Name} for player {Name} threw.", ex);
+                return (CloudBoundaryOutcomeKind.Unavailable, null);
+            }
+        }
+
+        /// <summary>
+        /// True for a raw Pyreal coin-stack row (WCID 273, DEP-006): the row that a Cloud Custodian
+        /// deposit converts into MMDs plus an updated Pyreal Remainder instead of depositing as
+        /// itself. Distinguished from a Trade Note (a different, already-converted WCID whose name
+        /// starts with "tradenote") and from every other coin-type row by its exact WCID.
+        /// </summary>
+        private static bool IsRawPyrealCoinStack(WorldObject item) =>
+            item.WeenieType == WeenieType.Coin && item.WeenieClassId == 273;
+
+        /// <summary>
+        /// Commits every prepared raw-Pyreal conversion row one at a time (DEP-006): unlike an
+        /// ordinary deposit row, a conversion mutates the account's single shared Pyreal Remainder,
+        /// so running two of them concurrently for the same submission would race that shared
+        /// resource. Each row still only ever competes with a <em>different</em> submission's
+        /// conversion for the same account -- a rare case <see cref="TryConvertPyrealDepositRow"/>'s
+        /// bounded retry already handles safely.
+        /// </summary>
+        private int CommitPendingPyrealConversions(CloudCustodian custodian, List<PendingCloudDeposit> pendingConversions)
+        {
+            var convertedCount = 0;
+
+            foreach (var pending in pendingConversions)
+            {
+                if (TryConvertPyrealDepositRow(pending))
+                {
+                    Session.Network.EnqueueSend(new GameEventItemServerSaysContainId(Session, pending.Item, custodian));
+                    convertedCount++;
+                }
+                else
+                {
+                    RestoreCloudDepositCandidate(pending.Item);
+                    SendTransientError($"The Cloud Custodian could not accept the {pending.Item.Name}. Please try again.");
+                }
+            }
+
+            return convertedCount;
+        }
+
+        /// <summary>
+        /// Converts one raw-Pyreal row (DEP-006): reads the account's current Pyreal Remainder,
+        /// computes the exact MMD count that combined total requires (<see cref="PyrealConversionPolicy"/>),
+        /// materializes that many MMD biotas through ACE's own factory/GUID allocator (ARCH-002,
+        /// ARCH-010 -- <see cref="CloudCustodyBoundary.ConvertPyrealDepositAsync"/> never allocates one
+        /// itself), and hands them to the boundary for the atomic commit. The remainder read here is
+        /// not transactionally authoritative, so a concurrent conversion for the same account (a rare
+        /// race between two of that account's characters depositing raw Pyreals at literally the same
+        /// moment) can make the boundary refuse with a Conflict; this is retried a bounded number of
+        /// times with a freshly read remainder, destroying any unused pre-created MMDs between
+        /// attempts so no orphan biota is ever left behind.
+        /// </summary>
+        private bool TryConvertPyrealDepositRow(PendingCloudDeposit pending)
+        {
+            const int maxAttempts = 3;
+            var rawAmount = pending.Decision.RawPyrealAmount;
+
+            for (var attempt = 1; attempt <= maxAttempts; attempt++)
+            {
+                long remainder;
+                PyrealConversionResult conversion;
+
+                try
+                {
+                    remainder = ReadPyrealRemainderAsync(pending.ShardId, pending.OwnerId).GetAwaiter().GetResult();
+                    conversion = PyrealConversionPolicy.Convert(remainder, rawAmount);
+                }
+                catch (Exception ex)
+                {
+                    cloudCustodianLog.Error($"[CLOUD CUSTODIAN] Reading/computing the Pyreal conversion for player {Name} threw.", ex);
+                    return false;
+                }
+
+                var mmdBiotas = CreateMmdBiotas(conversion.MmdCount);
+                if (mmdBiotas == null)
+                {
+                    return false;
+                }
+
+                var (outcomeKind, reason) = ConvertPyrealDepositToCloudAsync(pending, rawAmount, mmdBiotas).GetAwaiter().GetResult();
+
+                if (outcomeKind == CloudBoundaryOutcomeKind.Committed)
+                {
+                    return true;
+                }
+
+                DestroyUnusedMmdBiotas(mmdBiotas);
+
+                if (outcomeKind != CloudBoundaryOutcomeKind.Conflict)
+                {
+                    if (!string.IsNullOrWhiteSpace(reason))
+                    {
+                        cloudCustodianLog.Warn($"[CLOUD CUSTODIAN] Pyreal conversion for player {Name} was not committed: {reason}");
+                    }
+
+                    return false;
+                }
+            }
+
+            cloudCustodianLog.Warn($"[CLOUD CUSTODIAN] Pyreal conversion for player {Name} lost {maxAttempts} consecutive races on their own Pyreal Remainder.");
+            return false;
+        }
+
+        /// <summary>
+        /// Materializes and synchronously persists <paramref name="count"/> new MMD (Trade Note
+        /// (250,000), WCID 20630) biotas with no Container/Wielder/Location -- ACE's own GUID
+        /// allocator assigns each one's GUID (ARCH-002, ARCH-010). Returns null (destroying any
+        /// biotas already created in this attempt) if any single creation/persist fails, so a caller
+        /// never hands a partial batch to the Cloud boundary.
+        /// </summary>
+        private List<WorldObject> CreateMmdBiotas(long count)
+        {
+            var mmdBiotas = new List<WorldObject>();
+
+            for (var i = 0L; i < count; i++)
+            {
+                var mmd = WorldObjectFactory.CreateNewWorldObject((uint)ACE.Server.Factories.Enum.WeenieClassName.tradenote250000);
+                if (mmd == null || !SynchronouslyPersist(mmd))
+                {
+                    cloudCustodianLog.Error($"[CLOUD CUSTODIAN] Failed to create/persist an MMD for player {Name}'s Pyreal conversion.");
+                    DestroyUnusedMmdBiotas(mmdBiotas);
+                    return null;
+                }
+
+                mmdBiotas.Add(mmd);
+            }
+
+            return mmdBiotas;
+        }
+
+        /// <summary>
+        /// Deletes a batch of MMD biotas that were persisted (<see cref="CreateMmdBiotas"/>) but never
+        /// entered Cloud custody -- either because a later step in the same attempt failed, or because
+        /// <see cref="TryConvertPyrealDepositRow"/>'s conversion attempt lost a race and must retry
+        /// with a freshly computed count. Leaving them would violate ARCH-005: a biota with neither
+        /// world possession nor a Cloud Custody Record must never persist.
+        /// </summary>
+        private void DestroyUnusedMmdBiotas(List<WorldObject> mmdBiotas)
+        {
+            foreach (var mmd in mmdBiotas)
+            {
+                try
+                {
+                    DatabaseManager.Shard.BaseDatabase.RemoveBiota(mmd.Biota.Id);
+                }
+                catch (Exception ex)
+                {
+                    cloudCustodianLog.Error(
+                        $"[CLOUD CUSTODIAN] Failed to clean up unused MMD 0x{mmd.Guid.Full:X8} after a Pyreal conversion retry for player {Name}.", ex);
+                }
+            }
+        }
+
+        private async Task<long> ReadPyrealRemainderAsync(string shardId, Guid ownerId)
+        {
+            using var context = new CloudDbContext(CloudDbContextOptionsFactory.Create(CloudCustodianManager.BuildCloudConnectionString()));
+            var boundary = new CloudCustodyBoundary(context);
+            return await boundary.GetPyrealRemainderAsync(shardId, ownerId);
+        }
+
+        private async Task<(CloudBoundaryOutcomeKind Kind, string Reason)> ConvertPyrealDepositToCloudAsync(
+            PendingCloudDeposit pending, long rawAmount, List<WorldObject> mmdBiotas)
+        {
+            try
+            {
+                using var context = new CloudDbContext(CloudDbContextOptionsFactory.Create(CloudCustodianManager.BuildCloudConnectionString()));
+                var boundary = new CloudCustodyBoundary(context);
+
+                var mmdBiotaIds = mmdBiotas.Select(mmd => mmd.Guid.Full).ToList();
+
+                var outcome = await boundary.ConvertPyrealDepositAsync(
+                    pending.Item.Guid.Full, pending.ShardId, pending.OwnerId, rawAmount, mmdBiotaIds, pending.IdempotencyKey);
+                return (outcome.Kind, outcome.Reason);
+            }
+            catch (Exception ex)
+            {
+                cloudCustodianLog.Error($"[CLOUD CUSTODIAN] Pyreal conversion for player {Name} threw.", ex);
                 return (CloudBoundaryOutcomeKind.Unavailable, null);
             }
         }

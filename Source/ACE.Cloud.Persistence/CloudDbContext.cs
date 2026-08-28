@@ -38,6 +38,16 @@ public sealed class CloudDbContext : DbContext
 
     public DbSet<CloudFrozenEnchantment> CloudFrozenEnchantments => Set<CloudFrozenEnchantment>();
 
+    public DbSet<CloudPyrealRemainder> CloudPyrealRemainders => Set<CloudPyrealRemainder>();
+
+    public DbSet<CloudPyrealConversionRecord> CloudPyrealConversionRecords => Set<CloudPyrealConversionRecord>();
+
+    public DbSet<CloudPyrealConversionMmd> CloudPyrealConversionMmds => Set<CloudPyrealConversionMmd>();
+
+    public DbSet<CloudPyrealRemainderWithdrawalRecord> CloudPyrealRemainderWithdrawalRecords => Set<CloudPyrealRemainderWithdrawalRecord>();
+
+    public DbSet<CloudPyrealRemainderWithdrawalBiota> CloudPyrealRemainderWithdrawalBiotas => Set<CloudPyrealRemainderWithdrawalBiota>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<CloudShardBinding>(entity =>
@@ -407,6 +417,126 @@ public sealed class CloudDbContext : DbContext
                 .IsRequired()
                 .ValueGeneratedOnAdd()
                 .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudPyrealRemainder>(entity =>
+        {
+            entity.ToTable("CloudPyrealRemainder");
+
+            // One remainder row per account per shard (DEP-006); no surrogate Id.
+            entity.HasKey(remainder => new { remainder.OwnerId, remainder.ShardId });
+
+            entity.Property(remainder => remainder.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(remainder => remainder.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(remainder => remainder.OwnerId).IsRequired();
+            entity.Property(remainder => remainder.RemainderAmount).IsRequired();
+            entity.Property(remainder => remainder.Version).IsRequired().IsConcurrencyToken();
+
+            entity.Property(remainder => remainder.CreatedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAdd()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+            entity.Property(remainder => remainder.UpdatedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAddOrUpdate()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudPyrealConversionRecord>(entity =>
+        {
+            entity.ToTable("CloudPyrealConversionRecord");
+
+            entity.HasKey(record => record.IdempotencyKey);
+            entity.Property(record => record.IdempotencyKey).ValueGeneratedNever();
+
+            entity.Property(record => record.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(record => record.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(record => record.OwnerId).IsRequired();
+            entity.Property(record => record.RawBiotaId).IsRequired();
+            entity.Property(record => record.RawPyrealAmount).IsRequired();
+            entity.Property(record => record.RemainderBefore).IsRequired();
+            entity.Property(record => record.RemainderAfter).IsRequired();
+            entity.Property(record => record.CorrelationId).IsRequired();
+
+            entity.Property(record => record.CreatedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAdd()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudPyrealConversionMmd>(entity =>
+        {
+            entity.ToTable("CloudPyrealConversionMmd");
+
+            entity.HasKey(mmd => mmd.Id);
+            entity.Property(mmd => mmd.Id).ValueGeneratedNever();
+
+            entity.Property(mmd => mmd.ConversionIdempotencyKey).IsRequired();
+            entity.HasIndex(mmd => mmd.ConversionIdempotencyKey);
+            entity.HasOne<CloudPyrealConversionRecord>()
+                .WithMany()
+                .HasForeignKey(mmd => mmd.ConversionIdempotencyKey)
+                .HasPrincipalKey(record => record.IdempotencyKey)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(mmd => mmd.MmdBiotaId).IsRequired();
+            entity.Property(mmd => mmd.CustodyRecordId).IsRequired();
+        });
+
+        modelBuilder.Entity<CloudPyrealRemainderWithdrawalRecord>(entity =>
+        {
+            entity.ToTable("CloudPyrealRemainderWithdrawalRecord");
+
+            entity.HasKey(record => record.IdempotencyKey);
+            entity.Property(record => record.IdempotencyKey).ValueGeneratedNever();
+
+            entity.Property(record => record.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(record => record.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(record => record.OwnerId).IsRequired();
+            entity.Property(record => record.Amount).IsRequired();
+            entity.Property(record => record.RemainderBefore).IsRequired();
+            entity.Property(record => record.RemainderAfter).IsRequired();
+            entity.Property(record => record.RecipientContainerId).IsRequired();
+            entity.Property(record => record.CorrelationId).IsRequired();
+
+            entity.Property(record => record.CreatedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAdd()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudPyrealRemainderWithdrawalBiota>(entity =>
+        {
+            entity.ToTable("CloudPyrealRemainderWithdrawalBiota");
+
+            entity.HasKey(biota => biota.Id);
+            entity.Property(biota => biota.Id).ValueGeneratedNever();
+
+            entity.Property(biota => biota.WithdrawalIdempotencyKey).IsRequired();
+            entity.HasIndex(biota => biota.WithdrawalIdempotencyKey);
+            entity.HasOne<CloudPyrealRemainderWithdrawalRecord>()
+                .WithMany()
+                .HasForeignKey(biota => biota.WithdrawalIdempotencyKey)
+                .HasPrincipalKey(record => record.IdempotencyKey)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(biota => biota.BiotaId).IsRequired();
         });
     }
 }

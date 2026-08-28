@@ -13,6 +13,7 @@ internal static class AceShardTestData
     private const short WielderPropertyType = 3; // PropertyInstanceId.Wielder
     private const short LocationPositionType = 1; // PositionType.Location
     private const short StackSizePropertyType = 12; // PropertyInt.StackSize
+    private const short ValuePropertyType = 19; // PropertyInt.Value
 
     public static async Task InsertBiotaAsync(string aceShardConnectionString, uint biotaId)
     {
@@ -56,6 +57,28 @@ internal static class AceShardTestData
 
         var result = await command.ExecuteScalarAsync();
         return result is null or DBNull ? null : Convert.ToInt32(result);
+    }
+
+    /// <summary>
+    /// Sets a coin-stack biota's PropertyInt.Value (DEP-006), the total Pyreal amount
+    /// <c>CloudCustodyBoundary.ReadBiotaCoinValueAsync</c> reads back when revalidating a raw Pyreal
+    /// Remainder withdrawal's delivered biotas.
+    /// </summary>
+    public static async Task SetCoinValueAsync(string aceShardConnectionString, uint biotaId, long value)
+    {
+        await using var connection = new MySqlConnection(aceShardConnectionString);
+        await connection.OpenAsync();
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO biota_properties_int (object_Id, type, value)
+            VALUES (@objectId, @type, @value)
+            ON DUPLICATE KEY UPDATE value = @value;
+            """;
+        command.Parameters.AddWithValue("@objectId", biotaId);
+        command.Parameters.AddWithValue("@type", ValuePropertyType);
+        command.Parameters.AddWithValue("@value", value);
+        await command.ExecuteNonQueryAsync();
     }
 
     public static Task GrantContainerAsync(string aceShardConnectionString, uint biotaId, uint containerId) =>
