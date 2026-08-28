@@ -311,7 +311,7 @@ namespace ACE.Server.Network.Handlers
 
             // VAULT-005: block deletion of a monarch character while their Allegiance Vault is
             // nonempty, before this character's deletion becomes even provisionally effective.
-            var isMonarch = offlinePlayer.Allegiance != null && offlinePlayer.Allegiance.MonarchId == character.Id;
+            var isMonarch = AllegianceManager.IsMonarch(offlinePlayer);
             if (!CloudIdentityEventManager.CheckMonarchDeletion(character.Id, isMonarch).IsAllowed)
             {
                 session.SendCharacterError(CharacterError.Delete);

@@ -11,6 +11,7 @@ internal static class AceShardTestData
 {
     private const short ContainerPropertyType = 2; // PropertyInstanceId.Container
     private const short WielderPropertyType = 3; // PropertyInstanceId.Wielder
+    private const short MonarchPropertyType = 26; // PropertyInstanceId.Monarch
     private const short LocationPositionType = 1; // PositionType.Location
     private const short StackSizePropertyType = 12; // PropertyInt.StackSize
     private const short ValuePropertyType = 19; // PropertyInt.Value
@@ -206,6 +207,15 @@ internal static class AceShardTestData
 
     public static Task GrantWielderAsync(string aceShardConnectionString, uint biotaId, uint wielderId) =>
         InsertIidPropertyAsync(aceShardConnectionString, biotaId, WielderPropertyType, wielderId);
+
+    /// <summary>
+    /// Sets a character's persisted Monarch instance property (issue #17), modeling what
+    /// <c>Player.SwearAllegiance</c> persists when a character swears allegiance to someone else --
+    /// including a former monarch swearing into another allegiance (VAULT-004's trigger for Vault
+    /// Absorption).
+    /// </summary>
+    public static Task GrantMonarchAsync(string aceShardConnectionString, uint characterId, uint monarchId) =>
+        InsertIidPropertyAsync(aceShardConnectionString, characterId, MonarchPropertyType, monarchId);
 
     public static async Task GrantLocationAsync(string aceShardConnectionString, uint biotaId)
     {

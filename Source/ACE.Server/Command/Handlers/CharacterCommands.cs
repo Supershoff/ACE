@@ -66,7 +66,7 @@ namespace ACE.Server.Command.Handlers
 
             // VAULT-005: block deletion of a monarch character while their Allegiance Vault is
             // nonempty, before this admin-forced deletion becomes effective either online or offline.
-            var isMonarch = foundPlayer.Allegiance != null && foundPlayer.Allegiance.MonarchId == foundPlayer.Guid.Full;
+            var isMonarch = AllegianceManager.IsMonarch(foundPlayer);
             var deletionDecision = CloudIdentityEventManager.CheckMonarchDeletion(foundPlayer.Guid.Full, isMonarch);
             if (!deletionDecision.IsAllowed)
             {

@@ -67,6 +67,12 @@ public sealed class CloudAllegianceVaultGateway
             new CloudAccountId(sourceVaultOwnerId), new CloudAccountId(destinationVaultOwnerId), CloudMutationGateState.Open);
         if (!policyResult.IsSuccess)
         {
+            await RecordAbsorptionFailureDiagnosticAsync(
+                shardId, oldMonarchCharacterId, sourceVaultOwnerId,
+                $"Vault Absorption from monarch {oldMonarchCharacterId} into {newMonarchCharacterId} was refused: {policyResult.Reason}. "
+                    + "The former monarch's Allegiance Vault requires audited administrator recovery (VAULT-004).",
+                cancellationToken);
+
             return CloudBoundaryOutcome<CloudVaultAbsorptionResult>.Conflict(policyResult.Reason!);
         }
 
@@ -141,18 +147,33 @@ public sealed class CloudAllegianceVaultGateway
                 continue;
             }
 
-            if (await CharacterExistsAndIsNotDeletedAsync(binding.MonarchCharacterId, cancellationToken))
+            string reason;
+            if (!await CharacterExistsAndIsNotDeletedAsync(binding.MonarchCharacterId, cancellationToken))
+            {
+                reason =
+                    $"Monarch character {binding.MonarchCharacterId} no longer exists (or was deleted) in ace_shard, but Allegiance "
+                        + $"Vault {binding.OwnerId} still has contents. This character was removed out-of-band, not through ACE's own "
+                        + "guarded deletion path; the vault requires audited administrator recovery (VAULT-005).";
+            }
+            else if (!await IsStillALiveMonarchAsync(binding.MonarchCharacterId, cancellationToken))
+            {
+                // Issue #17 review, finding 2 (P1): the character still exists, but has since sworn
+                // allegiance to someone else -- i.e. a VAULT-004 Vault Absorption should have moved
+                // this vault's contents into their new monarch's vault and never did (a failed or
+                // refused Absorption that only ever left a log line). This state-based check catches
+                // that even when the failure happened while Cloud itself was unreachable, unlike
+                // RecordAbsorptionFailureDiagnosticAsync, which can only record what it could reach.
+                reason =
+                    $"Character {binding.MonarchCharacterId} still exists but is no longer the monarch of Allegiance Vault "
+                        + $"{binding.OwnerId}, which still has contents. A VAULT-004 Vault Absorption into their new monarch's "
+                        + "vault likely failed or was never completed; the vault requires audited administrator recovery (VAULT-004).";
+            }
+            else
             {
                 continue;
             }
 
-            var diagnostic = new CloudMonarchDeletionDiagnostic(
-                shardId,
-                binding.MonarchCharacterId,
-                binding.OwnerId,
-                $"Monarch character {binding.MonarchCharacterId} no longer exists (or was deleted) in ace_shard, but Allegiance "
-                    + $"Vault {binding.OwnerId} still has contents. This character was removed out-of-band, not through ACE's own "
-                    + "guarded deletion path; the vault requires audited administrator recovery (VAULT-005).");
+            var diagnostic = new CloudMonarchDeletionDiagnostic(shardId, binding.MonarchCharacterId, binding.OwnerId, reason);
             _context.CloudMonarchDeletionDiagnostics.Add(diagnostic);
             newDiagnostics.Add(diagnostic);
         }
@@ -196,6 +217,41 @@ public sealed class CloudAllegianceVaultGateway
         return vaultOwnerId;
     }
 
+    /// <summary>
+    /// Records a durable, admin-visible <see cref="CloudMonarchDeletionDiagnostic"/> for a failed
+    /// VAULT-004 Vault Absorption (issue #17 review, finding 2 / P1): before this fix, a refused or
+    /// failed Absorption left only a log line -- not queryable, not part of the Activity Ledger, and
+    /// invisible to <see cref="DetectOutOfBandMonarchVaultOrphansAsync"/> (which only ever looked for
+    /// a monarch whose character row was gone, not one who simply stopped being a monarch). A vault
+    /// already diagnosed (by this or the out-of-band scan) is never re-diagnosed, matching
+    /// <see cref="CloudMonarchDeletionDiagnostic"/>'s (ShardId, MonarchCharacterId) uniqueness.
+    /// </summary>
+    private async Task RecordAbsorptionFailureDiagnosticAsync(
+        string shardId, uint oldMonarchCharacterId, Guid vaultOwnerId, string reason, CancellationToken cancellationToken)
+    {
+        var alreadyDiagnosed = await _context.CloudMonarchDeletionDiagnostics
+            .AsNoTracking()
+            .AnyAsync(d => d.ShardId == shardId && d.MonarchCharacterId == oldMonarchCharacterId, cancellationToken);
+        if (alreadyDiagnosed)
+        {
+            return;
+        }
+
+        _context.CloudMonarchDeletionDiagnostics.Add(
+            new CloudMonarchDeletionDiagnostic(shardId, oldMonarchCharacterId, vaultOwnerId, reason));
+
+        try
+        {
+            await _context.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException ex) when (CloudRawSqlHelpers.IsDuplicateKey(ex))
+        {
+            // A concurrent caller (or the out-of-band scan) already diagnosed this monarch's vault;
+            // that is the desired outcome, not a failure.
+            _context.ChangeTracker.Clear();
+        }
+    }
+
     private async Task<bool> IsVaultOwnerEmptyAsync(Guid vaultOwnerId, CancellationToken cancellationToken)
     {
         var hasCustodyRecord = await _context.CloudCustodyRecords
@@ -229,6 +285,43 @@ public sealed class CloudAllegianceVaultGateway
             CloudRawSqlHelpers.AddParameter(command, "@id", characterId);
             var count = Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken));
             return count > 0;
+        }
+        finally
+        {
+            await _context.Database.CloseConnectionAsync();
+        }
+    }
+
+    /// <summary>
+    /// Whether <paramref name="characterId"/> is still their own live monarch (VAULT-004): queried
+    /// directly against their persisted Monarch instance property (PropertyInstanceId.Monarch = 26)
+    /// in ace_shard on this same connection, the same cross-schema reach
+    /// <see cref="CharacterExistsAndIsNotDeletedAsync"/> already uses. A player who has never sworn
+    /// allegiance to anyone (or who leads their own allegiance) has no such row, which means "still
+    /// their own monarch"; a row whose value differs from <paramref name="characterId"/> means they
+    /// have since sworn allegiance to someone else -- exactly the moment a VAULT-004 Vault Absorption
+    /// should have emptied this vault.
+    /// </summary>
+    private async Task<bool> IsStillALiveMonarchAsync(uint characterId, CancellationToken cancellationToken)
+    {
+        const short monarchPropertyType = 26; // PropertyInstanceId.Monarch
+
+        var connection = _context.Database.GetDbConnection();
+        await _context.Database.OpenConnectionAsync(cancellationToken);
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.Transaction = _context.Database.CurrentTransaction?.GetDbTransaction();
+            command.CommandText = "SELECT value FROM ace_shard.biota_properties_i_i_d WHERE object_Id = @id AND type = @type;";
+            CloudRawSqlHelpers.AddParameter(command, "@id", characterId);
+            CloudRawSqlHelpers.AddParameter(command, "@type", monarchPropertyType);
+            var result = await command.ExecuteScalarAsync(cancellationToken);
+            if (result is null or DBNull)
+            {
+                return true;
+            }
+
+            return Convert.ToUInt32(result) == characterId;
         }
         finally
         {

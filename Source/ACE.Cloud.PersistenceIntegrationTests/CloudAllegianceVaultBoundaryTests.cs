@@ -169,5 +169,47 @@ public sealed class CloudAllegianceVaultBoundaryTests
         Assert.AreEqual(CloudBoundaryOutcomeKind.Conflict, outcome.Kind);
     }
 
+    [TestMethod]
+    public async Task AbsorbAsync_WhenRefused_RecordsADurableDiagnostic_InsteadOfOnlyALogLine()
+    {
+        // Issue #17 review, finding 2 (P1): before this fix, a refused/failed Vault Absorption left
+        // only a log line -- not queryable, not part of the Activity Ledger, and invisible to the
+        // out-of-band orphan scan. Any non-Committed AbsorbAsync outcome must now leave a durable,
+        // admin-visible CloudMonarchDeletionDiagnostic keyed on the former monarch's vault identity.
+        var options = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
+        var monarchId = NextId();
+        var vaultOwnerId = CloudOwnerIdentity.ForAllegianceVault(ShardId, monarchId);
+
+        await using var context = new CloudDbContext(options);
+        var vaultGateway = new CloudAllegianceVaultGateway(context);
+
+        var outcome = await vaultGateway.AbsorbAsync(ShardId, monarchId, monarchId);
+        Assert.AreEqual(CloudBoundaryOutcomeKind.Conflict, outcome.Kind);
+
+        var diagnostic = await context.CloudMonarchDeletionDiagnostics.AsNoTracking()
+            .SingleOrDefaultAsync(d => d.MonarchCharacterId == monarchId);
+
+        Assert.IsNotNull(diagnostic, "A refused Vault Absorption must leave a durable, queryable diagnostic, not only a log line.");
+        Assert.AreEqual(vaultOwnerId, diagnostic.VaultOwnerId);
+    }
+
+    [TestMethod]
+    public async Task AbsorbAsync_WhenAlreadyDiagnosed_DoesNotRecordASecondDiagnostic()
+    {
+        var options = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
+        var monarchId = NextId();
+
+        await using var context = new CloudDbContext(options);
+        var vaultGateway = new CloudAllegianceVaultGateway(context);
+
+        await vaultGateway.AbsorbAsync(ShardId, monarchId, monarchId);
+        await vaultGateway.AbsorbAsync(ShardId, monarchId, monarchId);
+
+        var diagnosticCount = await context.CloudMonarchDeletionDiagnostics.AsNoTracking()
+            .CountAsync(d => d.MonarchCharacterId == monarchId);
+
+        Assert.AreEqual(1, diagnosticCount, "A vault already diagnosed must never be diagnosed again.");
+    }
+
     private static uint NextId() => Interlocked.Increment(ref _nextId);
 }

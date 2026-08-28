@@ -86,6 +86,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ACE.Cloud.TestKit.Tests", "
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ACE.Cloud.ServerSeamsTests", "ACE.Cloud.ServerSeamsTests\ACE.Cloud.ServerSeamsTests.csproj", "{7E3D9F52-4C1A-4B6E-9D0F-2A8B6C1E5F3A}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ACE.Cloud.AceCharacterIntegrationTests", "ACE.Cloud.AceCharacterIntegrationTests\ACE.Cloud.AceCharacterIntegrationTests.csproj", "{C3D4E5F6-A7B8-49C0-AD1E-F3A4B5C6D7E8}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -324,6 +326,18 @@ Global
 		{7E3D9F52-4C1A-4B6E-9D0F-2A8B6C1E5F3A}.Release|Any CPU.Build.0 = Release|Any CPU
 		{7E3D9F52-4C1A-4B6E-9D0F-2A8B6C1E5F3A}.Release|x86.ActiveCfg = Release|Any CPU
 		{7E3D9F52-4C1A-4B6E-9D0F-2A8B6C1E5F3A}.Release|x86.Build.0 = Release|Any CPU
+		{C3D4E5F6-A7B8-49C0-AD1E-F3A4B5C6D7E8}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{C3D4E5F6-A7B8-49C0-AD1E-F3A4B5C6D7E8}.Debug|x64.Build.0 = Debug|Any CPU
+		{C3D4E5F6-A7B8-49C0-AD1E-F3A4B5C6D7E8}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C3D4E5F6-A7B8-49C0-AD1E-F3A4B5C6D7E8}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C3D4E5F6-A7B8-49C0-AD1E-F3A4B5C6D7E8}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{C3D4E5F6-A7B8-49C0-AD1E-F3A4B5C6D7E8}.Debug|x86.Build.0 = Debug|Any CPU
+		{C3D4E5F6-A7B8-49C0-AD1E-F3A4B5C6D7E8}.Release|x64.ActiveCfg = Release|Any CPU
+		{C3D4E5F6-A7B8-49C0-AD1E-F3A4B5C6D7E8}.Release|x64.Build.0 = Release|Any CPU
+		{C3D4E5F6-A7B8-49C0-AD1E-F3A4B5C6D7E8}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C3D4E5F6-A7B8-49C0-AD1E-F3A4B5C6D7E8}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C3D4E5F6-A7B8-49C0-AD1E-F3A4B5C6D7E8}.Release|x86.ActiveCfg = Release|Any CPU
+		{C3D4E5F6-A7B8-49C0-AD1E-F3A4B5C6D7E8}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
