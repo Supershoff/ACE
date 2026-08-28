@@ -54,10 +54,13 @@ public sealed class CloudCustodyBoundary
     }
 
     /// <summary>
-    /// Moves a native biota with no current world possession into Cloud custody (ARCH-002,
-    /// ARCH-005). Repeating this call with the same <paramref name="idempotencyKey"/> after a
-    /// caller timeout, retry, or crash returns the original committed result rather than creating a
-    /// second Cloud Custody Record (transaction rule 4).
+    /// Moves a native biota into Cloud custody, atomically clearing any remaining world possession
+    /// (Container, Wielder, or Location) as part of the same commit that creates the Cloud Custody
+    /// Record (ARCH-002, ARCH-005) -- so a caller crash or a rejected commit can never leave the
+    /// biota with neither world possession nor a Cloud Custody Record. Repeating this call with the
+    /// same <paramref name="idempotencyKey"/> after a caller timeout, retry, or crash returns the
+    /// original committed result rather than creating a second Cloud Custody Record (transaction
+    /// rule 4).
     /// </summary>
     public Task<CloudBoundaryOutcome<CloudCustodyRecord>> DepositAsync(
         uint biotaId,
@@ -161,9 +164,10 @@ public sealed class CloudCustodyBoundary
     }
 
     /// <summary>
-    /// Moves a stackable native biota with no current world possession into Cloud custody as a
-    /// stack Cloud Custody Record plus its initial single Cloud Stack Lot claiming the entire
-    /// quantity for <paramref name="ownerId"/> (ARCH-002, ARCH-005, ARCH-010). <paramref
+    /// Moves a stackable native biota into Cloud custody as a stack Cloud Custody Record plus its
+    /// initial single Cloud Stack Lot claiming the entire quantity for <paramref name="ownerId"/>
+    /// (ARCH-002, ARCH-005, ARCH-010), atomically clearing any remaining world possession as part of
+    /// the same commit (see <see cref="DepositAsync"/>'s matching doc comment). <paramref
     /// name="quantity"/> is the exact quantity ACE observed on the live object at deposit time; this
     /// call also writes it to ace_shard's PropertyInt.StackSize row so the persisted native state
     /// matches (idempotent/no-op if it already does). Repeating this call with the same <paramref
@@ -712,18 +716,16 @@ public sealed class CloudCustodyBoundary
 
         await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
 
-        if (await HasWorldPossessionAsync(biotaId, cancellationToken))
-        {
-            await transaction.RollbackAsync(cancellationToken);
-            return CloudBoundaryOutcome<CloudCustodyRecord>.Conflict(
-                $"Biota {biotaId} currently has world possession (Container, Wielder, or Location) and cannot enter Cloud custody.");
-        }
-
         await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterValidation);
 
-        // Deposit does not itself remove world possession: HasWorldPossessionAsync above already
-        // requires it to be absent (ACE's Cloud Custodian path is responsible for that earlier
-        // step). This fault point still exists so the protocol shape matches WithdrawAsync's.
+        // Deposit removes world possession itself, on this same transaction/connection
+        // (mirroring GrantContainerAsync's withdrawal-direction counterpart), so the commit below
+        // either performs both the shard-side removal and the Cloud-side custody creation or
+        // neither: a caller crash or Cloud-side rejection can never leave a biota that has already
+        // lost world possession without yet having a Cloud Custody Record (a permanently orphaned,
+        // neither-world-nor-Cloud biota).
+        await RemoveWorldPossessionAsync(biotaId, cancellationToken);
+
         await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterPossessionChange);
 
         var correlationId = Guid.NewGuid();
@@ -894,14 +896,13 @@ public sealed class CloudCustodyBoundary
 
         await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
 
-        if (await HasWorldPossessionAsync(biotaId, cancellationToken))
-        {
-            await transaction.RollbackAsync(cancellationToken);
-            return CloudBoundaryOutcome<CloudStackDepositResult>.Conflict(
-                $"Biota {biotaId} currently has world possession (Container, Wielder, or Location) and cannot enter Cloud custody.");
-        }
-
         await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterValidation);
+
+        // See TryDepositOnceAsync's matching comment: removing world possession on this same
+        // transaction/connection, immediately before the Cloud Custody Record insert, is what
+        // makes the deposit atomic and closes the orphan window.
+        await RemoveWorldPossessionAsync(biotaId, cancellationToken);
+
         await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterPossessionChange);
 
         var correlationId = Guid.NewGuid();
@@ -1361,33 +1362,40 @@ public sealed class CloudCustodyBoundary
         command.Parameters.Add(parameter);
     }
 
-    private async Task<bool> HasWorldPossessionAsync(uint biotaId, CancellationToken cancellationToken)
+    /// <summary>
+    /// Clears any remaining world possession (Container, Wielder, or Location) for a biota entering
+    /// Cloud custody, on the same connection/transaction as the Cloud Custody Record insert that
+    /// follows it (mirroring <see cref="GrantContainerAsync"/>'s withdrawal-direction counterpart).
+    /// Deleting rather than merely checking-and-rejecting is what makes deposit atomic: a single
+    /// commit performs both the shard-side removal and the Cloud-side custody creation, or neither
+    /// does (transaction rule 5). Idempotent/no-op if the caller had already removed possession.
+    /// </summary>
+    private async Task RemoveWorldPossessionAsync(uint biotaId, CancellationToken cancellationToken)
     {
         var connection = _context.Database.GetDbConnection();
+        var transaction = _context.Database.CurrentTransaction?.GetDbTransaction();
 
-        await using var command = connection.CreateCommand();
-        command.Transaction = _context.Database.CurrentTransaction?.GetDbTransaction();
-        command.CommandText = """
-            SELECT
-                EXISTS (
-                    SELECT 1 FROM ace_shard.biota_properties_i_i_d
-                    WHERE object_Id = @biotaId AND type IN (2, 3)
-                    FOR UPDATE
-                )
-                OR EXISTS (
-                    SELECT 1 FROM ace_shard.biota_properties_position
-                    WHERE object_Id = @biotaId AND position_Type = 1
-                    FOR UPDATE
-                );
-            """;
+        await using (var command = connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText = """
+                DELETE FROM ace_shard.biota_properties_i_i_d
+                WHERE object_Id = @biotaId AND type IN (2, 3);
+                """;
+            AddParameter(command, "@biotaId", biotaId);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
 
-        var parameter = command.CreateParameter();
-        parameter.ParameterName = "@biotaId";
-        parameter.Value = biotaId;
-        command.Parameters.Add(parameter);
-
-        var result = await command.ExecuteScalarAsync(cancellationToken);
-        return result is not null && result is not DBNull && Convert.ToInt64(result) != 0;
+        await using (var command = connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText = """
+                DELETE FROM ace_shard.biota_properties_position
+                WHERE object_Id = @biotaId AND position_Type = 1;
+                """;
+            AddParameter(command, "@biotaId", biotaId);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
     }
 
     private async Task GrantContainerAsync(uint biotaId, uint recipientContainerId, CancellationToken cancellationToken)

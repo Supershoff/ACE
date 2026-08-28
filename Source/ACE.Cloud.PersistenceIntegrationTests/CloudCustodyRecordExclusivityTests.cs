@@ -370,8 +370,13 @@ public sealed class CloudCustodyRecordExclusivityTests
     }
 
     [TestMethod]
-    public async Task CloudCustodyBoundary_Deposit_RefusesWithExplicitConflictOutcome_WhenBiotaHasWorldPossession()
+    public async Task CloudCustodyBoundary_Deposit_AtomicallyRemovesWorldPossession_WhenBiotaHasWorldPossession()
     {
+        // AC Cloud Mule review of issue #13, finding 1 (P0): the boundary itself removes a biota's
+        // remaining world possession as part of the same transaction that creates its Cloud Custody
+        // Record -- it no longer requires the caller to have already, separately, removed it (that
+        // two-step design left an orphan window between the caller's removal commit and this
+        // boundary's own commit). ACE's Cloud Custodian handler now relies on exactly this.
         var biotaId = NextBiotaId();
         await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, biotaId);
         await AceShardTestData.GrantWielderAsync(_fixture.AceShardConnectionString, biotaId, wielderId: NextBiotaId());
@@ -382,12 +387,14 @@ public sealed class CloudCustodyRecordExclusivityTests
 
         var outcome = await boundary.DepositAsync(biotaId, BoundShardId, Guid.NewGuid(), Guid.NewGuid());
 
-        Assert.AreEqual(CloudBoundaryOutcomeKind.Conflict, outcome.Kind);
-        StringAssert.Contains(outcome.Reason, "world possession");
+        Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, outcome.Kind, outcome.Reason);
+        Assert.IsFalse(
+            await AceShardTestData.HasWielderAsync(_fixture.AceShardConnectionString, biotaId),
+            "A committed deposit must atomically remove the biota's remaining world possession.");
 
         await using var verifyContext = new CloudDbContext(options);
         var count = await verifyContext.CloudCustodyRecords.CountAsync(r => r.BiotaId == biotaId);
-        Assert.AreEqual(0, count);
+        Assert.AreEqual(1, count);
     }
 
     private static uint NextBiotaId() => Interlocked.Increment(ref _nextBiotaId);

@@ -9,10 +9,8 @@ namespace ACE.Server.Tests
     /// <summary>
     /// AC Cloud Mule review of issue #13, finding 1: an uncaught exception from
     /// <c>ShardDatabase.GetBiota</c>/<c>SaveBiota</c> (for example a transient database error) used
-    /// to propagate straight out of <c>Player_CloudCustodian.SynchronouslyPersist</c>, bypassing its
-    /// caller's <c>if (!SynchronouslyPersist(item))</c> failure handling entirely and permanently
-    /// losing the item the player was depositing: it had already been detached from the player's
-    /// inventory but was never restored, deposited, or reported as lost. Exercised directly against
+    /// to propagate straight out of <c>Player_CloudCustodian.SynchronouslyPersist</c> instead of
+    /// being reported and handled as an ordinary failure. Exercised directly against
     /// <see cref="Player.TryRunSynchronousPersist"/> (no live WorldObject/database needed) so the
     /// exception-to-failure mapping is covered without requiring ACE's world/database bootstrap.
     /// </summary>

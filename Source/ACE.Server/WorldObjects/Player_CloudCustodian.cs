@@ -101,13 +101,17 @@ namespace ACE.Server.WorldObjects
 
         /// <summary>
         /// The local half of a deposit row that has cleared eligibility (DEP-002, ARCH-005): removes
-        /// <paramref name="item"/> from this player's possession and durably persists that removal to
-        /// ace_shard synchronously (the Cloud persistence boundary's precondition reads ace_shard
-        /// directly, so the queued/async save path is not sufficient here). Kept separate from the
-        /// Cloud custody call itself (<see cref="DepositRowToCloudAsync"/>) so every prepared row's
-        /// Cloud-DB round trip can run concurrently instead of one at a time (AC Cloud Mule review of
-        /// issue #13, finding 3: sequential per-row Cloud calls stalled the whole world tick for the
-        /// cumulative round-trip time of every row in the submission).
+        /// <paramref name="item"/> from this player's in-memory possession for immediate UI feedback.
+        /// Deliberately does not persist that removal to ace_shard itself: the Cloud persistence
+        /// boundary (<see cref="DepositRowToCloudAsync"/>) removes the biota's world possession and
+        /// creates its Cloud Custody Record together in one MariaDB transaction, so a crash or
+        /// rejected Cloud commit can never leave the biota with neither world possession nor Cloud
+        /// custody (AC Cloud Mule review of issue #13, finding 1: a separate, already-committed
+        /// removal here left exactly that orphan window open). Kept separate from the Cloud custody
+        /// call itself so every prepared row's Cloud-DB round trip can run concurrently instead of one
+        /// at a time (AC Cloud Mule review of issue #13, finding 3: sequential per-row Cloud calls
+        /// stalled the whole world tick for the cumulative round-trip time of every row in the
+        /// submission).
         /// </summary>
         private PendingCloudDeposit PrepareCloudDepositRow(WorldObject item, CloudCustodianDepositRowDecision decision, string shardId)
         {
@@ -118,13 +122,6 @@ namespace ACE.Server.WorldObjects
             {
                 cloudCustodianLog.Warn($"[CLOUD CUSTODIAN] Item 0x{item.Guid.Full:X8}:{item.Name} for player {Name} not found in HandleCloudCustodianDeposit.");
                 SendTransientError("That item could not be removed from your possession.");
-                return null;
-            }
-
-            if (!SynchronouslyPersist(item))
-            {
-                RestoreCloudDepositCandidate(item);
-                SendTransientError($"A database error prevented depositing the {item.Name}.");
                 return null;
             }
 
@@ -230,9 +227,8 @@ namespace ACE.Server.WorldObjects
 
         /// <summary>
         /// Runs <paramref name="persist"/> and reports any exception it throws to
-        /// <paramref name="onException"/> instead of letting it propagate, so a caller's existing
-        /// "did the synchronous persist succeed" check (a plain boolean, not a try/catch) also covers
-        /// an ordinary transient database exception -- not just an explicit <c>false</c> return (AC
+        /// <paramref name="onException"/> instead of letting it propagate, converting it to a plain
+        /// <c>false</c> return so a caller can use a single boolean check instead of a try/catch (AC
         /// Cloud Mule review of issue #13, finding 1: an uncaught exception from
         /// <c>ShardDatabase.GetBiota</c>/<c>SaveBiota</c> used to bypass
         /// <see cref="SynchronouslyPersist"/>'s failure handling entirely and destroy the deposited

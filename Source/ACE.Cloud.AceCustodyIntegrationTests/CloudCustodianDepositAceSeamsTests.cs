@@ -6,14 +6,15 @@ using MySqlConnector;
 namespace ACE.Cloud.AceCustodyIntegrationTests;
 
 /// <summary>
-/// Red -&gt; Green tests for issue #13's ACE-side deposit sequence: ACE's Cloud Custodian handler must
-/// clear a candidate item's world possession (Container) in ace_shard, durably and synchronously,
-/// before calling <see cref="CloudCustodyBoundary.DepositAsync"/>/<c>DepositStackAsync</c>
-/// (<c>Player_CloudCustodian.cs</c>'s doc comment; <see cref="CloudCustodyBoundary"/>'s own doc
-/// comment: "ACE's Cloud Custodian path is responsible for that earlier step"). These tests prove
-/// the exact two-step sequence that handler performs, at the same ACE.Database/Cloud persistence
-/// seam <see cref="CloudCustodyAceSeamsTests"/> already exercises, without needing a live
-/// ACE.Server WorldObject/Player (ARCH-002, ARCH-005, DEP-002).
+/// Red -&gt; Green tests for issue #13's ACE-side deposit sequence: <see cref="CloudCustodyBoundary.DepositAsync"/>
+/// and <c>DepositStackAsync</c> atomically remove a candidate item's remaining world possession
+/// (Container) in ace_shard as part of the same MariaDB transaction that creates its Cloud Custody
+/// Record, so ACE's Cloud Custodian handler (<c>Player_CloudCustodian.cs</c>) never needs -- and must
+/// not perform -- a separate, already-committed removal beforehand (AC Cloud Mule review of issue
+/// #13, finding 1: that earlier two-step design left a window where the removal could commit without
+/// the Cloud custody record, permanently orphaning the biota). These tests prove the boundary's
+/// atomic contract at the same ACE.Database/Cloud persistence seam <see cref="CloudCustodyAceSeamsTests"/>
+/// already exercises, without needing a live ACE.Server WorldObject/Player (ARCH-002, ARCH-005, DEP-002).
 /// </summary>
 [TestClass]
 [DoNotParallelize]
@@ -75,10 +76,9 @@ public sealed class CloudCustodianDepositAceSeamsTests
     }
 
     /// <summary>
-    /// Mirrors what <c>Player_CloudCustodian.SynchronouslyPersist</c> achieves in production by
-    /// removing the item from the player's in-memory inventory (which clears its Container property)
-    /// and then durably saving the resulting biota before the boundary call: the persisted Container
-    /// row is gone.
+    /// Seeds a biota whose Container row is already gone, so a deposit call exercises the
+    /// idempotent/no-op branch of the boundary's world-possession removal (it deletes zero rows
+    /// instead of one) rather than the branch that actually clears a live Container.
     /// </summary>
     private static async Task ClearContainerAsync(uint biotaId)
     {
@@ -132,12 +132,13 @@ public sealed class CloudCustodianDepositAceSeamsTests
     }
 
     [TestMethod]
-    public async Task Deposit_WhileContainerIsStillPresent_IsRejected_AndCreatesNoCustodyRecord()
+    public async Task Deposit_WhileContainerIsStillPresent_AtomicallyRemovesPossessionAndCreatesCustodyRecord()
     {
-        // Simulates a handler bug where the synchronous ace_shard save was skipped: the boundary's
-        // own precondition must still refuse the deposit rather than create ambiguous custody
-        // (simultaneous world possession and Cloud custody, AGENTS.md's "Custody authority and
-        // conservation" rule).
+        // ACE's Cloud Custodian handler no longer clears the item's Container itself before calling
+        // the boundary (that separate, already-committed removal was the P0 orphan-window defect:
+        // a crash or a rejected Cloud commit between that removal and the custody-record creation
+        // left the biota with neither world possession nor Cloud custody). The boundary must instead
+        // remove the still-present Container atomically with creating the Cloud Custody Record.
         var biotaId = NextBiotaId();
         await InsertBiotaAsync(biotaId, containerId: 12345);
 
@@ -147,9 +148,27 @@ public sealed class CloudCustodianDepositAceSeamsTests
 
         var outcome = await boundary.DepositAsync(biotaId, ShardId, Guid.NewGuid(), Guid.NewGuid());
 
-        Assert.AreEqual(CloudBoundaryOutcomeKind.Conflict, outcome.Kind);
-        Assert.IsTrue(await HasContainerAsync(biotaId), "The item must remain exactly as it was: still world-possessed.");
-        Assert.AreEqual(0, await CountCustodyRecordsAsync(biotaId));
+        Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, outcome.Kind, outcome.Reason);
+        Assert.IsFalse(await HasContainerAsync(biotaId), "A committed deposit must atomically remove the biota's remaining world possession.");
+        Assert.AreEqual(1, await CountCustodyRecordsAsync(biotaId));
+    }
+
+    [TestMethod]
+    public async Task DepositStack_WhileContainerIsStillPresent_AtomicallyRemovesPossessionAndCreatesCustodyRecord()
+    {
+        var biotaId = NextBiotaId();
+        await InsertBiotaAsync(biotaId, containerId: 12345);
+
+        var options = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
+        await using var context = new CloudDbContext(options);
+        var boundary = new CloudCustodyBoundary(context);
+
+        var outcome = await boundary.DepositStackAsync(biotaId, ShardId, Guid.NewGuid(), quantity: 15, Guid.NewGuid());
+
+        Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, outcome.Kind, outcome.Reason);
+        Assert.IsFalse(await HasContainerAsync(biotaId), "A committed stack deposit must atomically remove the biota's remaining world possession.");
+        Assert.AreEqual(15, outcome.Value!.Lot.Quantity);
+        Assert.AreEqual(1, await CountCustodyRecordsAsync(biotaId));
     }
 
     [TestMethod]
