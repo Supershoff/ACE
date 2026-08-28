@@ -247,6 +247,8 @@ public sealed class CharacterDeletionMonarchVaultGuardTests
         command.Parameters.AddWithValue("@type", NamePropertyType);
         command.Parameters.AddWithValue("@value", name);
         await command.ExecuteNonQueryAsync();
+
+        await SetPopulatedCollectionFlagAsync(biotaId, ShardDatabase.PopulatedCollectionFlags.BiotaPropertiesString);
     }
 
     private static async Task GrantMonarchAsync(uint characterId, uint monarchId)
@@ -263,6 +265,8 @@ public sealed class CharacterDeletionMonarchVaultGuardTests
         command.Parameters.AddWithValue("@type", MonarchPropertyType);
         command.Parameters.AddWithValue("@value", monarchId);
         await command.ExecuteNonQueryAsync();
+
+        await SetPopulatedCollectionFlagAsync(characterId, ShardDatabase.PopulatedCollectionFlags.BiotaPropertiesIID);
     }
 
     private static async Task GrantPatronAsync(uint characterId, uint patronId)
@@ -278,6 +282,28 @@ public sealed class CharacterDeletionMonarchVaultGuardTests
         command.Parameters.AddWithValue("@objectId", characterId);
         command.Parameters.AddWithValue("@type", PatronPropertyType);
         command.Parameters.AddWithValue("@value", patronId);
+        await command.ExecuteNonQueryAsync();
+
+        await SetPopulatedCollectionFlagAsync(characterId, ShardDatabase.PopulatedCollectionFlags.BiotaPropertiesIID);
+    }
+
+    /// <summary>
+    /// Production characters have this bitmask maintained by <see cref="ShardDatabase.SetBiotaPopulatedCollections"/>
+    /// whenever a real save happens; ShardDatabase.GetBiota gates which property collections it loads on it (see
+    /// its own doc comment for why), so this raw-SQL seeding must set the matching bit for every property table it
+    /// inserts into, or PlayerManager.Initialize() will load the seeded character back with those properties missing.
+    /// </summary>
+    private static async Task SetPopulatedCollectionFlagAsync(uint biotaId, ShardDatabase.PopulatedCollectionFlags flag)
+    {
+        await using var connection = new MySqlConnection(_fixture.AceShardConnectionString);
+        await connection.OpenAsync();
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE biota SET populated_Collection_Flags = populated_Collection_Flags | @flag WHERE id = @id;
+            """;
+        command.Parameters.AddWithValue("@id", biotaId);
+        command.Parameters.AddWithValue("@flag", (uint)flag);
         await command.ExecuteNonQueryAsync();
     }
 

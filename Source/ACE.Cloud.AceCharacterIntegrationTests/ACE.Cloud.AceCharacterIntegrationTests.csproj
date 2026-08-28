@@ -19,7 +19,7 @@
   <ItemGroup>
     <!-- Production code under test: PlayerManager/OfflinePlayer/AllegianceManager (ACE.Server) and
          CloudIdentityEventManager's VAULT-005 guard, driven together against a real disposable
-         ace_shard/ace_cloud fixture -- exactly the seam issue #17's review flagged as untested (the
+         ace_shard/ace_cloud fixture — exactly the seam issue #17's review flagged as untested (the
          call sites derive "is this character currently a monarch" from IPlayer.Allegiance, a cache
          only ever populated for a character that logged in this server process; PlayerManager's
          ordinary offline bulk-load at startup never populates it). ACE.Cloud.ServerSeamsTests
