@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
 
 using log4net;
 
@@ -46,7 +48,7 @@ namespace ACE.Server.WorldObjects
             }
 
             var seenGuids = new HashSet<uint>();
-            var depositedCount = 0;
+            var pendingDeposits = new List<PendingCloudDeposit>();
 
             foreach (var itemProfile in itemProfiles)
             {
@@ -77,11 +79,14 @@ namespace ACE.Server.WorldObjects
                     continue;
                 }
 
-                if (TryDepositRow(custodian, item, decision, shardId))
+                var pending = PrepareCloudDepositRow(item, decision, shardId);
+                if (pending != null)
                 {
-                    depositedCount++;
+                    pendingDeposits.Add(pending);
                 }
             }
+
+            var depositedCount = pendingDeposits.Count == 0 ? 0 : CommitPendingCloudDeposits(custodian, pendingDeposits);
 
             if (depositedCount == 0)
             {
@@ -95,14 +100,16 @@ namespace ACE.Server.WorldObjects
         }
 
         /// <summary>
-        /// Removes <paramref name="item"/> from this player's possession, durably persists that
-        /// removal to ace_shard synchronously (the Cloud persistence boundary's precondition reads
-        /// ace_shard directly, so the queued/async save path is not sufficient here), then commits
-        /// the custody transition through <see cref="CloudCustodyBoundary"/>. Any failure at any step
-        /// restores the item to the player rather than leaving it destroyed, resold, or ambiguously
-        /// owned (DEP-002, ARCH-002, ARCH-005).
+        /// The local half of a deposit row that has cleared eligibility (DEP-002, ARCH-005): removes
+        /// <paramref name="item"/> from this player's possession and durably persists that removal to
+        /// ace_shard synchronously (the Cloud persistence boundary's precondition reads ace_shard
+        /// directly, so the queued/async save path is not sufficient here). Kept separate from the
+        /// Cloud custody call itself (<see cref="DepositRowToCloudAsync"/>) so every prepared row's
+        /// Cloud-DB round trip can run concurrently instead of one at a time (AC Cloud Mule review of
+        /// issue #13, finding 3: sequential per-row Cloud calls stalled the whole world tick for the
+        /// cumulative round-trip time of every row in the submission).
         /// </summary>
-        private bool TryDepositRow(CloudCustodian custodian, WorldObject item, CloudCustodianDepositRowDecision decision, string shardId)
+        private PendingCloudDeposit PrepareCloudDepositRow(WorldObject item, CloudCustodianDepositRowDecision decision, string shardId)
         {
             // Equipped items are already rejected by eligibility (DEP-003:
             // CloudEligibilityRejectionCode.MustBeInOrdinaryInventory) before this method is ever
@@ -111,71 +118,147 @@ namespace ACE.Server.WorldObjects
             {
                 cloudCustodianLog.Warn($"[CLOUD CUSTODIAN] Item 0x{item.Guid.Full:X8}:{item.Name} for player {Name} not found in HandleCloudCustodianDeposit.");
                 SendTransientError("That item could not be removed from your possession.");
-                return false;
+                return null;
             }
 
             if (!SynchronouslyPersist(item))
             {
                 RestoreCloudDepositCandidate(item);
                 SendTransientError($"A database error prevented depositing the {item.Name}.");
-                return false;
+                return null;
             }
 
-            var ownerId = CloudOwnerIdentity.ForAccount(shardId, Session.AccountId);
-            var idempotencyKey = CloudOwnerIdentity.DepositIdempotencyKey(shardId, item.Guid.Full);
+            return new PendingCloudDeposit(
+                item,
+                decision,
+                shardId,
+                CloudOwnerIdentity.ForAccount(shardId, Session.AccountId),
+                CloudOwnerIdentity.DepositIdempotencyKey(shardId, item.Guid.Full));
+        }
 
-            CloudBoundaryOutcomeKind outcomeKind;
-            string reason = null;
+        /// <summary>
+        /// Commits every prepared row's Cloud custody call concurrently rather than one at a time
+        /// (<see cref="RunConcurrentlyAsync{T}"/>): each row targets a distinct biota and idempotency
+        /// key, so running them together is safe and bounds this submission's Cloud-side world-tick
+        /// stall to roughly one round trip instead of one per row.
+        /// </summary>
+        private int CommitPendingCloudDeposits(CloudCustodian custodian, List<PendingCloudDeposit> pendingDeposits)
+        {
+            var operations = pendingDeposits
+                .Select(pending => (Func<Task<(CloudBoundaryOutcomeKind Kind, string Reason)>>)(() => DepositRowToCloudAsync(pending)))
+                .ToList();
 
+            var outcomes = RunConcurrentlyAsync(operations).GetAwaiter().GetResult();
+
+            var depositedCount = 0;
+
+            for (var i = 0; i < pendingDeposits.Count; i++)
+            {
+                var pending = pendingDeposits[i];
+                var (outcomeKind, reason) = outcomes[i];
+
+                if (outcomeKind != CloudBoundaryOutcomeKind.Committed)
+                {
+                    if (!string.IsNullOrWhiteSpace(reason))
+                    {
+                        cloudCustodianLog.Warn($"[CLOUD CUSTODIAN] Deposit of 0x{pending.Item.Guid.Full:X8}:{pending.Item.Name} for player {Name} was not committed: {reason}");
+                    }
+
+                    RestoreCloudDepositCandidate(pending.Item);
+                    SendTransientError($"The Cloud Custodian could not accept the {pending.Item.Name}. Please try again.");
+                    continue;
+                }
+
+                Session.Network.EnqueueSend(new GameEventItemServerSaysContainId(Session, pending.Item, custodian));
+                depositedCount++;
+            }
+
+            return depositedCount;
+        }
+
+        private async Task<(CloudBoundaryOutcomeKind Kind, string Reason)> DepositRowToCloudAsync(PendingCloudDeposit pending)
+        {
             try
             {
                 using var context = new CloudDbContext(CloudDbContextOptionsFactory.Create(CloudCustodianManager.BuildCloudConnectionString()));
                 var boundary = new CloudCustodyBoundary(context);
 
-                if (decision.Kind == CloudCustodianDepositRowDecisionKind.DepositStack)
+                if (pending.Decision.Kind == CloudCustodianDepositRowDecisionKind.DepositStack)
                 {
-                    var outcome = boundary.DepositStackAsync(
-                        item.Guid.Full, shardId, ownerId, decision.Quantity, idempotencyKey,
-                        preservationRequirements: decision.PreservationRequirements).GetAwaiter().GetResult();
-                    outcomeKind = outcome.Kind;
-                    reason = outcome.Reason;
+                    var outcome = await boundary.DepositStackAsync(
+                        pending.Item.Guid.Full, pending.ShardId, pending.OwnerId, pending.Decision.Quantity, pending.IdempotencyKey,
+                        preservationRequirements: pending.Decision.PreservationRequirements);
+                    return (outcome.Kind, outcome.Reason);
                 }
                 else
                 {
-                    var outcome = boundary.DepositAsync(
-                        item.Guid.Full, shardId, ownerId, idempotencyKey,
-                        preservationRequirements: decision.PreservationRequirements).GetAwaiter().GetResult();
-                    outcomeKind = outcome.Kind;
-                    reason = outcome.Reason;
+                    var outcome = await boundary.DepositAsync(
+                        pending.Item.Guid.Full, pending.ShardId, pending.OwnerId, pending.IdempotencyKey,
+                        preservationRequirements: pending.Decision.PreservationRequirements);
+                    return (outcome.Kind, outcome.Reason);
                 }
             }
             catch (Exception ex)
             {
-                cloudCustodianLog.Error($"[CLOUD CUSTODIAN] Deposit of 0x{item.Guid.Full:X8}:{item.Name} for player {Name} threw.", ex);
-                outcomeKind = CloudBoundaryOutcomeKind.Unavailable;
+                cloudCustodianLog.Error($"[CLOUD CUSTODIAN] Deposit of 0x{pending.Item.Guid.Full:X8}:{pending.Item.Name} for player {Name} threw.", ex);
+                return (CloudBoundaryOutcomeKind.Unavailable, null);
+            }
+        }
+
+        /// <summary>
+        /// Starts every operation before awaiting any of them, so the whole batch runs concurrently
+        /// instead of one at a time. Kept free of any live WorldObject/Player dependency so it can run
+        /// in a table-driven unit test (AC Cloud Mule review of issue #13, finding 3).
+        /// </summary>
+        internal static async Task<IReadOnlyList<T>> RunConcurrentlyAsync<T>(IReadOnlyList<Func<Task<T>>> operations)
+        {
+            var tasks = new Task<T>[operations.Count];
+            for (var i = 0; i < operations.Count; i++)
+            {
+                tasks[i] = operations[i]();
             }
 
-            if (outcomeKind != CloudBoundaryOutcomeKind.Committed)
-            {
-                if (!string.IsNullOrWhiteSpace(reason))
-                {
-                    cloudCustodianLog.Warn($"[CLOUD CUSTODIAN] Deposit of 0x{item.Guid.Full:X8}:{item.Name} for player {Name} was not committed: {reason}");
-                }
+            return await Task.WhenAll(tasks);
+        }
 
-                RestoreCloudDepositCandidate(item);
-                SendTransientError($"The Cloud Custodian could not accept the {item.Name}. Please try again.");
+        private sealed record PendingCloudDeposit(
+            WorldObject Item,
+            CloudCustodianDepositRowDecision Decision,
+            string ShardId,
+            Guid OwnerId,
+            Guid IdempotencyKey);
+
+        /// <summary>
+        /// Runs <paramref name="persist"/> and reports any exception it throws to
+        /// <paramref name="onException"/> instead of letting it propagate, so a caller's existing
+        /// "did the synchronous persist succeed" check (a plain boolean, not a try/catch) also covers
+        /// an ordinary transient database exception -- not just an explicit <c>false</c> return (AC
+        /// Cloud Mule review of issue #13, finding 1: an uncaught exception from
+        /// <c>ShardDatabase.GetBiota</c>/<c>SaveBiota</c> used to bypass
+        /// <see cref="SynchronouslyPersist"/>'s failure handling entirely and destroy the deposited
+        /// item). Kept free of any live WorldObject/Player dependency so it can run in a unit test.
+        /// </summary>
+        internal static bool TryRunSynchronousPersist(Func<bool> persist, Action<Exception> onException)
+        {
+            try
+            {
+                return persist();
+            }
+            catch (Exception ex)
+            {
+                onException(ex);
                 return false;
             }
-
-            Session.Network.EnqueueSend(new GameEventItemServerSaysContainId(Session, item, custodian));
-            return true;
         }
 
-        private bool SynchronouslyPersist(WorldObject item)
-        {
-            item.SaveBiotaToDatabase(false);
-            return DatabaseManager.Shard.BaseDatabase.SaveBiota(item.Biota, item.BiotaDatabaseLock);
-        }
+        private bool SynchronouslyPersist(WorldObject item) =>
+            TryRunSynchronousPersist(
+                () =>
+                {
+                    item.SaveBiotaToDatabase(false);
+                    return DatabaseManager.Shard.BaseDatabase.SaveBiota(item.Biota, item.BiotaDatabaseLock);
+                },
+                ex => cloudCustodianLog.Error($"[CLOUD CUSTODIAN] Synchronous persist of 0x{item.Guid.Full:X8}:{item.Name} threw.", ex));
 
         private void RestoreCloudDepositCandidate(WorldObject item)
         {

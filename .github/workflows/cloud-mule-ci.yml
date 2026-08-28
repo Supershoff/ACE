@@ -117,6 +117,20 @@ jobs:
               if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
 
+      - name: Run Cloud Mule unit tests embedded in ACE.Server.Tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # ACE.Server.Tests is ACE's general test project (StartupTests etc. need a live MariaDB
+          # and DAT files, neither available here), so the loop above's 'Cloud'-named-project filter
+          # intentionally skips it and it is never otherwise run. That previously meant the Cloud
+          # Mule regression tests embedded in it (Player.BuildRuntimeEnchantments,
+          # Player.TryRunSynchronousPersist, Player.RunConcurrentlyAsync) compiled but never executed
+          # (issue #13 code review, finding 2). Filtering to only the Cloud-prefixed test classes
+          # keeps this step self-contained: no database or DAT files required.
+          dotnet test Source/ACE.Server.Tests/ACE.Server.Tests.csproj --configuration Release --property:Platform=x64 --no-restore --filter "FullyQualifiedName~ACE.Server.Tests.Cloud" --logger "trx;LogFileName=ACE.Server.Tests.Cloud.trx"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
   web:
     name: Web checks
     runs-on: ubuntu-latest
