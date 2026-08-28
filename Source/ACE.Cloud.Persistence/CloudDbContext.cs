@@ -28,6 +28,10 @@ public sealed class CloudDbContext : DbContext
 
     public DbSet<CloudStackLotLineageEvent> CloudStackLotLineageEvents => Set<CloudStackLotLineageEvent>();
 
+    public DbSet<CloudCustodyOutboxSequence> CloudCustodyOutboxSequences => Set<CloudCustodyOutboxSequence>();
+
+    public DbSet<CloudWithdrawalReservation> CloudWithdrawalReservations => Set<CloudWithdrawalReservation>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<CloudShardBinding>(entity =>
@@ -178,10 +182,75 @@ public sealed class CloudDbContext : DbContext
             entity.Property(evt => evt.BiotaId).IsRequired();
             entity.Property(evt => evt.OwnerId).IsRequired();
 
+            // Application-assigned within the same transaction via CloudCustodyOutboxSequence, not
+            // database-generated, so EF must send the value this app computed rather than omit it.
+            entity.Property(evt => evt.SequenceNumber).IsRequired().ValueGeneratedNever();
+            entity.HasIndex(evt => evt.SequenceNumber).IsUnique();
+
             entity.Property(evt => evt.CreatedAtUtc)
                 .IsRequired()
                 .ValueGeneratedOnAdd()
                 .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudCustodyOutboxSequence>(entity =>
+        {
+            // One counter row per deployment (ARCH-001), the same singleton shape as
+            // CloudShardBinding: CK_CloudCustodyOutboxSequence_Singleton keeps this table at exactly
+            // one row so every writer reserves its next sequence number from the same place.
+            entity.ToTable("CloudCustodyOutboxSequence", table =>
+                table.HasCheckConstraint("CK_CloudCustodyOutboxSequence_Singleton", "`Id` = 1"));
+
+            entity.HasKey(seq => seq.Id);
+            entity.Property(seq => seq.Id).ValueGeneratedNever();
+            entity.Property(seq => seq.NextValue).IsRequired();
+        });
+
+        modelBuilder.Entity<CloudWithdrawalReservation>(entity =>
+        {
+            entity.ToTable("CloudWithdrawalReservation");
+
+            entity.HasKey(reservation => reservation.Id);
+            entity.Property(reservation => reservation.Id).ValueGeneratedNever();
+
+            entity.Property(reservation => reservation.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(reservation => reservation.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // WDR-001/INV-001: at most one active reservation may target the same biota at a time.
+            // The Cloud Custody Record row for BiotaId is locked (FOR UPDATE) for the whole opening
+            // transaction (CloudCustodyBoundary.ReserveForWithdrawalAsync), so concurrent opens for
+            // the same biota already serialize on that lock; this index exists for lookup, not as
+            // the sole enforcement mechanism.
+            entity.Property(reservation => reservation.BiotaId).IsRequired();
+            entity.HasIndex(reservation => reservation.BiotaId);
+
+            entity.Property(reservation => reservation.OwnerId).IsRequired();
+
+            // Not a foreign key: CustodyRecordId is intentionally not stored here (looked up by
+            // BiotaId at redemption time instead), matching CloudIdempotencyRecord's precedent that
+            // a withdrawal can legitimately delete the row a reservation once referenced.
+            entity.Property(reservation => reservation.TokenHash).IsRequired().HasMaxLength(64);
+            entity.HasIndex(reservation => reservation.TokenHash).IsUnique();
+
+            entity.Property(reservation => reservation.OpenIdempotencyKey).IsRequired();
+            entity.HasIndex(reservation => reservation.OpenIdempotencyKey).IsUnique();
+
+            entity.Property(reservation => reservation.Status).IsRequired().HasConversion<string>().HasMaxLength(16);
+            entity.Property(reservation => reservation.ReleaseReason).HasConversion<string>().HasMaxLength(32);
+
+            entity.Property(reservation => reservation.Version).IsRequired();
+
+            entity.Property(reservation => reservation.CreatedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAdd()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+            entity.Property(reservation => reservation.ExpiresAtUtc).IsRequired();
+            entity.Property(reservation => reservation.ReleasedAtUtc);
         });
 
         modelBuilder.Entity<CloudStackLot>(entity =>

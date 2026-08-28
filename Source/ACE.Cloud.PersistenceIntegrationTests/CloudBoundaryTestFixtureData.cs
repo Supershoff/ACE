@@ -11,6 +11,7 @@ internal static class CloudBoundaryTestFixtureData
 {
     private static readonly string[] TablesInDeleteOrder =
     [
+        "CloudWithdrawalReservation",
         "CloudIdempotencyRecord",
         "CloudActivityLedgerEvent",
         "CloudCustodyOutboxEvent",
@@ -31,6 +32,10 @@ internal static class CloudBoundaryTestFixtureData
             delete.CommandText = $"DELETE FROM {table};";
             await delete.ExecuteNonQueryAsync();
         }
+
+        await using var resetSequence = connection.CreateCommand();
+        resetSequence.CommandText = "UPDATE CloudCustodyOutboxSequence SET NextValue = 1 WHERE Id = 1;";
+        await resetSequence.ExecuteNonQueryAsync();
 
         await using var insertBinding = connection.CreateCommand();
         insertBinding.CommandText = """

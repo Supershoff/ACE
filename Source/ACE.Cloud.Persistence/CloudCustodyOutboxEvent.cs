@@ -17,7 +17,8 @@ public sealed class CloudCustodyOutboxEvent
         string shardId,
         CloudBoundaryOperationType eventType,
         uint biotaId,
-        Guid ownerId)
+        Guid ownerId,
+        long sequenceNumber)
     {
         if (correlationId == Guid.Empty)
         {
@@ -39,12 +40,18 @@ public sealed class CloudCustodyOutboxEvent
             throw new ArgumentException("An outbox event requires an owner.", nameof(ownerId));
         }
 
+        if (sequenceNumber <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(sequenceNumber), "An outbox event requires a positive sequence number.");
+        }
+
         Id = Guid.NewGuid();
         CorrelationId = correlationId;
         ShardId = shardId;
         EventType = eventType;
         BiotaId = biotaId;
         OwnerId = ownerId;
+        SequenceNumber = sequenceNumber;
     }
 
     public Guid Id { get; private set; }
@@ -58,6 +65,15 @@ public sealed class CloudCustodyOutboxEvent
     public uint BiotaId { get; private set; }
 
     public Guid OwnerId { get; private set; }
+
+    /// <summary>
+    /// This event's position in the durable total order the companion web service replays the
+    /// Custody Outbox in (ARCH-007). Assigned within the same transaction as the rest of this
+    /// event's commit by <see cref="CloudCustodyOutboxSequence"/>, so it is strictly increasing in
+    /// commit order even under concurrent writers -- unlike <see cref="CreatedAtUtc"/>, which two
+    /// events committed in the same database-clock microsecond could otherwise share.
+    /// </summary>
+    public long SequenceNumber { get; private set; }
 
     public DateTime CreatedAtUtc { get; private set; }
 }
