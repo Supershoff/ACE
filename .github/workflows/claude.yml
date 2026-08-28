@@ -204,8 +204,8 @@ jobs:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
         shell: bash
         run: |
-          attempts="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}/comments?per_page=100" \
-            --jq "[.[][] | select(.body | contains(\"<!-- claude-implementation-start:${ISSUE_NUMBER}:\"))] | length")"
+          attempts="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}/comments?per_page=100" | \
+            jq -r "[.[][] | select(.body | contains(\"<!-- claude-implementation-start:${ISSUE_NUMBER}:\"))] | length")"
           if [ "${attempts}" -ge 3 ]; then
             gh issue edit "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
               --remove-label automation:in-progress --remove-label automation:retry \
@@ -236,8 +236,8 @@ jobs:
               --body "Implementation produced PR #${existing_pr}; a later handoff failed and will be recovered by the scheduled reconciler. Run ${GITHUB_RUN_ID}." || true
             exit 0
           fi
-          attempts="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}/comments?per_page=100" \
-            --jq "[.[][] | select(.body | contains(\"<!-- claude-implementation-start:${ISSUE_NUMBER}:\"))] | length" 2>/dev/null || echo 3)"
+          attempts="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}/comments?per_page=100" 2>/dev/null | \
+            jq -r "[.[][] | select(.body | contains(\"<!-- claude-implementation-start:${ISSUE_NUMBER}:\"))] | length" 2>/dev/null || echo 3)"
           if [ "${attempts}" -ge 3 ]; then
             gh issue edit "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
               --remove-label automation:queued --remove-label automation:in-progress --remove-label automation:retry \

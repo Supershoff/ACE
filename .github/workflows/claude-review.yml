@@ -257,7 +257,38 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ISSUE_NUMBER: ${{ steps.prepare.outputs.issue_number }}
           PR_NUMBER: ${{ steps.prepare.outputs.pr_number }}
+          HEAD_BRANCH: ${{ inputs.head_branch }}
+          HEAD_SHA: ${{ steps.prepare.outputs.head_sha }}
         shell: bash
         run: |
-          gh issue edit "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" --remove-label automation:in-progress --add-label automation:needs-attention || true
-          gh pr comment "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" --body "Claude review automation failed. Inspect ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}." || true
+          set -euo pipefail
+          exact_review="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100" | \
+            jq -r --arg marker "<!-- claude-code-review:${HEAD_SHA} -->" \
+              '[.[][] | select(.body | contains($marker))][0].id // empty')"
+          if [ -n "${exact_review}" ]; then
+            gh issue edit "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+              --remove-label automation:needs-attention --add-label automation:in-progress || true
+            gh pr comment "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+              --body "A later review handoff failed after the exact-SHA verdict was published. Waking the reconciler. Inspect ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}." || true
+            gh workflow run cloud-mule-reconcile.yml --repo "${GITHUB_REPOSITORY}" --ref master || true
+            exit 0
+          fi
+
+          marker="<!-- claude-review-automation-failure:${HEAD_SHA}:"
+          failures="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100" | \
+            jq -r --arg marker "${marker}" '[.[][] | select(.body | contains($marker))] | length')"
+          next=$((failures + 1))
+          if [ "${next}" -ge 3 ]; then
+            gh issue edit "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+              --remove-label automation:in-progress --add-label automation:needs-attention || true
+            gh pr comment "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+              --body "Claude review automation failed three times for ${HEAD_SHA}. Human investigation is required. Inspect ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. ${marker}${next} -->" || true
+            exit 0
+          fi
+
+          gh issue edit "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+            --remove-label automation:needs-attention --add-label automation:in-progress || true
+          gh pr comment "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
+            --body "Claude review automation produced no usable verdict for ${HEAD_SHA} on attempt ${next}/3; retrying immediately. Inspect ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. ${marker}${next} -->" || true
+          gh workflow run claude-review.yml --repo "${GITHUB_REPOSITORY}" --ref master \
+            -f head_branch="${HEAD_BRANCH}" -f tested_sha="${HEAD_SHA}" -f retry_existing=true
