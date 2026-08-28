@@ -32,6 +32,7 @@ public static class CloudSchemaMigrator
         new AddLayerIdToCloudFrozenEnchantment(),
         new AddWithdrawalRedemptionSupport(),
         new AddIdentityAllegianceOutboxAndVaultGuard(),
+        new AddCloudWebSessionsAndGrantConsumption(),
     ];
 
     /// <summary>

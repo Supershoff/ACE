@@ -9,6 +9,13 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- AUTH-002: reads ace_auth.account directly with plain ADO.NET against its own read-only
+         identity (AceAuthAccountReader), rather than through ACE.Database's write-capable Account
+         repository; see the ProjectReference comment below for why. -->
+    <PackageReference Include="MySqlConnector" Version="2.6.2" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- AUTH-002: the ACE Auth Bridge is a small independently hosted private service that remains
          available during ACE world restarts. It never references ACE.Server (no world-object
          coupling) and never references ACE.Database (no native-biota mutation repositories, and no

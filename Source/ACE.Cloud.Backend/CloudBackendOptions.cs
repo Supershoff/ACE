@@ -26,4 +26,34 @@ public sealed class CloudBackendOptions
     /// auto-detection requires a live connection at options-build time.
     /// </summary>
     public string DatabaseServerVersion { get; init; } = "11.4.2-mariadb";
+
+    /// <summary>This deployment's immutable Cloud Shard ID (ARCH-001), matching the singleton CloudShardBinding row.</summary>
+    public required string ShardId { get; init; }
+
+    /// <summary>The private network base address of this deployment's ACE Auth Bridge (AUTH-002).</summary>
+    public required Uri AuthBridgeBaseAddress { get; init; }
+
+    /// <summary>The symmetric key currently used to sign private-service requests to the Auth Bridge and validate the grants it returns; must match the Auth Bridge's own active key.</summary>
+    public required string ActiveServiceKeyId { get; init; }
+
+    /// <summary>Base64-encoded secret for <see cref="ActiveServiceKeyId"/>.</summary>
+    public required string ActiveServiceKeySecret { get; init; }
+
+    /// <summary>The key ID a rotation just retired, if any; must match the Auth Bridge's own previous key during the overlap window.</summary>
+    public string? PreviousServiceKeyId { get; init; }
+
+    /// <summary>Base64-encoded secret for <see cref="PreviousServiceKeyId"/>, required together with it.</summary>
+    public string? PreviousServiceKeySecret { get; init; }
+
+    public int SessionTimeToLiveMinutes { get; init; } = 60;
+
+    public string SessionCookieName { get; init; } = "ace_cloud_session";
+
+    /// <summary>The exact origins (scheme + host + port) this deployment's web client is served from (security baseline: "strict origin policy").</summary>
+    public required string[] AllowedOrigins { get; init; }
+
+    /// <summary>Maximum login attempts a single source IP may make within <see cref="LoginRateLimitWindowSeconds"/>.</summary>
+    public int MaxLoginAttemptsPerWindow { get; init; } = 20;
+
+    public int LoginRateLimitWindowSeconds { get; init; } = 60;
 }
