@@ -153,7 +153,11 @@ jobs:
             : > "${candidates}"
             while read -r branch; do
               name="$(jq -r .name <<<"${branch}")"
-              [[ "${name}" == claude/* ]] || continue
+              # Claude Code normally uses the configured claude/ prefix, but an
+              # implementation may resume an issue-scoped branch created by an
+              # earlier attempt. Accept that established namespace without
+              # allowing a generic or another issue's cloud-mule branch.
+              [[ "${name}" == claude/* || "${name}" == "cloud-mule/issue-${ISSUE_NUMBER}-"* ]] || continue
               sha="$(jq -r .commit.sha <<<"${branch}")"
               commit="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${sha}")"
               message="$(jq -r .commit.message <<<"${commit}")"
