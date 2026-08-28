@@ -115,9 +115,13 @@ internal static class AceShardTestData
     /// <summary>
     /// Reads a native runtime-enchantment registry row's persisted <c>start_Time</c>, or null if no
     /// row matches -- what a test asserts against to prove a Frozen Enchantment neither ticks during
-    /// Cloud custody nor resumes from a stale value at withdrawal (DEP-005).
+    /// Cloud custody nor resumes from a stale value at withdrawal (DEP-005). Keys on <paramref
+    /// name="layerId"/> as well as <paramref name="spellId"/> (defaulting to 0, this file's existing
+    /// single-layer convention) because <c>biota_properties_enchantment_registry</c>'s real identity
+    /// is (object_Id, spell_Id, layer_Id) -- multiple layers of the same spell are a supported case a
+    /// test must be able to tell apart (issue #15 review).
     /// </summary>
-    public static async Task<double?> GetEnchantmentStartTimeAsync(string aceShardConnectionString, uint biotaId, int spellId)
+    public static async Task<double?> GetEnchantmentStartTimeAsync(string aceShardConnectionString, uint biotaId, int spellId, ushort layerId = 0)
     {
         await using var connection = new MySqlConnection(aceShardConnectionString);
         await connection.OpenAsync();
@@ -125,20 +129,22 @@ internal static class AceShardTestData
         await using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT start_Time FROM biota_properties_enchantment_registry
-            WHERE object_Id = @objectId AND spell_Id = @spellId;
+            WHERE object_Id = @objectId AND spell_Id = @spellId AND layer_Id = @layerId;
             """;
         command.Parameters.AddWithValue("@objectId", biotaId);
         command.Parameters.AddWithValue("@spellId", spellId);
+        command.Parameters.AddWithValue("@layerId", layerId);
 
         var result = await command.ExecuteScalarAsync();
         return result is null or DBNull ? null : Convert.ToDouble(result);
     }
 
     /// <summary>
-    /// Counts a biota's native runtime-enchantment registry rows for a given spell, used to prove a
-    /// Frozen Enchantment's ace_shard row is never removed while its biota is in Cloud custody.
+    /// Counts a biota's native runtime-enchantment registry rows for a given spell and layer, used to
+    /// prove a Frozen Enchantment's ace_shard row is never removed while its biota is in Cloud
+    /// custody.
     /// </summary>
-    public static async Task<long> CountEnchantmentRegistryRowsAsync(string aceShardConnectionString, uint biotaId, int spellId)
+    public static async Task<long> CountEnchantmentRegistryRowsAsync(string aceShardConnectionString, uint biotaId, int spellId, ushort layerId = 0)
     {
         await using var connection = new MySqlConnection(aceShardConnectionString);
         await connection.OpenAsync();
@@ -146,10 +152,11 @@ internal static class AceShardTestData
         await using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT COUNT(*) FROM biota_properties_enchantment_registry
-            WHERE object_Id = @objectId AND spell_Id = @spellId;
+            WHERE object_Id = @objectId AND spell_Id = @spellId AND layer_Id = @layerId;
             """;
         command.Parameters.AddWithValue("@objectId", biotaId);
         command.Parameters.AddWithValue("@spellId", spellId);
+        command.Parameters.AddWithValue("@layerId", layerId);
 
         return (long)(await command.ExecuteScalarAsync())!;
     }

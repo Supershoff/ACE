@@ -29,6 +29,7 @@ public static class CloudSchemaMigrator
         new AddCloudCustodianConfiguration(),
         new AddCloudFrozenEnchantments(),
         new AddCloudPyrealRemainder(),
+        new AddLayerIdToCloudFrozenEnchantment(),
     ];
 
     /// <summary>

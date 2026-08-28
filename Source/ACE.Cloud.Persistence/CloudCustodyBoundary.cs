@@ -1938,10 +1938,11 @@ public sealed class CloudCustodyBoundary
             command.CommandText = """
                 UPDATE ace_shard.biota_properties_enchantment_registry
                 SET start_Time = @remainingDurationSeconds - duration
-                WHERE object_Id = @biotaId AND spell_Id = @spellId;
+                WHERE object_Id = @biotaId AND spell_Id = @spellId AND layer_Id = @layerId;
                 """;
             AddParameter(command, "@biotaId", biotaId);
             AddParameter(command, "@spellId", frozenEnchantment.SpellId);
+            AddParameter(command, "@layerId", frozenEnchantment.LayerId);
             AddParameter(command, "@remainingDurationSeconds", frozenEnchantment.RemainingDurationSeconds);
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
@@ -1964,7 +1965,7 @@ public sealed class CloudCustodyBoundary
         var frozen = new List<CloudFrozenEnchantment>(preservationRequirements.Count);
         foreach (var requirement in preservationRequirements)
         {
-            frozen.Add(new CloudFrozenEnchantment(custodyRecordId, shardId, requirement.SpellId, requirement.RemainingDurationSeconds));
+            frozen.Add(new CloudFrozenEnchantment(custodyRecordId, shardId, requirement.SpellId, requirement.RemainingDurationSeconds, requirement.LayerId));
         }
 
         return frozen;

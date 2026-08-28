@@ -18,7 +18,7 @@ public sealed class CloudFrozenEnchantment
     {
     }
 
-    public CloudFrozenEnchantment(Guid custodyRecordId, string shardId, int spellId, double remainingDurationSeconds)
+    public CloudFrozenEnchantment(Guid custodyRecordId, string shardId, int spellId, double remainingDurationSeconds, ushort layerId = 0)
     {
         if (custodyRecordId == Guid.Empty)
         {
@@ -40,6 +40,7 @@ public sealed class CloudFrozenEnchantment
         CustodyRecordId = custodyRecordId;
         ShardId = shardId;
         SpellId = spellId;
+        LayerId = layerId;
         RemainingDurationSeconds = remainingDurationSeconds;
     }
 
@@ -53,6 +54,15 @@ public sealed class CloudFrozenEnchantment
     public string ShardId { get; private set; } = null!;
 
     public int SpellId { get; private set; }
+
+    /// <summary>
+    /// The registry row's real per-spell identity alongside <see cref="SpellId"/> --
+    /// <c>biota_properties_enchantment_registry</c>'s composite key and unique index both key on
+    /// (object_Id, spell_Id, layer_Id), so two Frozen Enchantments can share a <see cref="SpellId"/>
+    /// (multiple layers of the same spell, e.g. two casters' independent DoTs) and must resume
+    /// independently by <see cref="LayerId"/> rather than colliding on <see cref="SpellId"/> alone.
+    /// </summary>
+    public ushort LayerId { get; private set; }
 
     public double RemainingDurationSeconds { get; private set; }
 

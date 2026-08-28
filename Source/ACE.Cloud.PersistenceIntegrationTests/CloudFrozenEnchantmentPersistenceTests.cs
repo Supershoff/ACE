@@ -258,6 +258,55 @@ public sealed class CloudFrozenEnchantmentPersistenceTests
         Assert.AreEqual(12.0, 30.0 + secondStartTime!.Value, 0.0001);
     }
 
+    /// <summary>
+    /// AC Cloud Mule issue #15 review, P1: <c>biota_properties_enchantment_registry</c>'s real
+    /// identity is (object_Id, spell_Id, layer_Id) -- <c>EnchantmentManager.Add</c> assigns
+    /// successive LayerIds to multiple layers of the same spell on the same object (e.g. two
+    /// different casters' independent DoTs of the same spell). Resuming by spell_Id alone would let
+    /// whichever layer's UPDATE runs last overwrite every other layer sharing that spell_Id, silently
+    /// corrupting or duplicating one layer's remaining duration -- this proves each layer resumes
+    /// independently to its own exact preserved value.
+    /// </summary>
+    [TestMethod]
+    public async Task Withdraw_AnItemDepositedWithTwoLayersOfTheSameSpell_ResumesEachLayersOwnExactRemainingDuration()
+    {
+        var biotaId = NextBiotaId();
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, biotaId);
+        await AceShardTestData.InsertEnchantmentRegistryRowAsync(
+            _fixture.AceShardConnectionString, biotaId, spellId: 500, startTime: -30.0, duration: 60.0, layerId: 1);
+        await AceShardTestData.InsertEnchantmentRegistryRowAsync(
+            _fixture.AceShardConnectionString, biotaId, spellId: 500, startTime: -40.0, duration: 90.0, layerId: 2);
+
+        var options = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
+        var recipientContainerId = NextBiotaId();
+
+        await using var context = new CloudDbContext(options);
+        var boundary = new CloudCustodyBoundary(context);
+
+        var preservationRequirements = new[]
+        {
+            new CloudRuntimeEnchantmentSnapshot(spellId: 500, remainingDurationSeconds: 30.0, layerId: 1),
+            new CloudRuntimeEnchantmentSnapshot(spellId: 500, remainingDurationSeconds: 50.0, layerId: 2),
+        };
+
+        var depositOutcome = await boundary.DepositAsync(
+            biotaId, ShardId, Guid.NewGuid(), Guid.NewGuid(), preservationRequirements: preservationRequirements);
+        Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, depositOutcome.Kind, depositOutcome.Reason);
+        var custodyRecordId = depositOutcome.Value!.Id;
+
+        var withdrawOutcome = await boundary.WithdrawAsync(custodyRecordId, expectedVersion: 1, recipientContainerId, Guid.NewGuid());
+        Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, withdrawOutcome.Kind, withdrawOutcome.Reason);
+
+        var firstLayerStartTime = await AceShardTestData.GetEnchantmentStartTimeAsync(_fixture.AceShardConnectionString, biotaId, 500, layerId: 1);
+        var secondLayerStartTime = await AceShardTestData.GetEnchantmentStartTimeAsync(_fixture.AceShardConnectionString, biotaId, 500, layerId: 2);
+        Assert.IsNotNull(firstLayerStartTime);
+        Assert.IsNotNull(secondLayerStartTime);
+        Assert.AreEqual(30.0, 60.0 + firstLayerStartTime!.Value, 0.0001,
+            "Layer 1 must resume from its own exact preserved remaining duration, unaffected by layer 2's resume.");
+        Assert.AreEqual(50.0, 90.0 + secondLayerStartTime!.Value, 0.0001,
+            "Layer 2 must resume from its own exact preserved remaining duration, unaffected by layer 1's resume.");
+    }
+
     [TestMethod]
     public async Task Withdraw_AnItemWithAPermanentBuiltInSpell_LeavesItsRegistryRowCompletelyUnaffected()
     {
