@@ -54,6 +54,14 @@ public sealed class CloudDbContext : DbContext
 
     public DbSet<CloudWithdrawalNamedLandblockRecord> CloudWithdrawalNamedLandblocks => Set<CloudWithdrawalNamedLandblockRecord>();
 
+    public DbSet<CloudIdentityOutboxEvent> CloudIdentityOutboxEvents => Set<CloudIdentityOutboxEvent>();
+
+    public DbSet<CloudIdentityOutboxSequence> CloudIdentityOutboxSequences => Set<CloudIdentityOutboxSequence>();
+
+    public DbSet<CloudAllegianceVaultBinding> CloudAllegianceVaultBindings => Set<CloudAllegianceVaultBinding>();
+
+    public DbSet<CloudMonarchDeletionDiagnostic> CloudMonarchDeletionDiagnostics => Set<CloudMonarchDeletionDiagnostic>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<CloudShardBinding>(entity =>
@@ -636,6 +644,107 @@ public sealed class CloudDbContext : DbContext
             entity.Property(landblock => landblock.Name).IsRequired().HasMaxLength(128);
 
             entity.Property(landblock => landblock.CreatedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAdd()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudIdentityOutboxEvent>(entity =>
+        {
+            entity.ToTable("CloudIdentityOutboxEvent");
+
+            entity.HasKey(evt => evt.Id);
+            entity.Property(evt => evt.Id).ValueGeneratedNever();
+
+            entity.Property(evt => evt.CorrelationId).IsRequired();
+            entity.HasIndex(evt => evt.CorrelationId);
+
+            entity.Property(evt => evt.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(evt => evt.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(evt => evt.EventType).IsRequired().HasConversion<string>().HasMaxLength(32);
+            entity.Property(evt => evt.CharacterId).IsRequired();
+            entity.HasIndex(evt => evt.CharacterId);
+
+            entity.Property(evt => evt.AccountId);
+            entity.Property(evt => evt.CharacterName).HasMaxLength(64);
+            entity.Property(evt => evt.TotalLogins);
+            entity.Property(evt => evt.MonarchId);
+            entity.Property(evt => evt.PriorMonarchId);
+
+            // Application-assigned within the same transaction via CloudIdentityOutboxSequence, not
+            // database-generated (mirrors CloudCustodyOutboxEvent.SequenceNumber).
+            entity.Property(evt => evt.SequenceNumber).IsRequired().ValueGeneratedNever();
+            entity.HasIndex(evt => evt.SequenceNumber).IsUnique();
+
+            entity.Property(evt => evt.CreatedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAdd()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudIdentityOutboxSequence>(entity =>
+        {
+            // One counter row per deployment (ARCH-001), the same singleton shape as
+            // CloudCustodyOutboxSequence.
+            entity.ToTable("CloudIdentityOutboxSequence", table =>
+                table.HasCheckConstraint("CK_CloudIdentityOutboxSequence_Singleton", "`Id` = 1"));
+
+            entity.HasKey(seq => seq.Id);
+            entity.Property(seq => seq.Id).ValueGeneratedNever();
+            entity.Property(seq => seq.NextValue).IsRequired();
+        });
+
+        modelBuilder.Entity<CloudAllegianceVaultBinding>(entity =>
+        {
+            entity.ToTable("CloudAllegianceVaultBinding");
+
+            entity.HasKey(binding => binding.OwnerId);
+            entity.Property(binding => binding.OwnerId).ValueGeneratedNever();
+
+            entity.Property(binding => binding.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(binding => binding.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(binding => binding.MonarchCharacterId).IsRequired();
+            entity.HasIndex(binding => new { binding.ShardId, binding.MonarchCharacterId }).IsUnique();
+
+            entity.Property(binding => binding.CreatedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAdd()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudMonarchDeletionDiagnostic>(entity =>
+        {
+            entity.ToTable("CloudMonarchDeletionDiagnostic");
+
+            entity.HasKey(diagnostic => diagnostic.Id);
+            entity.Property(diagnostic => diagnostic.Id).ValueGeneratedNever();
+
+            entity.Property(diagnostic => diagnostic.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(diagnostic => diagnostic.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(diagnostic => diagnostic.MonarchCharacterId).IsRequired();
+            // A given vault is only ever diagnosed once; an administrator resolves it out of band
+            // rather than this row being repeatedly (re)written by later integrity scans.
+            entity.HasIndex(diagnostic => new { diagnostic.ShardId, diagnostic.MonarchCharacterId }).IsUnique();
+
+            entity.Property(diagnostic => diagnostic.VaultOwnerId).IsRequired();
+            entity.Property(diagnostic => diagnostic.Reason).IsRequired().HasMaxLength(512);
+
+            entity.Property(diagnostic => diagnostic.DetectedAtUtc)
                 .IsRequired()
                 .ValueGeneratedOnAdd()
                 .HasDefaultValueSql("CURRENT_TIMESTAMP");

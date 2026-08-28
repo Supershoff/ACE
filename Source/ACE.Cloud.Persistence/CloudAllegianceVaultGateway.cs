@@ -1,0 +1,238 @@
+using ACE.Cloud.Domain;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
+
+namespace ACE.Cloud.Persistence;
+
+/// <summary>
+/// The ACE-side gateway for Allegiance Vault emptiness checks, Vault Absorption, and out-of-band
+/// monarch-deletion detection (issue #17: VAULT-001, VAULT-004, VAULT-005). Deliberately not part of
+/// <see cref="CloudCustodyBoundary"/>: an Allegiance Vault is a Cloud ownership/ordinary-transfer
+/// concept (CONTEXT.md's Cloud Transaction Authority scope: "vault activity"), not a native-biota
+/// world-boundary handoff, and
+/// <see cref="ACE.Cloud.RepositoryPolicyTests.CloudWorldBoundaryAuthoritySurfaceTests"/> proves
+/// <see cref="CloudCustodyBoundary"/>'s public surface never grows a marketplace/ownership-shaped
+/// operation like this one (ARCH-002/ARCH-003). This class exists because VAULT-004/VAULT-005 are
+/// specifically triggered by ACE-side seams (an allegiance swear, a character deletion attempt) that
+/// have no other way to reach ace_cloud; it models a vault the same way the rest of this schema
+/// already anticipates -- as an ordinary <see cref="CloudAccountId"/> derived deterministically from
+/// its monarch (<see cref="CloudOwnerIdentity.ForAllegianceVault"/>) -- so it reuses
+/// <see cref="CloudCustodyRecord"/>/<see cref="CloudStackLot"/> exactly like any other owner, with no
+/// separate vault-contents table.
+/// </summary>
+public sealed class CloudAllegianceVaultGateway
+{
+    private readonly CloudDbContext _context;
+
+    public CloudAllegianceVaultGateway(CloudDbContext context)
+    {
+        _context = context ?? throw new ArgumentNullException(nameof(context));
+    }
+
+    /// <summary>
+    /// Whether <paramref name="monarchCharacterId"/>'s Allegiance Vault currently has any contents
+    /// (VAULT-005's guard input). Also ensures a <see cref="CloudAllegianceVaultBinding"/> row exists
+    /// for this vault identity, so a later integrity scan
+    /// (<see cref="DetectOutOfBandMonarchVaultOrphansAsync"/>) can find it even if it turns out to be
+    /// empty right now.
+    /// </summary>
+    public async Task<bool> GetIsEmptyAsync(string shardId, uint monarchCharacterId, CancellationToken cancellationToken = default)
+    {
+        var vaultOwnerId = await EnsureBindingAsync(shardId, monarchCharacterId, cancellationToken);
+        return await IsVaultOwnerEmptyAsync(vaultOwnerId, cancellationToken);
+    }
+
+    /// <summary>
+    /// Absorbs every item from <paramref name="oldMonarchCharacterId"/>'s Allegiance Vault into
+    /// <paramref name="newMonarchCharacterId"/>'s (VAULT-004), atomically, when the former monarch
+    /// joins the latter's allegiance. Absorbing an already-empty vault is a valid no-op success, not
+    /// a conflict: a monarch with no vault contents may freely swear into another allegiance.
+    /// Vault contents can never carry an active exclusive reservation (VAULT-003: an Allegiance Vault
+    /// cannot create Withdrawal Tokens, listings, bids, or external Transfer Offers), so unlike an
+    /// ordinary <see cref="CloudOwnershipTransferPolicy"/> transfer there is no per-item reservation
+    /// precondition to revalidate here -- only the top-level gate/identity check.
+    /// </summary>
+    public async Task<CloudBoundaryOutcome<CloudVaultAbsorptionResult>> AbsorbAsync(
+        string shardId,
+        uint oldMonarchCharacterId,
+        uint newMonarchCharacterId,
+        CancellationToken cancellationToken = default)
+    {
+        _context.ChangeTracker.Clear();
+
+        var sourceVaultOwnerId = CloudOwnerIdentity.ForAllegianceVault(shardId, oldMonarchCharacterId);
+        var destinationVaultOwnerId = CloudOwnerIdentity.ForAllegianceVault(shardId, newMonarchCharacterId);
+
+        var policyResult = CloudAllegianceVaultAbsorptionPolicy.Absorb(
+            new CloudAccountId(sourceVaultOwnerId), new CloudAccountId(destinationVaultOwnerId), CloudMutationGateState.Open);
+        if (!policyResult.IsSuccess)
+        {
+            return CloudBoundaryOutcome<CloudVaultAbsorptionResult>.Conflict(policyResult.Reason!);
+        }
+
+        await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+
+        await EnsureBindingAsync(shardId, oldMonarchCharacterId, cancellationToken);
+        await EnsureBindingAsync(shardId, newMonarchCharacterId, cancellationToken);
+
+        var custodyRecords = await _context.CloudCustodyRecords
+            .Where(r => r.OwnerId == sourceVaultOwnerId)
+            .ToListAsync(cancellationToken);
+        foreach (var record in custodyRecords)
+        {
+            record.ChangeOwner(destinationVaultOwnerId);
+        }
+
+        var stackLots = await _context.CloudStackLots
+            .Where(l => l.OwnerId == sourceVaultOwnerId)
+            .ToListAsync(cancellationToken);
+        foreach (var lot in stackLots)
+        {
+            lot.ChangeOwner(destinationVaultOwnerId);
+        }
+
+        await _context.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+
+        return CloudBoundaryOutcome<CloudVaultAbsorptionResult>.Committed(
+            new CloudVaultAbsorptionResult(custodyRecords.Count, stackLots.Count));
+    }
+
+    /// <summary>
+    /// Scans every currently known Allegiance Vault on this shard (from
+    /// <see cref="CloudAllegianceVaultBinding"/>) for one whose monarch character no longer exists
+    /// (or has been soft-deleted) in ace_shard while the vault still has contents, and records a
+    /// <see cref="CloudMonarchDeletionDiagnostic"/> for each newly found one (VAULT-005's
+    /// out-of-band recovery case). A vault already diagnosed is never re-diagnosed; resolving it is
+    /// an audited administrator workflow outside this issue's scope. Safe to call repeatedly, for
+    /// example once at ACE startup.
+    /// </summary>
+    public async Task<IReadOnlyList<CloudMonarchDeletionDiagnostic>> DetectOutOfBandMonarchVaultOrphansAsync(
+        string shardId, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(shardId))
+        {
+            throw new ArgumentException("Detecting out-of-band monarch vault orphans requires a Cloud Shard ID.", nameof(shardId));
+        }
+
+        var bindings = await _context.CloudAllegianceVaultBindings
+            .AsNoTracking()
+            .Where(b => b.ShardId == shardId)
+            .ToListAsync(cancellationToken);
+
+        var alreadyDiagnosedMonarchIds = (await _context.CloudMonarchDeletionDiagnostics
+            .AsNoTracking()
+            .Where(d => d.ShardId == shardId)
+            .Select(d => d.MonarchCharacterId)
+            .ToListAsync(cancellationToken))
+            .ToHashSet();
+
+        var newDiagnostics = new List<CloudMonarchDeletionDiagnostic>();
+
+        foreach (var binding in bindings)
+        {
+            if (alreadyDiagnosedMonarchIds.Contains(binding.MonarchCharacterId))
+            {
+                continue;
+            }
+
+            if (await IsVaultOwnerEmptyAsync(binding.OwnerId, cancellationToken))
+            {
+                continue;
+            }
+
+            if (await CharacterExistsAndIsNotDeletedAsync(binding.MonarchCharacterId, cancellationToken))
+            {
+                continue;
+            }
+
+            var diagnostic = new CloudMonarchDeletionDiagnostic(
+                shardId,
+                binding.MonarchCharacterId,
+                binding.OwnerId,
+                $"Monarch character {binding.MonarchCharacterId} no longer exists (or was deleted) in ace_shard, but Allegiance "
+                    + $"Vault {binding.OwnerId} still has contents. This character was removed out-of-band, not through ACE's own "
+                    + "guarded deletion path; the vault requires audited administrator recovery (VAULT-005).");
+            _context.CloudMonarchDeletionDiagnostics.Add(diagnostic);
+            newDiagnostics.Add(diagnostic);
+        }
+
+        if (newDiagnostics.Count > 0)
+        {
+            await _context.SaveChangesAsync(cancellationToken);
+        }
+
+        return newDiagnostics;
+    }
+
+    /// <summary>
+    /// Idempotently records (or returns the already-recorded) reverse-lookup binding from a monarch's
+    /// deterministic Allegiance Vault owner identity back to the monarch, so a later integrity scan
+    /// can enumerate every known vault (see <see cref="CloudAllegianceVaultBinding"/>'s doc comment).
+    /// </summary>
+    private async Task<Guid> EnsureBindingAsync(string shardId, uint monarchCharacterId, CancellationToken cancellationToken)
+    {
+        var vaultOwnerId = CloudOwnerIdentity.ForAllegianceVault(shardId, monarchCharacterId);
+
+        var exists = await _context.CloudAllegianceVaultBindings
+            .AsNoTracking()
+            .AnyAsync(b => b.OwnerId == vaultOwnerId, cancellationToken);
+        if (!exists)
+        {
+            _context.CloudAllegianceVaultBindings.Add(new CloudAllegianceVaultBinding(vaultOwnerId, shardId, monarchCharacterId));
+
+            try
+            {
+                await _context.SaveChangesAsync(cancellationToken);
+            }
+            catch (DbUpdateException ex) when (CloudRawSqlHelpers.IsDuplicateKey(ex))
+            {
+                // A concurrent caller already inserted this exact binding; that is the desired
+                // outcome (the binding exists), not a failure.
+                _context.ChangeTracker.Clear();
+            }
+        }
+
+        return vaultOwnerId;
+    }
+
+    private async Task<bool> IsVaultOwnerEmptyAsync(Guid vaultOwnerId, CancellationToken cancellationToken)
+    {
+        var hasCustodyRecord = await _context.CloudCustodyRecords
+            .AsNoTracking()
+            .AnyAsync(r => r.OwnerId == vaultOwnerId, cancellationToken);
+        if (hasCustodyRecord)
+        {
+            return false;
+        }
+
+        var hasStackLot = await _context.CloudStackLots
+            .AsNoTracking()
+            .AnyAsync(l => l.OwnerId == vaultOwnerId, cancellationToken);
+        return !hasStackLot;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="characterId"/> still exists in ace_shard and has not been (soft-)
+    /// deleted, queried directly against ace_shard.character on this same connection -- the same
+    /// cross-schema reach <see cref="CloudCustodyBoundary"/> already uses for biota rows (ARCH-002).
+    /// </summary>
+    private async Task<bool> CharacterExistsAndIsNotDeletedAsync(uint characterId, CancellationToken cancellationToken)
+    {
+        var connection = _context.Database.GetDbConnection();
+        await _context.Database.OpenConnectionAsync(cancellationToken);
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.Transaction = _context.Database.CurrentTransaction?.GetDbTransaction();
+            command.CommandText = "SELECT COUNT(*) FROM ace_shard.character WHERE id = @id AND is_Deleted = 0;";
+            CloudRawSqlHelpers.AddParameter(command, "@id", characterId);
+            var count = Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken));
+            return count > 0;
+        }
+        finally
+        {
+            await _context.Database.CloseConnectionAsync();
+        }
+    }
+}

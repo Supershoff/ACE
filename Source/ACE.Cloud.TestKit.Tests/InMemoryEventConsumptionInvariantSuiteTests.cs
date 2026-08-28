@@ -10,7 +10,7 @@ namespace ACE.Cloud.TestKit.Tests;
 [TestClass]
 public sealed class InMemoryEventConsumptionInvariantSuiteTests : CloudEventConsumptionInvariantSuite<string>
 {
-    protected override ICloudEventConsumptionHarness<string> CreateHarness() => new InMemoryEventConsumptionHarness();
+    protected override ICloudEventConsumptionHarness<string> CreateHarness() => new InMemoryEventConsumptionHarness<string>();
 
     protected override string CreatePayload(int step) => $"payload-{step}";
 }

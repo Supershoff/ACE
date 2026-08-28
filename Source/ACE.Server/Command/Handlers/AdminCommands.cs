@@ -4076,6 +4076,9 @@ namespace ACE.Server.Command.Handlers
 
                     CommandHandlerHelper.WriteOutputInfo(session, $"Player named \"{oldName}\" renamed to \"{newName}\" successfully!", ChatMessageType.Broadcast);
 
+                    // AUTH-003: refresh the companion's Display Character projection.
+                    CloudIdentityEventManager.PublishCharacterRenamed(onlinePlayer.Character.Id, onlinePlayer.Character.AccountId, newName, onlinePlayer.Character.TotalLogins);
+
                     onlinePlayer.Session.LogOffPlayer();
                 });
             }
@@ -4107,6 +4110,9 @@ namespace ACE.Server.Command.Handlers
                     offlinePlayer.SaveBiotaToDatabase();
 
                     CommandHandlerHelper.WriteOutputInfo(session, $"Player named \"{oldName}\" renamed to \"{newName}\" successfully!", ChatMessageType.Broadcast);
+
+                    // AUTH-003: refresh the companion's Display Character projection.
+                    CloudIdentityEventManager.PublishCharacterRenamed(character.Id, character.AccountId, newName, character.TotalLogins);
                 });
             }
             else

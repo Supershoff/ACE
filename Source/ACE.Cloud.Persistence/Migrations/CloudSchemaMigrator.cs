@@ -31,6 +31,7 @@ public static class CloudSchemaMigrator
         new AddCloudPyrealRemainder(),
         new AddLayerIdToCloudFrozenEnchantment(),
         new AddWithdrawalRedemptionSupport(),
+        new AddIdentityAllegianceOutboxAndVaultGuard(),
     ];
 
     /// <summary>

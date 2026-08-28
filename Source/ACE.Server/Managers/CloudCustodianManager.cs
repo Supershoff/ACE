@@ -57,6 +57,8 @@ namespace ACE.Server.Managers
                 return;
             }
 
+            CloudIdentityEventManager.RunStartupIntegrityCheck();
+
             _ = ReapplyAsync();
         }
 

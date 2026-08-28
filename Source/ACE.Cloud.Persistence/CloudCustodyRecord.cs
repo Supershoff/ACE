@@ -150,4 +150,27 @@ public sealed class CloudCustodyRecord
         TotalQuantity -= amount;
         Version++;
     }
+
+    /// <summary>
+    /// Reassigns a non-stack record to a new owner without changing anything else (the "immediate
+    /// cloud transfer" edge <see cref="CloudOwnershipTransferPolicy"/> validates, for example an
+    /// Allegiance Vault contribution/take or Vault Absorption). Never valid for a stack record, whose
+    /// ownership is decomposed across its <see cref="CloudStackLot"/> rows instead
+    /// (<see cref="CloudStackLot.ChangeOwner"/>).
+    /// </summary>
+    internal void ChangeOwner(Guid newOwnerId)
+    {
+        if (IsStack)
+        {
+            throw new InvalidOperationException("A stack Cloud Custody Record has no single owner to reassign; change its lots' owners instead.");
+        }
+
+        if (newOwnerId == Guid.Empty)
+        {
+            throw new ArgumentException("A Cloud Custody Record requires exactly one owner.", nameof(newOwnerId));
+        }
+
+        OwnerId = newOwnerId;
+        Version++;
+    }
 }

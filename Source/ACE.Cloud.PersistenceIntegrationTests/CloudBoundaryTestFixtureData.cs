@@ -25,6 +25,9 @@ internal static class CloudBoundaryTestFixtureData
         "CloudIdempotencyRecord",
         "CloudActivityLedgerEvent",
         "CloudCustodyOutboxEvent",
+        "CloudMonarchDeletionDiagnostic",
+        "CloudAllegianceVaultBinding",
+        "CloudIdentityOutboxEvent",
         "CloudStackLotLineageEvent",
         "CloudStackLot",
         "CloudFrozenEnchantment",
@@ -47,6 +50,10 @@ internal static class CloudBoundaryTestFixtureData
         await using var resetSequence = connection.CreateCommand();
         resetSequence.CommandText = "UPDATE CloudCustodyOutboxSequence SET NextValue = 1 WHERE Id = 1;";
         await resetSequence.ExecuteNonQueryAsync();
+
+        await using var resetIdentitySequence = connection.CreateCommand();
+        resetIdentitySequence.CommandText = "UPDATE CloudIdentityOutboxSequence SET NextValue = 1 WHERE Id = 1;";
+        await resetIdentitySequence.ExecuteNonQueryAsync();
 
         await using var insertBinding = connection.CreateCommand();
         insertBinding.CommandText = """
