@@ -92,4 +92,76 @@ public sealed class CloudIconCompositionGoldenTests
             Directory.Delete(storageRoot, recursive: true);
         }
     }
+
+    /// <summary>
+    /// Issue #28's Green requirement: "Add an end-to-end fidelity harness for protected environments"
+    /// -- this generalizes <see cref="ComposeAsync_TreeStatsReferenceItem_ProducesADeterministicComposedIcon"/>'s
+    /// single hardcoded reference item into a real curated corpus: every <c>*.icon.json</c> file under
+    /// <c>ACE_CLOUD_MULE_ICON_FIXTURE_DIRECTORY</c> is a <see cref="CloudIconGoldenFixture"/> (DID
+    /// inputs plus an expected PNG content hash, ASSET-005's "clothing palette/shade variants,
+    /// underlays, overlays, tailoring, imbues, magical UI effects, stack counts, and missing/corrupt
+    /// references"), composed against the same <c>ACE_CLOUD_MULE_DAT_DIRECTORY</c> operator DAT. Still
+    /// reports Inconclusive rather than failing when no corpus is configured, so this never blocks
+    /// ordinary CI (issue #24's Red: "do not require private captures to merge this implementation
+    /// issue").
+    /// </summary>
+    [TestMethod]
+    public async Task Compare_OperatorOwnedIconFixtureCorpus_EveryFixtureMatches()
+    {
+        var datDirectory = Environment.GetEnvironmentVariable("ACE_CLOUD_MULE_DAT_DIRECTORY");
+        var fixtureDirectory = Environment.GetEnvironmentVariable("ACE_CLOUD_MULE_ICON_FIXTURE_DIRECTORY");
+
+        if (string.IsNullOrWhiteSpace(datDirectory) || string.IsNullOrWhiteSpace(fixtureDirectory))
+        {
+            Assert.Inconclusive(
+                "No local icon fixture corpus is configured. Set ACE_CLOUD_MULE_DAT_DIRECTORY to a directory " +
+                "containing an operator-owned client_portal.dat and ACE_CLOUD_MULE_ICON_FIXTURE_DIRECTORY to a " +
+                "directory of *.icon.json CloudIconGoldenFixture files to run this golden test.");
+            return;
+        }
+
+        var sourcePath = Path.Combine(datDirectory, "client_portal.dat");
+        if (!File.Exists(sourcePath))
+        {
+            Assert.Inconclusive($"ACE_CLOUD_MULE_DAT_DIRECTORY is set, but {sourcePath} does not exist.");
+            return;
+        }
+
+        if (!Directory.Exists(fixtureDirectory) || Directory.GetFiles(fixtureDirectory, "*.icon.json", SearchOption.TopDirectoryOnly).Length == 0)
+        {
+            Assert.Inconclusive($"No *.icon.json fixture files were found under {fixtureDirectory}.");
+            return;
+        }
+
+        var fixtures = CloudGoldenFixtureLoader.LoadFromDirectory<CloudIconGoldenFixture>(fixtureDirectory, "*.icon.json");
+
+        var storageRoot = Path.Combine(Path.GetTempPath(), "cloud-icon-golden-corpus-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(storageRoot);
+
+        try
+        {
+            var blobStore = new LocalProtectedAssetBlobStore(new CloudAssetStorageOptions { RootDirectory = storageRoot });
+            var manifestId = Guid.NewGuid();
+            var entries = await new PortalDatAssetExtractor().ExtractAsync(sourcePath, manifestId, blobStore);
+
+            var relativePathsByKey = entries.ToDictionary(
+                e => e.Key, e => CloudAssetStagingPathPolicy.BuildManifestEntryRelativePath(manifestId, e.Key));
+            var blobReader = new CloudAssetManifestBlobReader(relativePathsByKey, blobStore);
+
+            var layerSource = new PortalDatIconLayerSource(blobReader);
+            var clothingResolver = new PortalDatIconClothingEffectResolver(blobReader);
+
+            var results = await CloudIconGoldenComparisonHarness.CompareAsync(fixtures, manifestVersion: 1, clothingResolver, layerSource);
+
+            var failures = results.Where(r => !r.Matched)
+                .Select(r => $"{r.FixtureName}: {string.Join("; ", r.Differences)}")
+                .ToList();
+
+            Assert.HasCount(0, failures, "One or more icon fixtures mismatched:" + Environment.NewLine + string.Join(Environment.NewLine, failures));
+        }
+        finally
+        {
+            Directory.Delete(storageRoot, recursive: true);
+        }
+    }
 }

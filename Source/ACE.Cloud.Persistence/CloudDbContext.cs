@@ -1348,6 +1348,8 @@ public sealed class CloudDbContext : DbContext
                 .IsRequired()
                 .ValueGeneratedOnAddOrUpdate()
                 .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+            entity.Property(diagnostic => diagnostic.LastSeenManifestVersion).IsRequired(false);
         });
     }
 }
