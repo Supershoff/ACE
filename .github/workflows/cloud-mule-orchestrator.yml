@@ -10,9 +10,9 @@ on:
         required: false
         type: string
       dry_run:
-        description: Select and report without dispatching Claude
+        description: Select and report without dispatching Claude (explicit opt-in)
         required: false
-        default: true
+        default: false
         type: boolean
 
 concurrency:
