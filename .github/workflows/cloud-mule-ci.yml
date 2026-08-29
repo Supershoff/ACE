@@ -41,6 +41,10 @@ jobs:
         shell: bash
         run: bash .github/scripts/validate-cloud-mule-orchestrator-contract.sh
 
+      - name: Validate Claude implementation recovery
+        shell: bash
+        run: bash .github/scripts/validate-cloud-mule-implementation-recovery-contract.sh
+
       - name: Reject private deployment data and require an issue link
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}

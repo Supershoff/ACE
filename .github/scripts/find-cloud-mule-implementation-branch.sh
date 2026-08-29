@@ -24,7 +24,10 @@ validate_branch() {
   comparison="$(gh api "repos/${repository}/compare/${default_branch}...${name}" 2>/dev/null)" || return 1
   status="$(jq -r .status <<<"${comparison}")"
   ahead="$(jq -r .ahead_by <<<"${comparison}")"
-  [ "${status}" = ahead ] && [ "${ahead}" -gt 0 ] || return 1
+  # A valid implementation can become "diverged" when master advances while a
+  # long Claude run is still working. Preserve that durable work; the handoff
+  # refreshes it onto current master before opening or updating the PR.
+  { [ "${status}" = ahead ] || [ "${status}" = diverged ]; } && [ "${ahead}" -gt 0 ] || return 1
 
   date="$(jq -r .commit.committer.date <<<"${commit}")"
   printf '%s\t%s\t%s\n' "${date}" "${name}" "${sha}" >>"${candidates}"
@@ -39,8 +42,8 @@ fi
 
 # Claude can create and push a correctly owned branch itself without returning
 # branch_name or while using a nonstandard prefix. Search every repository
-# branch and recover only tips that canonically close this issue and are ahead
-# of the current base branch.
+# branch and recover only tips that canonically close this issue and contain
+# commits ahead of their merge-base with the current base branch.
 while read -r encoded; do
   branch="$(base64 -d <<<"${encoded}")"
   validate_branch "$(jq -r .name <<<"${branch}")" || true
