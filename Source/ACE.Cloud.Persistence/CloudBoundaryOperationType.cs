@@ -60,4 +60,11 @@ public enum CloudBoundaryOperationType
     /// Allegiance Vault into their new monarch's, as part of a Vault Absorption (VAULT-004).
     /// </summary>
     VaultAbsorption,
+
+    /// <summary>
+    /// Reassigns a whole (non-stack) Cloud Custody Record to a new owner outside any typed
+    /// reservation's fulfillment -- the core custody state model's "immediate cloud transfer" edge
+    /// (<see cref="CloudOwnershipTransferAuthority"/>).
+    /// </summary>
+    OwnershipTransfer,
 }
