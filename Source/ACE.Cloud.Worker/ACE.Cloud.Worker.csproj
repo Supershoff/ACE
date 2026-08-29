@@ -17,6 +17,10 @@
     <ProjectReference Include="..\ACE.Cloud.Contracts\ACE.Cloud.Contracts.csproj" />
     <ProjectReference Include="..\ACE.Cloud.Persistence\ACE.Cloud.Persistence.csproj" />
     <ProjectReference Include="..\ACE.Cloud.Hosting\ACE.Cloud.Hosting.csproj" />
+    <!-- ASSET-002/ASSET-004: ACE.DatLoader is a standalone client-file parser, not ACE.Server or
+         ACE.Database, so referencing it here for background DAT extraction does not cross the
+         "never depend on live ACE world objects" boundary the other project references guard. -->
+    <ProjectReference Include="..\ACE.DatLoader\ACE.DatLoader.csproj" />
   </ItemGroup>
 
   <ItemGroup>
