@@ -65,6 +65,47 @@ public static class CloudBoundaryRetry
             "transient condition that more retries would resolve.");
     }
 
+    /// <summary>
+    /// Same deadlock/lock-wait-timeout retry as <see cref="ExecuteAsync{T}(Func{Task{CloudBoundaryOutcome{T}}}, int, CancellationToken)"/>
+    /// for a caller whose attempt does not use <see cref="CloudBoundaryOutcome{T}"/> (for example
+    /// <c>CloudAccountLinkGateway</c>, whose own outcome type has no "unavailable" state to
+    /// translate into). Any exception other than a genuine deadlock/lock-wait timeout propagates
+    /// unchanged instead of being reinterpreted here.
+    /// </summary>
+    public static async Task<T> ExecuteWithDeadlockRetryAsync<T>(
+        Func<Task<T>> attempt,
+        int maxAttempts = DefaultMaxAttempts,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(attempt);
+
+        if (maxAttempts < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maxAttempts), "At least one attempt is required.");
+        }
+
+        for (var attemptNumber = 1; attemptNumber <= maxAttempts; attemptNumber++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            try
+            {
+                return await attempt();
+            }
+            catch (Exception ex) when (IsDeadlockOrLockTimeout(ex) && attemptNumber < maxAttempts)
+            {
+                // See ExecuteAsync's matching catch: the transaction already rolled back, so
+                // re-running `attempt` from the top is safe, and idempotency keys make it safe even
+                // if the losing attempt actually reached MariaDB before losing the deadlock.
+            }
+        }
+
+        throw new InvalidOperationException(
+            $"Exhausted {maxAttempts} attempts on repeated deadlocks/lock-wait timeouts. Repeated " +
+            "contention on the same rows indicates a locking-order bug (transaction rule 2), not a " +
+            "transient condition that more retries would resolve.");
+    }
+
     private static bool IsDeadlockOrLockTimeout(Exception ex) =>
         UnwrapMySqlException(ex) is { Number: DeadlockErrorNumber or LockWaitTimeoutErrorNumber };
 

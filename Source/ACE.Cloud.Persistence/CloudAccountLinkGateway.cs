@@ -46,14 +46,36 @@ public sealed class CloudAccountLinkGateway
     /// this call with the same <paramref name="idempotencyKey"/> replays the original committed
     /// result, approved or rejected, instead of re-deciding eligibility against since-changed state
     /// (transaction rules 4 and 8).
+    ///
+    /// Issue #20's Red section requires "concurrent link... and retry": two concurrent LinkAsync
+    /// calls for the *same* source account into two different Mains both take
+    /// <see cref="LockActiveLinkMarkerAsync"/>'s gap lock on that not-yet-existing marker row before
+    /// either commits, then one of them tries to insert it while <see cref="LockSourceCustodyRowsAsync"/>
+    /// still holds the other's custody-row locks -- a genuine MariaDB deadlock (error 1213) that
+    /// deterministic lock ordering alone cannot prevent, matching <see cref="CloudBoundaryRetry"/>'s
+    /// own doc comment. Retrying here, exactly like every <c>CloudCustodyBoundary</c> call site,
+    /// re-runs the whole rolled-back attempt from scratch, which is safe: the deadlock always aborts
+    /// before <see cref="LinkOnceAsync"/> commits anything, and the idempotency key makes a retry
+    /// that races a since-committed attempt replay that result instead of double-linking.
     /// </summary>
-    public async Task<CloudAccountLinkOutcome> LinkAsync(
+    public Task<CloudAccountLinkOutcome> LinkAsync(
         string shardId,
         uint mainAccountId,
         uint sourceAccountId,
         Guid idempotencyKey,
         bool wouldCreateActiveAuctionConflict = false,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        CloudBoundaryRetry.ExecuteWithDeadlockRetryAsync(
+            () => LinkOnceAsync(shardId, mainAccountId, sourceAccountId, idempotencyKey, wouldCreateActiveAuctionConflict, cancellationToken),
+            cancellationToken: cancellationToken);
+
+    private async Task<CloudAccountLinkOutcome> LinkOnceAsync(
+        string shardId,
+        uint mainAccountId,
+        uint sourceAccountId,
+        Guid idempotencyKey,
+        bool wouldCreateActiveAuctionConflict,
+        CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(shardId))
         {
