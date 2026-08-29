@@ -55,8 +55,12 @@ public sealed class PortalDatAssetExtractorTests
 
             var entries = await extractor.ExtractAsync(sourcePath, manifestId, blobStore);
 
-            Assert.IsGreaterThan(0, entries.Count, "Expected at least one extracted texture entry.");
-            Assert.IsTrue(entries.All(e => e.Key.Kind == CloudAssetFileKind.Texture));
+            Assert.IsGreaterThan(0, entries.Count, "Expected at least one extracted entry.");
+            Assert.IsTrue(
+                entries.All(e => e.Key.Kind is CloudAssetFileKind.Texture or CloudAssetFileKind.Palette
+                    or CloudAssetFileKind.PaletteSet or CloudAssetFileKind.Clothing),
+                "Expected every extracted entry to be one of the file kinds Icon Reconstruction needs.");
+            Assert.IsTrue(entries.Any(e => e.Key.Kind == CloudAssetFileKind.Texture), "Expected at least one extracted texture entry.");
 
             var baseIcon = entries.SingleOrDefault(e => e.Key.Did == KnownBaseIconDid);
             var overlay = entries.SingleOrDefault(e => e.Key.Did == KnownOverlayDid);

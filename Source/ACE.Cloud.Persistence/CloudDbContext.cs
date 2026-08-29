@@ -96,6 +96,8 @@ public sealed class CloudDbContext : DbContext
 
     public DbSet<CloudAssetImportLedgerEvent> CloudAssetImportLedgerEvents => Set<CloudAssetImportLedgerEvent>();
 
+    public DbSet<CloudIconDiagnostic> CloudIconDiagnostics => Set<CloudIconDiagnostic>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<CloudShardBinding>(entity =>
@@ -1312,6 +1314,39 @@ public sealed class CloudDbContext : DbContext
             entity.Property(evt => evt.OccurredAtUtc)
                 .IsRequired()
                 .ValueGeneratedOnAdd()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudIconDiagnostic>(entity =>
+        {
+            entity.ToTable("CloudIconDiagnostic");
+
+            entity.HasKey(diagnostic => diagnostic.Id);
+            entity.Property(diagnostic => diagnostic.Id).ValueGeneratedNever();
+
+            entity.Property(diagnostic => diagnostic.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(diagnostic => diagnostic.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(diagnostic => diagnostic.DedupeKey).IsRequired().HasMaxLength(64);
+            entity.HasIndex(diagnostic => new { diagnostic.ShardId, diagnostic.DedupeKey }).IsUnique();
+
+            entity.Property(diagnostic => diagnostic.LayerKind).IsRequired().HasConversion<string>().HasMaxLength(24);
+            entity.Property(diagnostic => diagnostic.Did).IsRequired();
+            entity.Property(diagnostic => diagnostic.Reason).IsRequired().HasConversion<string>().HasMaxLength(16);
+            entity.Property(diagnostic => diagnostic.OccurrenceCount).IsRequired();
+
+            entity.Property(diagnostic => diagnostic.FirstSeenAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAdd()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+            entity.Property(diagnostic => diagnostic.LastSeenAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAddOrUpdate()
                 .HasDefaultValueSql("CURRENT_TIMESTAMP");
         });
     }
