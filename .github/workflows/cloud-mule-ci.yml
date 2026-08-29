@@ -37,6 +37,10 @@ jobs:
           tar -xzf "${archive}" -C "${RUNNER_TEMP}" actionlint
           "${RUNNER_TEMP}/actionlint" .github/workflows/*.yml
 
+      - name: Validate autonomous orchestrator handoffs
+        shell: bash
+        run: bash .github/scripts/validate-cloud-mule-orchestrator-contract.sh
+
       - name: Reject private deployment data and require an issue link
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
