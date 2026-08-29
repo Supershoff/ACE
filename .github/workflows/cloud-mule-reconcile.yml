@@ -128,8 +128,8 @@ jobs:
             has_pr="$(jq --arg issue "${issue}" '[.[] | select(.body | test("(Fixes|Closes|Resolves) #" + $issue + "([^0-9]|$)"))] | length' <<<"${open_prs}")"
             [ "${has_pr}" -eq 0 ] || continue
 
-            starts="$(jq -r --arg issue "${issue}" '[.comments[].body | select(contains("<!-- claude-implementation-start:" + $issue + ":"))] | length' <<<"${issue_json}")"
-            if [ "${starts}" -ge 3 ]; then
+            substantive_failures="$(jq -r --arg issue "${issue}" '[.comments[].body | select(contains("<!-- claude-implementation-substantive-failure:" + $issue + ":"))] | length' <<<"${issue_json}")"
+            if [ "${substantive_failures}" -ge 3 ]; then
               gh issue edit "${issue}" --repo "${GITHUB_REPOSITORY}" \
                 --remove-label automation:queued --remove-label automation:in-progress --add-label automation:needs-attention >/dev/null
               continue
