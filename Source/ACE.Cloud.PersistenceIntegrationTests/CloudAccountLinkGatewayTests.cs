@@ -281,6 +281,100 @@ public sealed class CloudAccountLinkGatewayTests
     }
 
     [TestMethod]
+    public async Task LinkAsync_ANewGroupInsertForTheSameMainCommitsMidTransaction_TheLinkIsApprovedByReusingItInsteadOfMisreportingSourceAlreadyLinked()
+    {
+        // AC Cloud Mule review of PR #120, finding [P1]: LinkAsync used to resolve a not-yet-existing
+        // Main Account's CloudOwnershipGroup with a plain, unlocked read. A concurrent LinkAsync call
+        // for the same brand-new Main but a *different*, genuinely standalone source account could
+        // insert-and-commit that CloudOwnershipGroup row strictly between this unlocked read and this
+        // transaction's own insert; the resulting UQ_CloudOwnershipGroup_Shard_Main collision was then
+        // misreported as SourceAlreadyLinked -- a code the enum defines as "the source account is
+        // already a Linked Account of some Main Account," which was never true for this source.
+        var options = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
+        const uint newMainAccountId = 900;
+        const uint sourceAccountId = 902;
+
+        await using var holdConnection = new MySqlConnection(_fixture.CloudConnectionString);
+        await holdConnection.OpenAsync();
+        await using var holdTransaction = await holdConnection.BeginTransactionAsync();
+
+        // Stands in for a concurrent LinkAsync(newMainAccountId, otherSourceAccountId=901) that has
+        // already inserted (but not yet committed) newMainAccountId's brand-new CloudOwnershipGroup.
+        var otherGroupId = await InsertOwnershipGroupRowAsync(holdConnection, holdTransaction, newMainAccountId);
+
+        var linkTask = Task.Run(async () =>
+        {
+            await using var linkContext = new CloudDbContext(options);
+            return await new CloudAccountLinkGateway(linkContext).LinkAsync(ShardId, newMainAccountId, sourceAccountId, Guid.NewGuid());
+        });
+
+        var completedEarly = await Task.WhenAny(linkTask, Task.Delay(TimeSpan.FromSeconds(2))) == linkTask;
+        Assert.IsFalse(
+            completedEarly,
+            "LinkAsync's own-Main group resolution must serialize against a concurrent insert of the same not-yet-committed group row instead of reading an unlocked, invisible-until-commit row.");
+
+        await holdTransaction.CommitAsync();
+
+        var outcome = await linkTask;
+        Assert.IsTrue(
+            outcome.IsApproved,
+            $"Linking a brand-new Main from a standalone source must never be misreported as a conflict; got {outcome.RejectionCode}.");
+
+        await using var verifyContext = new CloudDbContext(options);
+        var groupCount = await verifyContext.CloudOwnershipGroups.CountAsync(g => g.ShardId == ShardId && g.MainAccountId == newMainAccountId);
+        Assert.AreEqual(1, groupCount, "The link must reuse the concurrently-committed group instead of creating a second one.");
+
+        var reusedGroupId = await verifyContext.CloudActiveAccountLinkMarkers.AsNoTracking()
+            .Where(m => m.ShardId == ShardId && m.AccountId == sourceAccountId)
+            .Select(m => m.OwnershipGroupId)
+            .SingleAsync();
+        Assert.AreEqual(otherGroupId, reusedGroupId);
+    }
+
+    [TestMethod]
+    public async Task LinkAsync_ANewChildForTheSourceAccountCommitsMidTransaction_TheLinkIsRejectedInsteadOfFormingAForbiddenTree()
+    {
+        // AC Cloud Mule review of PR #120, finding [P1]: SourceHasActiveChildrenAsync used to be a
+        // plain, unlocked read of the source account's own CloudOwnershipGroup row -- the only
+        // eligibility input in LinkAsync without a locked read, unlike mainMarker/sourceMarker and the
+        // pending-obligations check. A concurrent LinkAsync call that makes the source account itself
+        // a Main with a new child could insert-and-commit that group/marker row strictly between this
+        // unlocked read and this transaction's own commit, letting the forbidden 3-level tree
+        // (Main -> Source -> NewChild) form. The fix locks that same row before deciding, so a
+        // concurrent insert of it must serialize against this check instead of racing past it.
+        var options = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
+        const uint mainAccountId = 950;
+        const uint sourceAccountId = 951;
+        const uint newChildAccountId = 952;
+
+        await using var holdConnection = new MySqlConnection(_fixture.CloudConnectionString);
+        await holdConnection.OpenAsync();
+        await using var holdTransaction = await holdConnection.BeginTransactionAsync();
+
+        // Stands in for a concurrent LinkAsync(mainAccountId: sourceAccountId, sourceAccountId:
+        // newChildAccountId) that has already inserted (but not yet committed) sourceAccountId's own
+        // CloudOwnershipGroup and the active marker for its new child.
+        await InsertActiveChildLinkAsync(holdConnection, holdTransaction, sourceAccountId, newChildAccountId);
+
+        var linkTask = Task.Run(async () =>
+        {
+            await using var linkContext = new CloudDbContext(options);
+            return await new CloudAccountLinkGateway(linkContext).LinkAsync(ShardId, mainAccountId, sourceAccountId, Guid.NewGuid());
+        });
+
+        var completedEarly = await Task.WhenAny(linkTask, Task.Delay(TimeSpan.FromSeconds(2))) == linkTask;
+        Assert.IsFalse(
+            completedEarly,
+            "LinkAsync's source-has-active-children check must serialize against a concurrent, not-yet-committed insert of the source's own group row instead of reading an unlocked, invisible-until-commit row.");
+
+        await holdTransaction.CommitAsync();
+
+        var outcome = await linkTask;
+        Assert.IsFalse(outcome.IsApproved, "A source that concurrently gained an active child must never also be linked elsewhere.");
+        Assert.AreEqual(CloudAccountLinkRejectionCode.SourceHasLinkedAccounts, outcome.RejectionCode);
+    }
+
+    [TestMethod]
     public async Task UnlinkAsync_AnActiveLink_EndsItAndRoutesFutureDepositsBackToTheSourceAccount_WithoutRestoringPriorOwnership()
     {
         var options = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
@@ -417,6 +511,63 @@ public sealed class CloudAccountLinkGatewayTests
         command.Parameters.AddWithValue("@biotaId", biotaId);
         await using var reader = await command.ExecuteReaderAsync();
         await reader.ReadAsync();
+    }
+
+    private static async Task<Guid> InsertOwnershipGroupRowAsync(MySqlConnection connection, MySqlTransaction transaction, uint mainAccountId)
+    {
+        var groupId = Guid.NewGuid();
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            INSERT INTO CloudOwnershipGroup (Id, ShardId, MainAccountId, CreatedAtUtc)
+            VALUES (@id, @shardId, @mainAccountId, UTC_TIMESTAMP(6));
+            """;
+        command.Parameters.AddWithValue("@id", groupId.ToString());
+        command.Parameters.AddWithValue("@shardId", ShardId);
+        command.Parameters.AddWithValue("@mainAccountId", mainAccountId);
+        await command.ExecuteNonQueryAsync();
+        return groupId;
+    }
+
+    /// <summary>
+    /// Raw-inserts the same three rows LinkAsync itself would insert to make
+    /// <paramref name="mainAccountId"/> a Main Account with <paramref name="childAccountId"/> as an
+    /// active child, without going through the gateway's own transaction -- so the caller can hold
+    /// them open, uncommitted, to simulate a concurrent link landing mid-transaction.
+    /// </summary>
+    private static async Task InsertActiveChildLinkAsync(
+        MySqlConnection connection, MySqlTransaction transaction, uint mainAccountId, uint childAccountId)
+    {
+        var groupId = await InsertOwnershipGroupRowAsync(connection, transaction, mainAccountId);
+        var linkId = Guid.NewGuid();
+
+        await using (var linkCommand = connection.CreateCommand())
+        {
+            linkCommand.Transaction = transaction;
+            linkCommand.CommandText = """
+                INSERT INTO CloudAccountLink (Id, OwnershipGroupId, ShardId, LinkedAccountId, Status, LinkedAtUtc, UnlinkedAtUtc)
+                VALUES (@id, @groupId, @shardId, @childAccountId, 'Active', UTC_TIMESTAMP(6), NULL);
+                """;
+            linkCommand.Parameters.AddWithValue("@id", linkId.ToString());
+            linkCommand.Parameters.AddWithValue("@groupId", groupId.ToString());
+            linkCommand.Parameters.AddWithValue("@shardId", ShardId);
+            linkCommand.Parameters.AddWithValue("@childAccountId", childAccountId);
+            await linkCommand.ExecuteNonQueryAsync();
+        }
+
+        await using (var markerCommand = connection.CreateCommand())
+        {
+            markerCommand.Transaction = transaction;
+            markerCommand.CommandText = """
+                INSERT INTO CloudActiveAccountLinkMarker (ShardId, AccountId, AccountLinkId, OwnershipGroupId, CreatedAtUtc)
+                VALUES (@shardId, @childAccountId, @linkId, @groupId, UTC_TIMESTAMP(6));
+                """;
+            markerCommand.Parameters.AddWithValue("@shardId", ShardId);
+            markerCommand.Parameters.AddWithValue("@childAccountId", childAccountId);
+            markerCommand.Parameters.AddWithValue("@linkId", linkId.ToString());
+            markerCommand.Parameters.AddWithValue("@groupId", groupId.ToString());
+            await markerCommand.ExecuteNonQueryAsync();
+        }
     }
 
     private static async Task InsertWithdrawalReservationAsync(

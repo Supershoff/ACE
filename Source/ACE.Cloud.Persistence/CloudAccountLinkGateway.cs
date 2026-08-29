@@ -127,8 +127,13 @@ public sealed class CloudAccountLinkGateway
 
         var nowUtc = await GetDatabaseUtcNowAsync(cancellationToken);
 
-        var group = await _context.Set<CloudOwnershipGroup>()
-            .SingleOrDefaultAsync(g => g.ShardId == shardId && g.MainAccountId == mainAccountId, cancellationToken);
+        // Locks the Main Account's own CloudOwnershipGroup row before deciding whether to create it,
+        // mirroring LockActiveLinkMarkerAsync's pattern: an unlocked read is invisible to a concurrent
+        // LinkAsync's not-yet-committed insert of the same row, so both would try to create it and one
+        // would misreport a duplicate-key collision on UQ_CloudOwnershipGroup_Shard_Main as
+        // SourceAlreadyLinked. This locked read instead waits for that in-flight insert to commit and
+        // reuses the row it created.
+        var group = await LockOwnershipGroupAsync(shardId, mainAccountId, cancellationToken);
         if (group is null)
         {
             group = new CloudOwnershipGroup(shardId, mainAccountId);
@@ -365,6 +370,18 @@ public sealed class CloudAccountLinkGateway
             .FromSqlInterpolated($"SELECT * FROM CloudActiveAccountLinkMarker WHERE ShardId = {shardId} AND AccountId = {accountId} FOR UPDATE")
             .SingleOrDefaultAsync(cancellationToken);
 
+    /// <summary>
+    /// Locks <paramref name="mainAccountId"/>'s own CloudOwnershipGroup row for the (ShardId,
+    /// MainAccountId) key covered by <c>UQ_CloudOwnershipGroup_Shard_Main</c>. If a concurrent caller
+    /// has already inserted that row but not yet committed, this blocks until it does, then returns
+    /// the committed row -- unlike a plain read, which cannot see an uncommitted insert and would
+    /// wrongly conclude the row still needs to be created.
+    /// </summary>
+    private async Task<CloudOwnershipGroup?> LockOwnershipGroupAsync(string shardId, uint mainAccountId, CancellationToken cancellationToken) =>
+        await _context.Set<CloudOwnershipGroup>()
+            .FromSqlInterpolated($"SELECT * FROM CloudOwnershipGroup WHERE ShardId = {shardId} AND MainAccountId = {mainAccountId} FOR UPDATE")
+            .SingleOrDefaultAsync(cancellationToken);
+
     private async Task LockSourceCustodyRowsAsync(string shardId, uint sourceAccountId, CancellationToken cancellationToken)
     {
         var sourceOwnerId = CloudOwnerIdentity.ForAccount(shardId, sourceAccountId);
@@ -382,8 +399,12 @@ public sealed class CloudAccountLinkGateway
 
     private async Task<bool> SourceHasActiveChildrenAsync(string shardId, uint sourceAccountId, CancellationToken cancellationToken)
     {
-        var sourceGroup = await _context.Set<CloudOwnershipGroup>().AsNoTracking()
-            .SingleOrDefaultAsync(g => g.ShardId == shardId && g.MainAccountId == sourceAccountId, cancellationToken);
+        // Locked (not a plain read) so this decision waits for a concurrent LinkAsync that is making
+        // sourceAccountId itself a Main with a new child -- that call resolves this exact (ShardId,
+        // MainAccountId) row too, via LockOwnershipGroupAsync -- to commit or roll back, instead of an
+        // unlocked read missing its not-yet-committed insert and letting the forbidden 3-level tree
+        // form (AUTH-006: trees/whole-group merges are prohibited).
+        var sourceGroup = await LockOwnershipGroupAsync(shardId, sourceAccountId, cancellationToken);
         if (sourceGroup is null)
         {
             return false;
