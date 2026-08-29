@@ -38,6 +38,7 @@ public static class CloudSchemaMigrator
         new AddCloudIconDiagnostics(),
         new AddCloudIconDiagnosticManifestCorrelation(),
         new UnifyWithdrawalReservationTargets(),
+        new AddProjectionCheckpointsDeadLettersAndLiveStream(),
     ];
 
     /// <summary>

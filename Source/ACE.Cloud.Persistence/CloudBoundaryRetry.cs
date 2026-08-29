@@ -106,7 +106,14 @@ public static class CloudBoundaryRetry
             "transient condition that more retries would resolve.");
     }
 
-    private static bool IsDeadlockOrLockTimeout(Exception ex) =>
+    /// <summary>
+    /// True for a genuine deadlock or lock-wait timeout, as opposed to a connectivity/availability
+    /// failure (see <see cref="IsUnavailable"/>) or an ordinary domain error. Public so a caller that
+    /// applies its own event-at-a-time transactions outside <see cref="ExecuteAsync{T}"/> (for example
+    /// a projection consumer, which must retry a single transiently deadlocked event rather than
+    /// misclassify it as a poison event) can make the same distinction this class already uses.
+    /// </summary>
+    public static bool IsDeadlockOrLockTimeout(Exception ex) =>
         UnwrapMySqlException(ex) is { Number: DeadlockErrorNumber or LockWaitTimeoutErrorNumber };
 
     /// <summary>

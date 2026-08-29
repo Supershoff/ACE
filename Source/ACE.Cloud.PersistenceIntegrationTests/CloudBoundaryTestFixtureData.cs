@@ -11,6 +11,11 @@ internal static class CloudBoundaryTestFixtureData
 {
     private static readonly string[] TablesInDeleteOrder =
     [
+        "CloudLiveStreamEvent",
+        "CloudInventoryReadProjection",
+        "CloudCharacterIdentityReadProjection",
+        "CloudProjectionDeadLetter",
+        "CloudProjectionCheckpoint",
         "CloudDisplayCharacterSelectionHistoryEvent",
         "CloudDisplayCharacterSelection",
         "CloudAccountLinkLedgerEvent",
@@ -73,6 +78,10 @@ internal static class CloudBoundaryTestFixtureData
         await using var resetIdentitySequence = connection.CreateCommand();
         resetIdentitySequence.CommandText = "UPDATE CloudIdentityOutboxSequence SET NextValue = 1 WHERE Id = 1;";
         await resetIdentitySequence.ExecuteNonQueryAsync();
+
+        await using var resetLiveStreamSequence = connection.CreateCommand();
+        resetLiveStreamSequence.CommandText = "UPDATE CloudLiveStreamSequence SET NextValue = 1 WHERE Id = 1;";
+        await resetLiveStreamSequence.ExecuteNonQueryAsync();
 
         await using var insertBinding = connection.CreateCommand();
         insertBinding.CommandText = """
