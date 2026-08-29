@@ -48,6 +48,22 @@ public static class CloudAssetStagingPathPolicy
     }
 
     /// <summary>
+    /// Where one composed icon's web-ready derivative is persisted, keyed only by its own content/
+    /// composition cache key (UI-006). The key is a fixed-format SHA-256 hex string produced solely
+    /// by <see cref="CloudIconCompositionCacheKey.Create"/>, never caller-supplied free text, so this
+    /// path is exactly as traversal-safe as every other builder here.
+    /// </summary>
+    public static string BuildIconCompositionCacheRelativePath(CloudIconCompositionCacheKey cacheKey)
+    {
+        if (string.IsNullOrEmpty(cacheKey.Hex))
+        {
+            throw new ArgumentException("An icon composition cache path requires a real cache key.", nameof(cacheKey));
+        }
+
+        return $"icon-cache/{cacheKey.Hex}.png";
+    }
+
+    /// <summary>
     /// Validates a shard ID is safe to use as a directory segment. Cloud Mule shard IDs are
     /// operator configuration, not request input (ARCH-001), but this still enforces the same
     /// structural guarantee as every other path builder here rather than trusting configuration

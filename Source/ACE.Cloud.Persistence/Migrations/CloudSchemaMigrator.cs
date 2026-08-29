@@ -35,6 +35,7 @@ public static class CloudSchemaMigrator
         new AddCloudWebSessionsAndGrantConsumption(),
         new AddAccountLinkingAndDisplayCharacter(),
         new AddAssetImportPipeline(),
+        new AddCloudIconDiagnostics(),
     ];
 
     /// <summary>

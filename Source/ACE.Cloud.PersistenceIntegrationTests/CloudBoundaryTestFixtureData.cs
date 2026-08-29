@@ -49,6 +49,7 @@ internal static class CloudBoundaryTestFixtureData
         "CloudAssetImportCurrentSessionMarker",
         "CloudAssetImportChunkRecord",
         "CloudAssetImportSession",
+        "CloudIconDiagnostic",
         "CloudShardBinding",
     ];
 
