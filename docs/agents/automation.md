@@ -5,7 +5,7 @@ The repository automation advances one dependency-ready implementation issue at 
 ## Pipeline
 
 1. `cloud-mule-orchestrator.yml` selects the lowest-numbered open `ready-for-agent` issue whose `## Dependencies` issues are closed and for which no Claude pull request or queued/in-progress pre-PR implementation exists.
-2. `claude.yml` first recovers any existing branch whose tip canonically closes the issue and is ahead of `master`. Only when no recoverable branch exists does Claude implement from `master`, follow Red → Green → Refactor, and hand the branch to the wrapper, which opens a draft pull request.
+2. `claude.yml` first recovers any existing branch whose tip canonically closes the issue and is ahead of `master`, then aliases a nonstandard recovered name into the pipeline's issue-scoped branch namespace. Only when no recoverable branch exists does Claude implement from `master`, follow Red → Green → Refactor, and hand the branch to the wrapper, which opens a draft pull request.
 3. `cloud-mule-ci.yml` runs repository policy checks, cross-platform .NET builds, Cloud-specific tests when present, and web checks when a client workspace exists.
 4. After all CI jobs pass, `cloud-mule-ci.yml` explicitly dispatches `claude-review.yml` with the tested branch and SHA. The reviewer runs independently and read-only using `awesome-skills/code-review-skill` at a pinned commit. This explicit handoff avoids GitHub's recursive `workflow_run` suppression after automated repairs.
 5. The same workflow routes Claude P0/P1 findings into a bounded Claude repair on the existing PR. Each correction produces a new SHA, CI run, and fresh independent review. Three unsuccessful repair cycles stop with `automation:needs-attention`.

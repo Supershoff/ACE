@@ -183,6 +183,9 @@ jobs:
         run: |
           set -euo pipefail
 
+          CLAUDE_BRANCH="$(bash .github/scripts/normalize-cloud-mule-implementation-branch.sh \
+            "${ISSUE_NUMBER}" "${CLAUDE_BRANCH}")"
+
           existing="$(gh pr list --repo "${GITHUB_REPOSITORY}" --head "${CLAUDE_BRANCH}" --state open --json url --jq '.[0].url // empty')"
           if [ -n "${existing}" ]; then
             echo "Claude branch already has ${existing}."
@@ -267,6 +270,10 @@ jobs:
         run: |
           set -u
           recovered="$(bash .github/scripts/find-cloud-mule-implementation-branch.sh "${ISSUE_NUMBER}" 2>/dev/null || true)"
+          if [ -n "${recovered}" ]; then
+            recovered="$(bash .github/scripts/normalize-cloud-mule-implementation-branch.sh \
+              "${ISSUE_NUMBER}" "${recovered}" 2>/dev/null || true)"
+          fi
           if [ -n "${recovered}" ]; then
             existing_pr="$(gh pr list --repo "${GITHUB_REPOSITORY}" --head "${recovered}" --state open --json number --jq '.[0].number // empty')"
             if [ -z "${existing_pr}" ]; then

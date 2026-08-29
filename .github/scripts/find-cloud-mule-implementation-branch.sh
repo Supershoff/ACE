@@ -10,20 +10,18 @@ candidates="$(mktemp)"
 trap 'rm -f "${candidates}"' EXIT
 
 validate_branch() {
-  local name="$1" encoded_name
+  local name="$1"
   local branch_json sha commit message comparison status ahead date
 
   [ -n "${name}" ] || return 1
   [ "${name}" != "${default_branch}" ] || return 1
-  encoded_name="$(jq -rn --arg value "${name}" '$value | @uri')"
-
-  branch_json="$(gh api "repos/${repository}/branches/${encoded_name}" 2>/dev/null)" || return 1
-  sha="$(jq -r .commit.sha <<<"${branch_json}")"
+  branch_json="$(gh api "repos/${repository}/git/ref/heads/${name}" 2>/dev/null)" || return 1
+  sha="$(jq -r .object.sha <<<"${branch_json}")"
   commit="$(gh api "repos/${repository}/commits/${sha}" 2>/dev/null)" || return 1
   message="$(jq -r .commit.message <<<"${commit}")"
   grep -Eq "^(Fixes|Closes|Resolves) #${issue_number}([^0-9]|$)" <<<"${message}" || return 1
 
-  comparison="$(gh api "repos/${repository}/compare/${default_branch}...${encoded_name}" 2>/dev/null)" || return 1
+  comparison="$(gh api "repos/${repository}/compare/${default_branch}...${name}" 2>/dev/null)" || return 1
   status="$(jq -r .status <<<"${comparison}")"
   ahead="$(jq -r .ahead_by <<<"${comparison}")"
   [ "${status}" = ahead ] && [ "${ahead}" -gt 0 ] || return 1
