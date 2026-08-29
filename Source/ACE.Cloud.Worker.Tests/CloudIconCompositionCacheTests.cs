@@ -122,6 +122,42 @@ public sealed class CloudIconCompositionCacheTests
         }
     }
 
+    [TestMethod]
+    public async Task GetOrComposeAsync_SameDidUnderADifferentManifestVersion_NeverServesTheOldManifestsBytes()
+    {
+        // Issue #28's Red requirement: "cache poisoning attempt". Simulates a DAT re-import (ASSET-002
+        // reprocessing/upgrade) that changes the bytes behind the exact same DID: composing under the
+        // new manifest version must never return the previous manifest version's cached PNG, even
+        // though every other composition input (the DID itself) is identical.
+        var storageRoot = CreateTempStorageRoot();
+        try
+        {
+            var blobStore = new LocalProtectedAssetBlobStore(new CloudAssetStorageOptions { RootDirectory = storageRoot });
+            var cache = new CloudIconCompositionCache(blobStore);
+            var inputs = new CloudIconCompositionInputs { BaseIconDid = BaseIconDid };
+
+            var oldManifestLayerSource = new CountingLayerSource(delay: null);
+            oldManifestLayerSource.SetResolved(CloudIconLayerKind.BaseIcon, BaseIconDid, 2, 2, 10, 20, 30, 255);
+            var fromOldManifest = await cache.GetOrComposeAsync(inputs, manifestVersion: 1, new FakeClothingResolver(), oldManifestLayerSource);
+
+            // A reprocessed/upgraded manifest (version 2) resolves the exact same DID to different bytes.
+            var newManifestLayerSource = new CountingLayerSource(delay: null);
+            newManifestLayerSource.SetResolved(CloudIconLayerKind.BaseIcon, BaseIconDid, 2, 2, 200, 100, 50, 255);
+            var fromNewManifest = await cache.GetOrComposeAsync(inputs, manifestVersion: 2, new FakeClothingResolver(), newManifestLayerSource);
+
+            Assert.AreNotEqual(fromOldManifest.CacheKey, fromNewManifest.CacheKey, "Different manifest versions must never collide onto the same cache key.");
+            CollectionAssert.AreNotEqual(fromOldManifest.PngBytes, fromNewManifest.PngBytes, "The new manifest version's composition must never be poisoned by the old manifest version's cached bytes.");
+
+            // Re-requesting the old manifest version afterward must still serve its own untouched bytes.
+            var oldManifestAgain = await cache.GetOrComposeAsync(inputs, manifestVersion: 1, new FakeClothingResolver(), oldManifestLayerSource);
+            CollectionAssert.AreEqual(fromOldManifest.PngBytes, oldManifestAgain.PngBytes);
+        }
+        finally
+        {
+            Directory.Delete(storageRoot, recursive: true);
+        }
+    }
+
     private static string CreateTempStorageRoot()
     {
         var storageRoot = Path.Combine(Path.GetTempPath(), "cloud-icon-cache-tests", Guid.NewGuid().ToString("N"));

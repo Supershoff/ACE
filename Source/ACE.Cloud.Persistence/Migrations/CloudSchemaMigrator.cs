@@ -36,6 +36,7 @@ public static class CloudSchemaMigrator
         new AddAccountLinkingAndDisplayCharacter(),
         new AddAssetImportPipeline(),
         new AddCloudIconDiagnostics(),
+        new AddCloudIconDiagnosticManifestCorrelation(),
     ];
 
     /// <summary>

@@ -487,4 +487,57 @@ public sealed class CloudAssetImportBoundaryTests
 
         Assert.AreEqual(CloudBoundaryOutcomeKind.Conflict, outcome.Kind);
     }
+
+    [TestMethod]
+    public async Task ConcurrentReads_DuringManifestActivation_NeverObserveATornManifest()
+    {
+        // Issue #28's Red requirement: "Test concurrent reads during activation". Every manifest's
+        // entries are already fully committed at CompleteStagingAsync time, long before
+        // ActivateManifestAsync ever locks the pointer row -- so a concurrent reader racing the
+        // pointer swap must always observe either the complete previous manifest or the complete new
+        // one, never a manifest whose entries have not finished loading (ASSET-002: "the active
+        // manifest changes only after complete verified success").
+        var boundary = NewBoundary(out var context);
+        await using var _ = context;
+
+        var firstSession = await UploadFinalizeAndReachStagingAsync(boundary);
+        var firstManifest = (await boundary.CompleteStagingAsync(firstSession.Id, Guid.NewGuid(), SomeEntries())).Value!;
+        await boundary.ActivateManifestAsync(ShardId, CloudAssetKind.Portal, firstManifest.Version, 5);
+
+        var secondSession = (await boundary.ReprocessLatestRetainedAsync(ShardId, CloudAssetKind.Portal, 5)).Value!;
+        var secondManifest = (await boundary.CompleteStagingAsync(secondSession.Id, Guid.NewGuid(), SomeEntries(3))).Value!;
+
+        var readerOptions = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
+        var storageOptions = new CloudAssetStorageOptions { RootDirectory = _storageRoot, MaxTotalBytes = 10_000, MaxChunkSizeBytes = 1_000 };
+
+        var barrier = new SemaphoreSlim(0, 25);
+        var readTasks = Enumerable.Range(0, 25).Select(async _ =>
+        {
+            await using var readContext = new CloudDbContext(readerOptions);
+            var readBoundary = new CloudAssetImportBoundary(readContext, new LocalProtectedAssetBlobStore(storageOptions), storageOptions);
+            await barrier.WaitAsync();
+            return await readBoundary.GetActiveManifestAsync(ShardId, CloudAssetKind.Portal);
+        }).ToList();
+
+        var activateTask = Task.Run(async () =>
+        {
+            await Task.Delay(5);
+            return await boundary.ActivateManifestAsync(ShardId, CloudAssetKind.Portal, secondManifest.Version, 5);
+        });
+
+        barrier.Release(25);
+        var reads = await Task.WhenAll(readTasks);
+        var activation = await activateTask;
+
+        Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, activation.Kind);
+
+        foreach (var read in reads)
+        {
+            Assert.IsNotNull(read, "A concurrent reader must never see 'no active manifest' once one has already activated.");
+            Assert.IsTrue(read!.Id == firstManifest.Id || read.Id == secondManifest.Id, "A concurrent reader must observe one of the two real manifests, never a foreign or empty one.");
+
+            var expectedEntryCount = read.Id == firstManifest.Id ? firstManifest.EntryCount : secondManifest.EntryCount;
+            Assert.HasCount(expectedEntryCount, read.Entries, "A concurrent reader must never observe a manifest whose entries have not fully loaded.");
+        }
+    }
 }
