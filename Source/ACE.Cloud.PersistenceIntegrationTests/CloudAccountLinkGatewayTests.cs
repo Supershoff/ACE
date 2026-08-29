@@ -1,6 +1,7 @@
 using ACE.Cloud.Domain;
 using ACE.Cloud.Persistence;
 using Microsoft.EntityFrameworkCore;
+using MySqlConnector;
 
 namespace ACE.Cloud.PersistenceIntegrationTests;
 
@@ -184,6 +185,66 @@ public sealed class CloudAccountLinkGatewayTests
     }
 
     [TestMethod]
+    public async Task LinkAsync_AWithdrawalReservationCommitsMidTransaction_TheLinkIsRejectedAndTheReservationSurvivesUnaffected()
+    {
+        // AC Cloud Mule review of PR #120, finding [P1]: LinkAsync used to check pending obligations
+        // with a plain, unlocked read, then reassign ownership with a raw bulk UPDATE that never
+        // re-checked or locked the affected rows. A Withdrawal Reservation opened and committed in
+        // that window was silently orphaned by the reassignment: the reservation kept pointing at the
+        // source account while the custody record it exclusively held moved to the Main Account.
+        var options = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
+        var sourceOwnerId = CloudOwnerIdentity.ForAccount(ShardId, SourceAccountId);
+
+        var biotaId = NextId();
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, biotaId);
+
+        await using (var depositContext = new CloudDbContext(options))
+        {
+            var depositOutcome = await new CloudCustodyBoundary(depositContext).DepositAsync(biotaId, ShardId, sourceOwnerId, Guid.NewGuid());
+            Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, depositOutcome.Kind);
+        }
+
+        await using var holdConnection = new MySqlConnection(_fixture.CloudConnectionString);
+        await holdConnection.OpenAsync();
+        await using var holdTransaction = await holdConnection.BeginTransactionAsync();
+
+        // Holds the source's Cloud Custody Record row locked, uncommitted -- standing in for a
+        // Withdrawal Reservation attempt that is mid-flight for the exact same item LinkAsync is
+        // about to reassign.
+        await LockCustodyRecordRowAsync(holdConnection, holdTransaction, biotaId);
+
+        var linkTask = Task.Run(async () =>
+        {
+            await using var linkContext = new CloudDbContext(options);
+            return await new CloudAccountLinkGateway(linkContext).LinkAsync(ShardId, MainAccountId, SourceAccountId, Guid.NewGuid());
+        });
+
+        var completedEarly = await Task.WhenAny(linkTask, Task.Delay(TimeSpan.FromSeconds(2))) == linkTask;
+        Assert.IsFalse(
+            completedEarly,
+            "LinkAsync must serialize against a concurrent Withdrawal Reservation attempt for the source's Cloud Custody Record instead of racing past it.");
+
+        // The reservation now commits, strictly between LinkAsync's own obligations check and its
+        // reassignment of this exact row.
+        var tokenHash = Convert.ToHexString(Guid.NewGuid().ToByteArray());
+        await InsertWithdrawalReservationAsync(holdConnection, holdTransaction, biotaId, sourceOwnerId, tokenHash);
+        await holdTransaction.CommitAsync();
+
+        var outcome = await linkTask;
+
+        Assert.IsFalse(outcome.IsApproved, "A Withdrawal Reservation that commits mid-link must block the link instead of being silently orphaned by the reassignment.");
+        Assert.AreEqual(CloudAccountLinkRejectionCode.SourceHasPendingObligations, outcome.RejectionCode);
+
+        await using var verifyContext = new CloudDbContext(options);
+        var record = await verifyContext.CloudCustodyRecords.AsNoTracking().SingleAsync(r => r.BiotaId == biotaId);
+        Assert.AreEqual(sourceOwnerId, record.OwnerId, "A rejected link must never reassign the source's Cloud Custody Record.");
+
+        var reservation = await verifyContext.CloudWithdrawalReservations.AsNoTracking().SingleAsync(r => r.BiotaId == biotaId);
+        Assert.AreEqual(CloudReservationStatus.Active, reservation.Status);
+        Assert.AreEqual(sourceOwnerId, reservation.OwnerId);
+    }
+
+    [TestMethod]
     public async Task LinkAsync_WouldCreateAnActiveAuctionConflict_IsRejected()
     {
         var options = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
@@ -311,5 +372,71 @@ public sealed class CloudAccountLinkGatewayTests
         Assert.AreEqual(SourceAccountId, effective);
     }
 
+    [TestMethod]
+    public async Task GetOwnershipGroupAccountIdsAsync_NeverLinked_ReturnsOnlyTheAccountItself()
+    {
+        var options = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
+        await using var context = new CloudDbContext(options);
+
+        var groupAccountIds = await new CloudAccountLinkGateway(context).GetOwnershipGroupAccountIdsAsync(ShardId, SourceAccountId);
+
+        CollectionAssert.AreEquivalent(new[] { SourceAccountId }, groupAccountIds.ToArray());
+    }
+
+    [TestMethod]
+    public async Task GetOwnershipGroupAccountIdsAsync_QueriedFromEitherTheMainOrTheLinkedAccount_ReturnsTheWholeGroup()
+    {
+        // AC Cloud Mule review of PR #120, finding [P1]: Player_CloudWithdrawal.RedeemAsync used to
+        // compare a reservation's owner identity directly against the redeeming account's own raw
+        // identity, so a Withdrawal Token opened under one side of a link became unredeemable by a
+        // character on the other side. Both directions of this group query are what closes that gap.
+        var options = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
+
+        await using (var linkContext = new CloudDbContext(options))
+        {
+            var linkOutcome = await new CloudAccountLinkGateway(linkContext).LinkAsync(ShardId, MainAccountId, SourceAccountId, Guid.NewGuid());
+            Assert.IsTrue(linkOutcome.IsApproved);
+        }
+
+        await using var queryFromMainContext = new CloudDbContext(options);
+        var groupFromMain = await new CloudAccountLinkGateway(queryFromMainContext).GetOwnershipGroupAccountIdsAsync(ShardId, MainAccountId);
+        CollectionAssert.AreEquivalent(new[] { MainAccountId, SourceAccountId }, groupFromMain.ToArray());
+
+        await using var queryFromLinkedContext = new CloudDbContext(options);
+        var groupFromLinked = await new CloudAccountLinkGateway(queryFromLinkedContext).GetOwnershipGroupAccountIdsAsync(ShardId, SourceAccountId);
+        CollectionAssert.AreEquivalent(new[] { MainAccountId, SourceAccountId }, groupFromLinked.ToArray());
+    }
+
     private static uint NextId() => Interlocked.Increment(ref _nextId);
+
+    private static async Task LockCustodyRecordRowAsync(MySqlConnection connection, MySqlTransaction transaction, uint biotaId)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT * FROM CloudCustodyRecord WHERE BiotaId = @biotaId FOR UPDATE;";
+        command.Parameters.AddWithValue("@biotaId", biotaId);
+        await using var reader = await command.ExecuteReaderAsync();
+        await reader.ReadAsync();
+    }
+
+    private static async Task InsertWithdrawalReservationAsync(
+        MySqlConnection connection, MySqlTransaction transaction, uint biotaId, Guid ownerId, string tokenHash)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            INSERT INTO CloudWithdrawalReservation
+                (Id, ShardId, BiotaId, OwnerId, TokenHash, OpenIdempotencyKey, Status, Version, ExpiresAtUtc)
+            VALUES
+                (@id, @shardId, @biotaId, @ownerId, @tokenHash, @openIdempotencyKey, 'Active', 1, @expiresAtUtc);
+            """;
+        command.Parameters.AddWithValue("@id", Guid.NewGuid().ToString());
+        command.Parameters.AddWithValue("@shardId", ShardId);
+        command.Parameters.AddWithValue("@biotaId", biotaId);
+        command.Parameters.AddWithValue("@ownerId", ownerId.ToString());
+        command.Parameters.AddWithValue("@tokenHash", tokenHash);
+        command.Parameters.AddWithValue("@openIdempotencyKey", Guid.NewGuid().ToString());
+        command.Parameters.AddWithValue("@expiresAtUtc", DateTime.UtcNow.AddMinutes(15));
+        await command.ExecuteNonQueryAsync();
+    }
 }

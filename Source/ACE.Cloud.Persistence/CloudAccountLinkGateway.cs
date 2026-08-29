@@ -86,6 +86,16 @@ public sealed class CloudAccountLinkGateway
         var mainMarker = mainAccountId == firstId ? firstMarker : secondMarker;
         var sourceMarker = sourceAccountId == firstId ? firstMarker : secondMarker;
 
+        // Locks every Cloud Custody Record/Stack Lot the source currently owns for the rest of this
+        // transaction, before the pending-obligations check below reads them (transaction rule 2).
+        // CloudCustodyBoundary.ReserveForWithdrawalAsync/ReserveStackLotForWithdrawalAsync each lock
+        // that same row before opening a reservation, so this makes the two operations mutually
+        // exclusive: a reservation attempt racing this link either already committed (and is visible
+        // to the obligations check below) or blocks here until this transaction commits/rolls back --
+        // closing the window where a reservation opened between an unlocked obligations read and the
+        // later bulk reassignment could be silently orphaned by it.
+        await LockSourceCustodyRowsAsync(shardId, sourceAccountId, cancellationToken);
+
         var sourceHasLinkedAccounts = await SourceHasActiveChildrenAsync(shardId, sourceAccountId, cancellationToken);
         var sourceHasPendingObligations = await SourceHasPendingObligationsAsync(shardId, sourceAccountId, cancellationToken);
 
@@ -290,10 +300,85 @@ public sealed class CloudAccountLinkGateway
         return group.MainAccountId;
     }
 
+    /// <summary>
+    /// Returns every ACE account ID currently in the same ownership group as
+    /// <paramref name="accountId"/> -- its Main Account plus every other currently-active Linked
+    /// Account -- or just <paramref name="accountId"/> itself if it is neither an active Linked
+    /// Account nor a Main Account with any active children. Unlike
+    /// <see cref="ResolveEffectiveOwnerAccountIdAsync"/> (which only answers "where do this account's
+    /// own future deposits route"), this also covers the Main-Account-side membership check a caller
+    /// needs to decide "does this identity belong to *my* group at all" without ever comparing raw
+    /// ACE account IDs or a precomputed <see cref="CloudOwnerIdentity"/> directly -- see
+    /// <c>Player_CloudWithdrawal.RedeemAsync</c>'s Withdrawal Token ownership check, which must accept
+    /// a token whose reservation was opened under either the Main Account's or a Linked Account's
+    /// identity once the two are linked (CONTEXT.md: "redeemed by any character currently belonging
+    /// to the Main Account or one of its Linked Accounts").
+    /// </summary>
+    public async Task<IReadOnlyCollection<uint>> GetOwnershipGroupAccountIdsAsync(string shardId, uint accountId, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(shardId))
+        {
+            throw new ArgumentException("Resolving an ownership group requires a Cloud Shard ID.", nameof(shardId));
+        }
+
+        if (accountId == 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(accountId), "Resolving an ownership group requires a real account ID.");
+        }
+
+        var marker = await _context.Set<CloudActiveAccountLinkMarker>().AsNoTracking()
+            .SingleOrDefaultAsync(m => m.ShardId == shardId && m.AccountId == accountId, cancellationToken);
+
+        Guid groupId;
+        uint mainAccountId;
+        if (marker is not null)
+        {
+            var group = await _context.Set<CloudOwnershipGroup>().AsNoTracking()
+                .SingleAsync(g => g.Id == marker.OwnershipGroupId, cancellationToken);
+            groupId = group.Id;
+            mainAccountId = group.MainAccountId;
+        }
+        else
+        {
+            var group = await _context.Set<CloudOwnershipGroup>().AsNoTracking()
+                .SingleOrDefaultAsync(g => g.ShardId == shardId && g.MainAccountId == accountId, cancellationToken);
+            if (group is null)
+            {
+                return new[] { accountId };
+            }
+
+            groupId = group.Id;
+            mainAccountId = accountId;
+        }
+
+        var linkedAccountIds = await _context.Set<CloudActiveAccountLinkMarker>().AsNoTracking()
+            .Where(m => m.OwnershipGroupId == groupId)
+            .Select(m => m.AccountId)
+            .ToListAsync(cancellationToken);
+
+        linkedAccountIds.Add(mainAccountId);
+        return linkedAccountIds;
+    }
+
     private async Task<CloudActiveAccountLinkMarker?> LockActiveLinkMarkerAsync(string shardId, uint accountId, CancellationToken cancellationToken) =>
         await _context.Set<CloudActiveAccountLinkMarker>()
             .FromSqlInterpolated($"SELECT * FROM CloudActiveAccountLinkMarker WHERE ShardId = {shardId} AND AccountId = {accountId} FOR UPDATE")
             .SingleOrDefaultAsync(cancellationToken);
+
+    private async Task LockSourceCustodyRowsAsync(string shardId, uint sourceAccountId, CancellationToken cancellationToken)
+    {
+        var sourceOwnerId = CloudOwnerIdentity.ForAccount(shardId, sourceAccountId);
+
+        await _context.Set<CloudCustodyRecord>()
+            .FromSqlInterpolated($"SELECT * FROM CloudCustodyRecord WHERE OwnerId = {sourceOwnerId} AND TotalQuantity IS NULL FOR UPDATE")
+            .AsNoTracking()
+            .ToListAsync(cancellationToken);
+
+        await _context.Set<CloudStackLot>()
+            .FromSqlInterpolated($"SELECT * FROM CloudStackLot WHERE OwnerId = {sourceOwnerId} FOR UPDATE")
+            .AsNoTracking()
+            .ToListAsync(cancellationToken);
+    }
 
     private async Task<bool> SourceHasActiveChildrenAsync(string shardId, uint sourceAccountId, CancellationToken cancellationToken)
     {

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 
 using log4net;
@@ -84,9 +85,8 @@ namespace ACE.Server.WorldObjects
                     }
 
                     var tokenHash = CloudWithdrawalTokenHasher.Hash(tokenSecret);
-                    var ownerId = CloudOwnerIdentity.ForAccount(shardId, Session.AccountId);
 
-                    RedeemAsync(shardId, ownerId, tokenHash).GetAwaiter().GetResult();
+                    RedeemAsync(shardId, tokenHash).GetAwaiter().GetResult();
                 },
                 ex =>
                 {
@@ -117,7 +117,21 @@ namespace ACE.Server.WorldObjects
             }
         }
 
-        private async System.Threading.Tasks.Task RedeemAsync(string shardId, Guid ownerId, string tokenHash)
+        /// <summary>
+        /// WDR-002's ownership-group-aware "belongs to your account" check (AC Cloud Mule review of
+        /// PR #120, finding [P1]: comparing a reservation's owner identity directly against the
+        /// redeeming account's own identity rejected every redemption across a Main/Linked link, since
+        /// linking never rewrites an already-open reservation's <c>OwnerId</c>). True when any account
+        /// in <paramref name="groupAccountIds"/> -- the redeemer's current ownership group, resolved
+        /// by <see cref="CloudAccountLinkGateway.GetOwnershipGroupAccountIdsAsync"/> -- is the account
+        /// <paramref name="reservationOwnerId"/> was computed for. Kept pure and free of any live
+        /// Session/Player/database dependency so it is directly unit-testable (mirrors
+        /// <see cref="TryRunCloudWithdrawalRedeem"/>'s same seam).
+        /// </summary>
+        internal static bool BelongsToRedeemersOwnershipGroup(string shardId, Guid reservationOwnerId, IEnumerable<uint> groupAccountIds) =>
+            groupAccountIds.Any(groupAccountId => CloudOwnerIdentity.ForAccount(shardId, groupAccountId) == reservationOwnerId);
+
+        private async System.Threading.Tasks.Task RedeemAsync(string shardId, string tokenHash)
         {
             using var context = new CloudDbContext(CloudDbContextOptionsFactory.Create(CloudCustodianManager.BuildCloudConnectionString()));
             var boundary = new CloudCustodyBoundary(context);
@@ -133,12 +147,15 @@ namespace ACE.Server.WorldObjects
                 return;
             }
 
-            // WDR-002: "cannot be redeemed by an unrelated account." CloudOwnerIdentity is a
-            // deterministic placeholder for the eventual Main/Linked OwnershipGroup workstream
-            // (AUTH-001..010, not a dependency of this issue); today "the owner's group" is exactly
-            // the depositing ACE account, matching every other Cloud Mule feature built so far.
+            // WDR-002: "cannot be redeemed by an unrelated account," where CONTEXT.md defines "the
+            // owner's group" as the redeeming account's current Main/Linked ownership group
+            // (AUTH-005..009) -- not merely a byte-for-byte match against the redeeming account's own
+            // identity, since a reservation opened under either the Main Account's or a Linked
+            // Account's identity must remain redeemable by any character in that same group once the
+            // two are linked.
             var reservationOwnerId = wholeItemReservation?.OwnerId ?? stackLotReservation!.OwnerId;
-            if (reservationOwnerId != ownerId)
+            var groupAccountIds = await new CloudAccountLinkGateway(context).GetOwnershipGroupAccountIdsAsync(shardId, Session.AccountId);
+            if (!BelongsToRedeemersOwnershipGroup(shardId, reservationOwnerId, groupAccountIds))
             {
                 SendTransientError("That Withdrawal Token does not belong to your account.");
                 return;
