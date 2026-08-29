@@ -39,5 +39,20 @@ builder.Services.AddScoped(serviceProvider =>
 
 builder.Services.AddHostedService<CloudWorkerDiagnosticsHostedService>();
 
+var assetStorageOptions = new CloudAssetStorageOptions
+{
+    RootDirectory = workerOptions.AssetStorageRootDirectory,
+    MaxTotalBytes = workerOptions.AssetStorageMaxTotalBytes,
+    MaxChunkSizeBytes = workerOptions.AssetStorageMaxChunkSizeBytes,
+};
+builder.Services.AddSingleton(assetStorageOptions);
+builder.Services.AddSingleton<IProtectedAssetBlobStore>(new LocalProtectedAssetBlobStore(assetStorageOptions));
+builder.Services.AddSingleton<IPortalDatAssetExtractor, PortalDatAssetExtractor>();
+builder.Services.AddScoped(serviceProvider => new CloudAssetImportBoundary(
+    serviceProvider.GetRequiredService<CloudDbContext>(),
+    serviceProvider.GetRequiredService<IProtectedAssetBlobStore>(),
+    serviceProvider.GetRequiredService<CloudAssetStorageOptions>()));
+builder.Services.AddHostedService<CloudAssetImportStagingWorker>();
+
 var host = builder.Build();
 host.Run();

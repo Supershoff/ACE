@@ -80,6 +80,22 @@ public sealed class CloudDbContext : DbContext
 
     public DbSet<CloudDisplayCharacterSelectionHistoryEvent> CloudDisplayCharacterSelectionHistoryEvents => Set<CloudDisplayCharacterSelectionHistoryEvent>();
 
+    public DbSet<CloudAssetImportSession> CloudAssetImportSessions => Set<CloudAssetImportSession>();
+
+    public DbSet<CloudAssetImportChunkRecord> CloudAssetImportChunkRecords => Set<CloudAssetImportChunkRecord>();
+
+    public DbSet<CloudAssetImportCurrentSessionMarker> CloudAssetImportCurrentSessionMarkers => Set<CloudAssetImportCurrentSessionMarker>();
+
+    public DbSet<CloudAssetManifest> CloudAssetManifests => Set<CloudAssetManifest>();
+
+    public DbSet<CloudAssetManifestEntryRecord> CloudAssetManifestEntryRecords => Set<CloudAssetManifestEntryRecord>();
+
+    public DbSet<CloudActiveAssetManifest> CloudActiveAssetManifests => Set<CloudActiveAssetManifest>();
+
+    public DbSet<CloudRetainedSourceAsset> CloudRetainedSourceAssets => Set<CloudRetainedSourceAsset>();
+
+    public DbSet<CloudAssetImportLedgerEvent> CloudAssetImportLedgerEvents => Set<CloudAssetImportLedgerEvent>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<CloudShardBinding>(entity =>
@@ -1031,6 +1047,267 @@ public sealed class CloudDbContext : DbContext
             entity.Property(evt => evt.CharacterId);
             entity.Property(evt => evt.CharacterName).HasMaxLength(64);
             entity.Property(evt => evt.TotalLogins);
+
+            entity.Property(evt => evt.OccurredAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAdd()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudAssetImportSession>(entity =>
+        {
+            entity.ToTable("CloudAssetImportSession");
+
+            entity.HasKey(session => session.Id);
+            entity.Property(session => session.Id).ValueGeneratedNever();
+
+            entity.Property(session => session.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(session => session.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(session => session.Kind).IsRequired().HasConversion<string>().HasMaxLength(16);
+            entity.Property(session => session.TotalBytes).IsRequired();
+            entity.Property(session => session.ChunkSizeBytes).IsRequired();
+            entity.Property(session => session.ChunkCount).IsRequired();
+            entity.Property(session => session.ExpectedChecksumHex).IsRequired().HasMaxLength(64);
+            entity.Property(session => session.InitiatedByAccountId).IsRequired();
+            entity.Property(session => session.State).IsRequired().HasConversion<string>().HasMaxLength(24);
+            entity.Property(session => session.ReceivedChunkCount).IsRequired();
+
+            // Not a foreign key: CloudAssetManifest.SourceImportSessionId already references this
+            // session in the other direction (this migration's doc comment explains why both
+            // directions cannot be enforced FKs simultaneously).
+            entity.Property(session => session.ManifestId);
+
+            entity.Property(session => session.ErrorMessage).HasMaxLength(1024);
+            entity.Property(session => session.Version).IsRequired();
+
+            entity.HasIndex(session => new { session.ShardId, session.Kind, session.State });
+
+            entity.Property(session => session.CreatedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAdd()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+            entity.Property(session => session.UpdatedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAddOrUpdate()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudAssetImportChunkRecord>(entity =>
+        {
+            entity.ToTable("CloudAssetImportChunkRecord");
+
+            entity.HasKey(chunk => new { chunk.SessionId, chunk.ChunkIndex });
+
+            entity.Property(chunk => chunk.SessionId).IsRequired();
+            entity.HasOne<CloudAssetImportSession>()
+                .WithMany()
+                .HasForeignKey(chunk => chunk.SessionId)
+                .HasPrincipalKey(session => session.Id)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(chunk => chunk.ChunkIndex).IsRequired();
+            entity.Property(chunk => chunk.Sha256Hex).IsRequired().HasMaxLength(64);
+            entity.Property(chunk => chunk.ByteLength).IsRequired();
+
+            entity.Property(chunk => chunk.ReceivedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAdd()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudAssetImportCurrentSessionMarker>(entity =>
+        {
+            entity.ToTable("CloudAssetImportCurrentSessionMarker");
+
+            entity.HasKey(marker => new { marker.ShardId, marker.Kind });
+
+            entity.Property(marker => marker.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(marker => marker.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(marker => marker.Kind).IsRequired().HasConversion<string>().HasMaxLength(16);
+
+            entity.Property(marker => marker.SessionId).IsRequired();
+            entity.HasIndex(marker => marker.SessionId);
+            entity.HasOne<CloudAssetImportSession>()
+                .WithMany()
+                .HasForeignKey(marker => marker.SessionId)
+                .HasPrincipalKey(session => session.Id)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(marker => marker.UpdatedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAddOrUpdate()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudAssetManifest>(entity =>
+        {
+            entity.ToTable("CloudAssetManifest");
+
+            entity.HasKey(manifest => manifest.Id);
+            entity.Property(manifest => manifest.Id).ValueGeneratedNever();
+
+            entity.Property(manifest => manifest.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(manifest => manifest.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(manifest => manifest.Kind).IsRequired().HasConversion<string>().HasMaxLength(16);
+            entity.Property(manifest => manifest.Version).IsRequired();
+            entity.HasIndex(manifest => new { manifest.ShardId, manifest.Kind, manifest.Version }).IsUnique();
+
+            entity.Property(manifest => manifest.State).IsRequired().HasConversion<string>().HasMaxLength(16);
+
+            entity.Property(manifest => manifest.SourceImportSessionId).IsRequired();
+            entity.HasOne<CloudAssetImportSession>()
+                .WithMany()
+                .HasForeignKey(manifest => manifest.SourceImportSessionId)
+                .HasPrincipalKey(session => session.Id)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(manifest => manifest.EntryCount).IsRequired();
+
+            entity.Property(manifest => manifest.CreatedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAdd()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+            entity.Property(manifest => manifest.ActivatedAtUtc);
+            entity.Property(manifest => manifest.SupersededAtUtc);
+        });
+
+        modelBuilder.Entity<CloudAssetManifestEntryRecord>(entity =>
+        {
+            entity.ToTable("CloudAssetManifestEntryRecord");
+
+            entity.HasKey(entry => new { entry.ManifestId, entry.Did, entry.FileKind });
+
+            entity.Property(entry => entry.ManifestId).IsRequired();
+            entity.HasOne<CloudAssetManifest>()
+                .WithMany()
+                .HasForeignKey(entry => entry.ManifestId)
+                .HasPrincipalKey(manifest => manifest.Id)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(entry => entry.Did).IsRequired();
+            entity.Property(entry => entry.FileKind).IsRequired().HasConversion<string>().HasMaxLength(16);
+            entity.Property(entry => entry.RelativePath).IsRequired().HasMaxLength(255);
+            entity.Property(entry => entry.ByteLength).IsRequired();
+            entity.Property(entry => entry.Sha256Hex).IsRequired().HasMaxLength(64);
+        });
+
+        modelBuilder.Entity<CloudActiveAssetManifest>(entity =>
+        {
+            entity.ToTable("CloudActiveAssetManifest");
+
+            entity.HasKey(pointer => new { pointer.ShardId, pointer.Kind });
+
+            entity.Property(pointer => pointer.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(pointer => pointer.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(pointer => pointer.Kind).IsRequired().HasConversion<string>().HasMaxLength(16);
+
+            entity.Property(pointer => pointer.ManifestId).IsRequired();
+            entity.HasOne<CloudAssetManifest>()
+                .WithMany()
+                .HasForeignKey(pointer => pointer.ManifestId)
+                .HasPrincipalKey(manifest => manifest.Id)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(pointer => pointer.ManifestVersion).IsRequired();
+
+            entity.Property(pointer => pointer.UpdatedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAddOrUpdate()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudRetainedSourceAsset>(entity =>
+        {
+            entity.ToTable("CloudRetainedSourceAsset");
+
+            entity.HasKey(retained => new { retained.ShardId, retained.Kind });
+
+            entity.Property(retained => retained.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(retained => retained.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(retained => retained.Kind).IsRequired().HasConversion<string>().HasMaxLength(16);
+            entity.Property(retained => retained.RelativePath).IsRequired().HasMaxLength(255);
+            entity.Property(retained => retained.ByteLength).IsRequired();
+            entity.Property(retained => retained.Sha256Hex).IsRequired().HasMaxLength(64);
+
+            entity.Property(retained => retained.SourceImportSessionId).IsRequired();
+            entity.HasOne<CloudAssetImportSession>()
+                .WithMany()
+                .HasForeignKey(retained => retained.SourceImportSessionId)
+                .HasPrincipalKey(session => session.Id)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(retained => retained.RetainedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAddOrUpdate()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudAssetImportLedgerEvent>(entity =>
+        {
+            entity.ToTable("CloudAssetImportLedgerEvent");
+
+            entity.HasKey(evt => evt.Id);
+            entity.Property(evt => evt.Id).ValueGeneratedNever();
+
+            entity.Property(evt => evt.CorrelationId).IsRequired();
+            entity.HasIndex(evt => evt.CorrelationId);
+
+            entity.Property(evt => evt.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(evt => evt.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(evt => evt.Kind).IsRequired().HasConversion<string>().HasMaxLength(16);
+            entity.HasIndex(evt => new { evt.ShardId, evt.Kind });
+
+            entity.Property(evt => evt.EventType).IsRequired().HasConversion<string>().HasMaxLength(32);
+
+            entity.Property(evt => evt.SessionId);
+            entity.HasOne<CloudAssetImportSession>()
+                .WithMany()
+                .HasForeignKey(evt => evt.SessionId)
+                .HasPrincipalKey(session => session.Id)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(evt => evt.ManifestId);
+            entity.HasOne<CloudAssetManifest>()
+                .WithMany()
+                .HasForeignKey(evt => evt.ManifestId)
+                .HasPrincipalKey(manifest => manifest.Id)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(evt => evt.ManifestVersion);
+            entity.Property(evt => evt.AdminAccountId).IsRequired();
+            entity.Property(evt => evt.Reason).HasMaxLength(512);
 
             entity.Property(evt => evt.OccurredAtUtc)
                 .IsRequired()

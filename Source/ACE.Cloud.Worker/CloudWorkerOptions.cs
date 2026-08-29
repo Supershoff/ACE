@@ -20,4 +20,17 @@ public sealed class CloudWorkerOptions
     public string DatabaseServerVersion { get; init; } = "11.4.2-mariadb";
 
     public TimeSpan DiagnosticsInterval { get; init; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// The absolute path under which Asset Import protected storage lives (ASSET-002). Must match
+    /// the Backend's own <c>CloudAssetStorage:RootDirectory</c> setting -- both processes read and
+    /// write the same protected files.
+    /// </summary>
+    public required string AssetStorageRootDirectory { get; init; }
+
+    public long AssetStorageMaxTotalBytes { get; init; } = 4L * 1024 * 1024 * 1024;
+
+    public int AssetStorageMaxChunkSizeBytes { get; init; } = 32 * 1024 * 1024;
+
+    public TimeSpan AssetImportPollInterval { get; init; } = TimeSpan.FromSeconds(10);
 }

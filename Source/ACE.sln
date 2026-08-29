@@ -102,6 +102,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ACE.Cloud.AuthBridge.Tests"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ACE.Cloud.Backend.Tests", "ACE.Cloud.Backend.Tests\ACE.Cloud.Backend.Tests.csproj", "{E7E2615A-B46F-47C0-B88D-574017576CF9}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ACE.Cloud.Worker.Tests", "ACE.Cloud.Worker.Tests\ACE.Cloud.Worker.Tests.csproj", "{CD0EFE46-284C-4DD1-8E5A-31A349CB68D4}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -436,6 +438,18 @@ Global
 		{E7E2615A-B46F-47C0-B88D-574017576CF9}.Release|Any CPU.Build.0 = Release|Any CPU
 		{E7E2615A-B46F-47C0-B88D-574017576CF9}.Release|x86.ActiveCfg = Release|Any CPU
 		{E7E2615A-B46F-47C0-B88D-574017576CF9}.Release|x86.Build.0 = Release|Any CPU
+		{CD0EFE46-284C-4DD1-8E5A-31A349CB68D4}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{CD0EFE46-284C-4DD1-8E5A-31A349CB68D4}.Debug|x64.Build.0 = Debug|Any CPU
+		{CD0EFE46-284C-4DD1-8E5A-31A349CB68D4}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{CD0EFE46-284C-4DD1-8E5A-31A349CB68D4}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{CD0EFE46-284C-4DD1-8E5A-31A349CB68D4}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{CD0EFE46-284C-4DD1-8E5A-31A349CB68D4}.Debug|x86.Build.0 = Debug|Any CPU
+		{CD0EFE46-284C-4DD1-8E5A-31A349CB68D4}.Release|x64.ActiveCfg = Release|Any CPU
+		{CD0EFE46-284C-4DD1-8E5A-31A349CB68D4}.Release|x64.Build.0 = Release|Any CPU
+		{CD0EFE46-284C-4DD1-8E5A-31A349CB68D4}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{CD0EFE46-284C-4DD1-8E5A-31A349CB68D4}.Release|Any CPU.Build.0 = Release|Any CPU
+		{CD0EFE46-284C-4DD1-8E5A-31A349CB68D4}.Release|x86.ActiveCfg = Release|Any CPU
+		{CD0EFE46-284C-4DD1-8E5A-31A349CB68D4}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

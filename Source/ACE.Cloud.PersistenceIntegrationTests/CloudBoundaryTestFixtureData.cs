@@ -41,6 +41,14 @@ internal static class CloudBoundaryTestFixtureData
         "CloudStackLot",
         "CloudFrozenEnchantment",
         "CloudCustodyRecord",
+        "CloudAssetImportLedgerEvent",
+        "CloudRetainedSourceAsset",
+        "CloudActiveAssetManifest",
+        "CloudAssetManifestEntryRecord",
+        "CloudAssetManifest",
+        "CloudAssetImportCurrentSessionMarker",
+        "CloudAssetImportChunkRecord",
+        "CloudAssetImportSession",
         "CloudShardBinding",
     ];
 

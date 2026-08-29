@@ -34,6 +34,7 @@ public static class CloudSchemaMigrator
         new AddIdentityAllegianceOutboxAndVaultGuard(),
         new AddCloudWebSessionsAndGrantConsumption(),
         new AddAccountLinkingAndDisplayCharacter(),
+        new AddAssetImportPipeline(),
     ];
 
     /// <summary>
