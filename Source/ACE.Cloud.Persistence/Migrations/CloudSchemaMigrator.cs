@@ -33,6 +33,7 @@ public static class CloudSchemaMigrator
         new AddWithdrawalRedemptionSupport(),
         new AddIdentityAllegianceOutboxAndVaultGuard(),
         new AddCloudWebSessionsAndGrantConsumption(),
+        new AddAccountLinkingAndDisplayCharacter(),
     ];
 
     /// <summary>

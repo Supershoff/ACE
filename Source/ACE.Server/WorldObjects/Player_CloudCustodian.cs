@@ -41,6 +41,12 @@ namespace ACE.Server.WorldObjects
         {
             var shardId = ConfigManager.Config.CloudMule.ShardId;
 
+            // AUTH-005: a Linked Account's deposits route to its Main Account's Cloud Inventory
+            // instead of its own. Resolved once per submission (every row in this submission is the
+            // same depositing account) rather than superseding CloudOwnerIdentity.ForAccount's own
+            // per-row placeholder call in PrepareCloudDepositRow.
+            var depositAccountId = ResolveEffectiveDepositAccountId(shardId);
+
             var allPossessions = GetAllPossessions();
             var possessionsByGuid = new Dictionary<uint, WorldObject>();
             foreach (var wo in allPossessions)
@@ -81,7 +87,7 @@ namespace ACE.Server.WorldObjects
                     continue;
                 }
 
-                var pending = PrepareCloudDepositRow(item, decision, shardId);
+                var pending = PrepareCloudDepositRow(item, decision, shardId, depositAccountId);
                 if (pending != null)
                 {
                     pendingDeposits.Add(pending);
@@ -122,7 +128,7 @@ namespace ACE.Server.WorldObjects
         /// stalled the whole world tick for the cumulative round-trip time of every row in the
         /// submission).
         /// </summary>
-        private PendingCloudDeposit PrepareCloudDepositRow(WorldObject item, CloudCustodianDepositRowDecision decision, string shardId)
+        private PendingCloudDeposit PrepareCloudDepositRow(WorldObject item, CloudCustodianDepositRowDecision decision, string shardId, uint depositAccountId)
         {
             // Equipped items are already rejected by eligibility (DEP-003:
             // CloudEligibilityRejectionCode.MustBeInOrdinaryInventory) before this method is ever
@@ -138,8 +144,37 @@ namespace ACE.Server.WorldObjects
                 item,
                 decision,
                 shardId,
-                CloudOwnerIdentity.ForAccount(shardId, Session.AccountId),
+                CloudOwnerIdentity.ForAccount(shardId, depositAccountId),
                 CloudOwnerIdentity.DepositIdempotencyKey(shardId, item.Guid.Full));
+        }
+
+        /// <summary>
+        /// Resolves the account whose Cloud owner identity this submission's deposits should use
+        /// (AUTH-005): <see cref="Session.AccountId"/>'s current Main Account if it is an active
+        /// Linked Account, otherwise <see cref="Session.AccountId"/> itself. This read runs in its
+        /// own short transaction, separate from each row's own deposit commit
+        /// (<see cref="DepositRowToCloudAsync"/>); a link or unlink that commits in the narrow window
+        /// between this read and a row's own commit can still resolve to the pre-change owner for
+        /// that one row -- closing that fully belongs to a future change that moves this resolution
+        /// inside <see cref="CloudCustodyBoundary"/>'s own locked deposit transaction (see
+        /// <see cref="CloudAccountLinkGateway.ResolveEffectiveOwnerAccountIdAsync"/>'s doc comment).
+        /// Falls back to <see cref="Session.AccountId"/> itself if the Cloud database cannot be
+        /// reached, so a transient Cloud outage degrades to "deposit under my own account" rather
+        /// than blocking the deposit entirely.
+        /// </summary>
+        private uint ResolveEffectiveDepositAccountId(string shardId)
+        {
+            try
+            {
+                using var context = new CloudDbContext(CloudDbContextOptionsFactory.Create(CloudCustodianManager.BuildCloudConnectionString()));
+                var gateway = new CloudAccountLinkGateway(context);
+                return gateway.ResolveEffectiveOwnerAccountIdAsync(shardId, Session.AccountId).GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                cloudCustodianLog.Error($"[CLOUD CUSTODIAN] Resolving the effective deposit account for player {Name} threw.", ex);
+                return Session.AccountId;
+            }
         }
 
         /// <summary>
