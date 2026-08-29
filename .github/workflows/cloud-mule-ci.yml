@@ -41,6 +41,10 @@ jobs:
         shell: bash
         run: bash .github/scripts/validate-cloud-mule-orchestrator-contract.sh
 
+      - name: Validate Claude implementation recovery
+        shell: bash
+        run: bash .github/scripts/validate-cloud-mule-implementation-recovery-contract.sh
+
       - name: Reject private deployment data and require an issue link
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -193,7 +197,9 @@ jobs:
           if [ "${POLICY_RESULT}" = success ] && [ "${DOTNET_RESULT}" = success ] && [ "${WEB_RESULT}" = success ]; then
             gh workflow run claude-review.yml --repo "${GITHUB_REPOSITORY}" --ref master \
               -f head_branch="${HEAD_BRANCH}" -f tested_sha="${TESTED_SHA}"
-          else
+          elif [ "${POLICY_RESULT}" = failure ] || [ "${DOTNET_RESULT}" = failure ] || [ "${WEB_RESULT}" = failure ]; then
             gh workflow run claude-ci-repair.yml --repo "${GITHUB_REPOSITORY}" --ref master \
               -f head_branch="${HEAD_BRANCH}" -f failed_sha="${TESTED_SHA}" -f failed_run_id="${FAILED_RUN_ID}"
+          else
+            echo "CI did not complete with a code failure (policy=${POLICY_RESULT}, dotnet=${DOTNET_RESULT}, web=${WEB_RESULT}); leaving recovery to the reconciler."
           fi
