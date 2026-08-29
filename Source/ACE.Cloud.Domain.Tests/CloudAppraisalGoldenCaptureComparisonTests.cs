@@ -1,5 +1,3 @@
-using System.Text.Json;
-
 namespace ACE.Cloud.Domain.Tests;
 
 /// <summary>
@@ -40,18 +38,13 @@ public sealed class CloudAppraisalGoldenCaptureComparisonTests
             return;
         }
 
-        var captureFiles = Directory.GetFiles(captureDirectory, "*.appraisal.json", SearchOption.TopDirectoryOnly);
-        if (captureFiles.Length == 0)
+        if (Directory.GetFiles(captureDirectory, "*.appraisal.json", SearchOption.TopDirectoryOnly).Length == 0)
         {
             Assert.Inconclusive($"No *.appraisal.json fixture files were found under {captureDirectory}.");
             return;
         }
 
-        var fixtures = captureFiles
-            .OrderBy(path => path, StringComparer.Ordinal)
-            .Select(path => JsonSerializer.Deserialize<CloudAppraisalGoldenFixture>(File.ReadAllText(path))
-                ?? throw new InvalidDataException($"{path} did not deserialize to a CloudAppraisalGoldenFixture."))
-            .ToList();
+        var fixtures = CloudGoldenFixtureLoader.LoadFromDirectory<CloudAppraisalGoldenFixture>(captureDirectory, "*.appraisal.json");
 
         var report = CloudAppraisalGoldenComparisonHarness.Compare(fixtures);
 

@@ -33,7 +33,7 @@ public static class CloudIconCompositor
         {
             if (layer.IsUnresolvable)
             {
-                diagnostics.Add(new CloudIconCompositionDiagnostic(layer, CloudIconLayerResolutionOutcomeKind.Missing));
+                diagnostics.Add(new CloudIconCompositionDiagnostic(layer, CloudIconLayerResolutionOutcomeKind.Missing, manifestVersion));
                 continue;
             }
 
@@ -42,14 +42,14 @@ public static class CloudIconCompositor
 
             if (resolution.Outcome != CloudIconLayerResolutionOutcomeKind.Resolved)
             {
-                diagnostics.Add(new CloudIconCompositionDiagnostic(layer, resolution.Outcome));
+                diagnostics.Add(new CloudIconCompositionDiagnostic(layer, resolution.Outcome, manifestVersion));
                 continue;
             }
 
             if (resolvedRasters.Count > 0
                 && (resolution.Raster!.Width != resolvedRasters[0].Width || resolution.Raster.Height != resolvedRasters[0].Height))
             {
-                diagnostics.Add(new CloudIconCompositionDiagnostic(layer, CloudIconLayerResolutionOutcomeKind.Corrupt));
+                diagnostics.Add(new CloudIconCompositionDiagnostic(layer, CloudIconLayerResolutionOutcomeKind.Corrupt, manifestVersion));
                 continue;
             }
 

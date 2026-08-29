@@ -7,7 +7,9 @@ namespace ACE.Cloud.Persistence;
 /// administrator-visible diagnostic"). Rows are identified by (<see cref="ShardId"/>,
 /// <see cref="DedupeKey"/>) -- <see cref="CloudIconCompositionDiagnostic.DedupeKey"/> -- so a
 /// repeatedly requested broken reference grows one row's <see cref="OccurrenceCount"/> instead of
-/// producing one new row per render attempt.
+/// producing one new row per render attempt. <see cref="LastSeenManifestVersion"/> is issue #28's
+/// "item/manifest correlation" evidence: it never participates in dedup identity, but always reflects
+/// which Asset Manifest version most recently reproduced this exact diagnostic.
 /// </summary>
 public sealed class CloudIconDiagnostic
 {
@@ -38,6 +40,7 @@ public sealed class CloudIconDiagnostic
         OccurrenceCount = 1;
         FirstSeenAtUtc = nowUtc;
         LastSeenAtUtc = nowUtc;
+        LastSeenManifestVersion = diagnostic.ManifestVersion;
     }
 
     public Guid Id { get; private set; }
@@ -57,4 +60,6 @@ public sealed class CloudIconDiagnostic
     public DateTime FirstSeenAtUtc { get; private set; }
 
     public DateTime LastSeenAtUtc { get; private set; }
+
+    public int? LastSeenManifestVersion { get; private set; }
 }
