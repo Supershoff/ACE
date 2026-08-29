@@ -18,19 +18,20 @@ using ACE.Server.Managers;
 namespace ACE.Server.WorldObjects
 {
     /// <summary>
-    /// The world-thread Withdrawal Token redemption handler (AC Cloud Mule issue #16, WDR-001..
+    /// The world-thread Withdrawal Token redemption handler (AC Cloud Mule issues #16/#122, WDR-001..
     /// WDR-008, INV-002, INV-003, ARCH-002). A Withdrawal Token is created off-world (a web selection,
-    /// WDR-001) through <see cref="CloudCustodyBoundary.ReserveForWithdrawalAsync"/> or
-    /// <see cref="CloudCustodyBoundary.ReserveStackLotForWithdrawalAsync"/>; this class is exclusively
-    /// what redeems it, because only ACE may materialize/deliver a Cloud Item back to the playable
-    /// world (ARCH-002).
+    /// WDR-001) through <see cref="CloudCustodyBoundary.ReserveForWithdrawalAsync(System.Collections.Generic.IReadOnlyList{CloudWithdrawalReservationRequestTarget}, string, Guid, string, TimeSpan, Guid, System.Threading.CancellationToken)"/>,
+    /// naming any mix of whole Cloud Items and Cloud Stack Lots; this class is exclusively what
+    /// redeems it, because only ACE may materialize/deliver a Cloud Item back to the playable world
+    /// (ARCH-002).
     ///
     /// Redemption order matters (WDR-003: "failures deliver nothing and retain a retryable
     /// reservation"): every safe-state (WDR-004), location (WDR-006), and native-receive capacity
-    /// (WDR-005) check runs and must pass <em>before</em> the Cloud persistence boundary is ever
-    /// called, so a rejected redemption never touches the reservation's custody-to-world transition at
-    /// all. Only after that boundary call commits does this class place and network the delivered item
-    /// through ACE's ordinary <see cref="Player_Inventory.TryCreateInInventoryWithNetworking(WorldObject)"/>
+    /// (WDR-005) check runs -- across the <em>entire</em> mixed selection at once, not target by
+    /// target -- and must pass <em>before</em> the Cloud persistence boundary is ever called, so a
+    /// rejected redemption never touches any target's custody-to-world transition at all. Only after
+    /// that boundary call commits does this class place and network every delivered item through
+    /// ACE's ordinary <see cref="Player_Inventory.TryCreateInInventoryWithNetworking(WorldObject)"/>
     /// receive path -- the same slots/burden/side-pack placement every other ordinary item transfer
     /// uses.
     /// </summary>
@@ -136,12 +137,8 @@ namespace ACE.Server.WorldObjects
             using var context = new CloudDbContext(CloudDbContextOptionsFactory.Create(CloudCustodianManager.BuildCloudConnectionString()));
             var boundary = new CloudCustodyBoundary(context);
 
-            var wholeItemReservation = await boundary.TryGetActiveWithdrawalReservationAsync(tokenHash);
-            var stackLotReservation = wholeItemReservation is null
-                ? await boundary.TryGetActiveStackLotWithdrawalReservationAsync(tokenHash)
-                : null;
-
-            if (wholeItemReservation is null && stackLotReservation is null)
+            var reservation = await boundary.TryGetActiveWithdrawalReservationAsync(tokenHash);
+            if (reservation is null)
             {
                 SendTransientError("That Withdrawal Token is invalid, expired, or already used.");
                 return;
@@ -153,159 +150,133 @@ namespace ACE.Server.WorldObjects
             // identity, since a reservation opened under either the Main Account's or a Linked
             // Account's identity must remain redeemable by any character in that same group once the
             // two are linked.
-            var reservationOwnerId = wholeItemReservation?.OwnerId ?? stackLotReservation!.OwnerId;
             var groupAccountIds = await new CloudAccountLinkGateway(context).GetOwnershipGroupAccountIdsAsync(shardId, Session.AccountId);
-            if (!BelongsToRedeemersOwnershipGroup(shardId, reservationOwnerId, groupAccountIds))
+            if (!BelongsToRedeemersOwnershipGroup(shardId, reservation.OwnerId, groupAccountIds))
             {
                 SendTransientError("That Withdrawal Token does not belong to your account.");
                 return;
             }
 
-            if (wholeItemReservation is not null)
+            var previews = await boundary.PreviewWithdrawalReservationAsync(tokenHash);
+            if (previews is null || previews.Count == 0)
             {
-                await RedeemWholeItemAsync(boundary, tokenHash, wholeItemReservation);
-            }
-            else
-            {
-                await RedeemStackLotAsync(boundary, tokenHash, stackLotReservation!);
-            }
-        }
-
-        private async System.Threading.Tasks.Task RedeemWholeItemAsync(
-            CloudCustodyBoundary boundary, string tokenHash, CloudWithdrawalReservation reservation)
-        {
-            var biota = DatabaseManager.Shard.BaseDatabase.GetBiota(reservation.BiotaId);
-            if (biota is null)
-            {
-                SendTransientError("That Withdrawal Token's item could not be found.");
+                SendTransientError("That Withdrawal Token's item(s) could not be found.");
                 return;
             }
 
-            var prospectiveItem = WorldObjectFactory.CreateWorldObject(biota);
-            if (!PassesNativeReceiveCapacityCheck(prospectiveItem))
-            {
-                return;
-            }
+            // Every target's prospective delivered item is built up front so the native-receive
+            // capacity check below can validate the *entire* mixed selection at once (WDR-005): two
+            // items that would each individually fit can still combine to exceed available slots or
+            // burden. Any Cloud Stack Lot target that is not the sole lot on its stack needs a freshly
+            // ACE-allocated child GUID (ARCH-010) before that check even runs; every allocation is
+            // tracked so it can be recycled if this redemption does not end up using it.
+            var prospectiveItems = new List<WorldObject>(previews.Count);
+            var materializedBiotaIdsByTargetId = new Dictionary<Guid, uint>();
+            var allocatedGuids = new List<ObjectGuid>();
 
-            var outcome = await boundary.RedeemWithdrawalReservationAsync(tokenHash, Guid.Full, System.Guid.NewGuid());
-            if (outcome.Kind != CloudBoundaryOutcomeKind.Committed)
+            foreach (var preview in previews)
             {
-                cloudWithdrawalLog.Warn($"[CLOUD WITHDRAWAL] Whole-item redemption for player {Name} was not committed: {outcome.Reason}");
-                SendTransientError(outcome.Reason ?? "That Withdrawal Token could not be redeemed. Please try again.");
-                return;
-            }
+                var backingBiota = DatabaseManager.Shard.BaseDatabase.GetBiota(preview.BackingBiotaId);
+                if (backingBiota is null)
+                {
+                    RecycleAllocatedGuids(allocatedGuids);
+                    SendTransientError("That Withdrawal Token's item could not be found.");
+                    return;
+                }
 
-            DeliverRedeemedItem(outcome.Value!.BiotaId);
-        }
+                if (!preview.RequiresMaterialization)
+                {
+                    prospectiveItems.Add(WorldObjectFactory.CreateWorldObject(backingBiota));
+                    continue;
+                }
 
-        private async System.Threading.Tasks.Task RedeemStackLotAsync(
-            CloudCustodyBoundary boundary, string tokenHash, CloudStackLotWithdrawalReservation reservation)
-        {
-            var preview = await boundary.PreviewStackLotWithdrawalAsync(reservation.LotId);
-            if (preview is null)
-            {
-                SendTransientError("That Withdrawal Token's item could not be found.");
-                return;
-            }
-
-            var originalBiota = DatabaseManager.Shard.BaseDatabase.GetBiota(preview.BackingBiotaId);
-            if (originalBiota is null)
-            {
-                SendTransientError("That Withdrawal Token's item could not be found.");
-                return;
-            }
-
-            // Informational only (CloudStackLotWithdrawalPreview's doc comment): used solely to decide
-            // whether to pre-allocate a materialized child GUID (ARCH-010) and to build a capacity
-            // pre-check representative of the actually delivered item. RedeemStackLotWithdrawalReservationAsync
-            // re-derives the real answer fresh under its own row lock and refuses the request if this
-            // guess turns out wrong -- a legitimate, retryable Conflict, never a custody violation.
-            uint? materializedBiotaId = null;
-            WorldObject prospectiveItem;
-
-            if (preview.IsSoleLotOnStack)
-            {
-                prospectiveItem = WorldObjectFactory.CreateWorldObject(originalBiota);
-            }
-            else
-            {
-                var originalItem = WorldObjectFactory.CreateWorldObject(originalBiota);
+                // Informational only (CloudWithdrawalReservationTargetPreview's doc comment): used
+                // solely to decide whether to pre-allocate a materialized child GUID and to build a
+                // capacity pre-check representative of the actually delivered item.
+                // RedeemWithdrawalReservationAsync re-derives the real answer fresh under its own row
+                // locks and refuses the request if this guess turns out wrong -- a legitimate,
+                // retryable Conflict, never a custody violation.
+                var originalItem = WorldObjectFactory.CreateWorldObject(backingBiota);
                 var weenie = DatabaseManager.World.GetCachedWeenie(originalItem.WeenieClassId);
                 if (weenie is null)
                 {
+                    RecycleAllocatedGuids(allocatedGuids);
                     SendTransientError("That Withdrawal Token's item could not be found.");
                     return;
                 }
 
                 var guid = GuidManager.NewDynamicGuid();
-                materializedBiotaId = guid.Full;
-                prospectiveItem = WorldObjectFactory.CreateWorldObject(weenie, guid);
-                prospectiveItem.SetProperty(PropertyInt.StackSize, reservation.Quantity);
+                allocatedGuids.Add(guid);
+                materializedBiotaIdsByTargetId[preview.TargetId] = guid.Full;
+
+                var materializedItem = WorldObjectFactory.CreateWorldObject(weenie, guid);
+                materializedItem.SetProperty(PropertyInt.StackSize, preview.Quantity!.Value);
+                prospectiveItems.Add(materializedItem);
             }
 
-            if (!PassesNativeReceiveCapacityCheck(prospectiveItem))
+            if (!PassesNativeReceiveCapacityCheck(prospectiveItems))
             {
-                if (materializedBiotaId.HasValue)
-                {
-                    GuidManager.RecycleDynamicGuid(new ObjectGuid(materializedBiotaId.Value));
-                }
-
+                RecycleAllocatedGuids(allocatedGuids);
                 return;
             }
 
-            var outcome = await boundary.RedeemStackLotWithdrawalReservationAsync(
-                tokenHash, Guid.Full, materializedBiotaId, System.Guid.NewGuid());
+            var outcome = await boundary.RedeemWithdrawalReservationAsync(
+                tokenHash, Guid.Full, materializedBiotaIdsByTargetId, System.Guid.NewGuid());
 
             if (outcome.Kind != CloudBoundaryOutcomeKind.Committed)
             {
-                cloudWithdrawalLog.Warn($"[CLOUD WITHDRAWAL] Stack Lot redemption for player {Name} was not committed: {outcome.Reason}");
+                cloudWithdrawalLog.Warn($"[CLOUD WITHDRAWAL] Redemption for player {Name} was not committed: {outcome.Reason}");
                 SendTransientError(outcome.Reason ?? "That Withdrawal Token could not be redeemed. Please try again.");
-
-                if (materializedBiotaId.HasValue)
-                {
-                    GuidManager.RecycleDynamicGuid(new ObjectGuid(materializedBiotaId.Value));
-                }
-
+                RecycleAllocatedGuids(allocatedGuids);
                 return;
             }
 
-            if (materializedBiotaId.HasValue && outcome.Value!.DeliveredBiotaId != materializedBiotaId.Value)
-            {
-                // The boundary's own locked recheck disagreed with our unlocked preview (a sibling
-                // lot was removed between the preview and the redeem, making this a full-stack
-                // delivery after all) -- the pre-allocated GUID went unused and must not leak.
-                GuidManager.RecycleDynamicGuid(new ObjectGuid(materializedBiotaId.Value));
-            }
+            // The boundary's own locked recheck can disagree with our unlocked preview for a given
+            // target (a sibling lot was removed between the preview and the redeem, making a
+            // would-be materialization a full-stack delivery after all) -- any allocated GUID that
+            // was not actually delivered went unused and must not leak.
+            var deliveredBiotaIds = outcome.Value!.Deliveries.Select(d => d.DeliveredBiotaId).ToHashSet();
+            RecycleAllocatedGuids(allocatedGuids.Where(g => !deliveredBiotaIds.Contains(g.Full)));
 
-            DeliverRedeemedItem(outcome.Value!.DeliveredBiotaId);
+            foreach (var delivery in outcome.Value.Deliveries)
+            {
+                DeliverRedeemedItem(delivery.DeliveredBiotaId);
+            }
+        }
+
+        private static void RecycleAllocatedGuids(IEnumerable<ObjectGuid> guids)
+        {
+            foreach (var guid in guids)
+            {
+                GuidManager.RecycleDynamicGuid(guid);
+            }
         }
 
         /// <summary>
         /// WDR-005's slot/burden/uniqueness half of ACE's native receive validation, run <em>before</em>
         /// the Cloud persistence boundary is ever called (WDR-003: a capacity failure must never
-        /// consume the reservation). <see cref="Container.CanAddToInventory(WorldObject)"/> is the
-        /// same non-mutating slot/burden check <see cref="Container.TryAddToInventory(WorldObject, out Container, int, bool, bool)"/>
-        /// performs before it ever mutates anything, and <see cref="CheckUniques(WorldObject, WorldObject)"/>
-        /// is the same check ordinary pickup uses. Native stack merges are not a distinct case here:
-        /// ACE's ordinary receive path (vendor purchase, loot, this) never auto-merges a newly
-        /// received stack into an existing one -- it always places a new pack entry -- so there is no
-        /// separate merge behavior to reproduce beyond ordinary placement.
+        /// consume the reservation), across the entire mixed selection at once.
+        /// <see cref="Container.CanAddToInventory(List{WorldObject})"/> is the same non-mutating
+        /// combined slot/burden check <see cref="Container.TryAddToInventory(WorldObject, out Container, int, bool, bool)"/>
+        /// performs before it ever mutates anything, and <see cref="CheckUniques(List{WorldObject}, WorldObject)"/>
+        /// is the same combined-count check ordinary pickup uses. Native stack merges are not a
+        /// distinct case here: ACE's ordinary receive path (vendor purchase, loot, this) never
+        /// auto-merges a newly received stack into an existing one -- it always places a new pack
+        /// entry -- so there is no separate merge behavior to reproduce beyond ordinary placement.
         /// </summary>
-        private bool PassesNativeReceiveCapacityCheck(WorldObject prospectiveItem)
+        private bool PassesNativeReceiveCapacityCheck(List<WorldObject> prospectiveItems)
         {
-            if (!CanAddToInventory(prospectiveItem))
+            if (!CanAddToInventory(prospectiveItems, out var tooEncumbered, out _))
             {
-                SendTransientError($"You do not have enough room or are too encumbered to receive {prospectiveItem.Name} right now. Your Withdrawal Token remains valid; try again once you have space.");
+                var reason = tooEncumbered
+                    ? "You are too encumbered to receive these items right now."
+                    : "You do not have enough room to receive these items right now.";
+                SendTransientError($"{reason} Your Withdrawal Token remains valid; try again once you have space.");
                 return false;
             }
 
-            if (prospectiveItem.IsUniqueOrContainsUnique && !CheckUniques(prospectiveItem))
-            {
-                SendTransientError($"You already have a unique {prospectiveItem.Name} and cannot receive another. Your Withdrawal Token remains valid until it expires.");
-                return false;
-            }
-
-            return true;
+            // CheckUniques reports its own actionable message on failure.
+            return CheckUniques(prospectiveItems);
         }
 
         /// <summary>

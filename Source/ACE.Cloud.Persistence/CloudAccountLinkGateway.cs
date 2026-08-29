@@ -110,12 +110,12 @@ public sealed class CloudAccountLinkGateway
 
         // Locks every Cloud Custody Record/Stack Lot the source currently owns for the rest of this
         // transaction, before the pending-obligations check below reads them (transaction rule 2).
-        // CloudCustodyBoundary.ReserveForWithdrawalAsync/ReserveStackLotForWithdrawalAsync each lock
-        // that same row before opening a reservation, so this makes the two operations mutually
-        // exclusive: a reservation attempt racing this link either already committed (and is visible
-        // to the obligations check below) or blocks here until this transaction commits/rolls back --
-        // closing the window where a reservation opened between an unlocked obligations read and the
-        // later bulk reassignment could be silently orphaned by it.
+        // CloudCustodyBoundary.ReserveForWithdrawalAsync locks that same row before opening a
+        // reservation over any target -- whole item or stack lot -- so this makes the two operations
+        // mutually exclusive: a reservation attempt racing this link either already committed (and is
+        // visible to the obligations check below) or blocks here until this transaction
+        // commits/rolls back -- closing the window where a reservation opened between an unlocked
+        // obligations read and the later bulk reassignment could be silently orphaned by it.
         await LockSourceCustodyRowsAsync(shardId, sourceAccountId, cancellationToken);
 
         var sourceHasLinkedAccounts = await SourceHasActiveChildrenAsync(shardId, sourceAccountId, cancellationToken);
@@ -445,14 +445,7 @@ public sealed class CloudAccountLinkGateway
     {
         var sourceOwnerId = CloudOwnerIdentity.ForAccount(shardId, sourceAccountId);
 
-        var hasActiveWithdrawal = await _context.CloudWithdrawalReservations.AsNoTracking()
-            .AnyAsync(r => r.OwnerId == sourceOwnerId && r.Status == CloudReservationStatus.Active, cancellationToken);
-        if (hasActiveWithdrawal)
-        {
-            return true;
-        }
-
-        return await _context.CloudStackLotWithdrawalReservations.AsNoTracking()
+        return await _context.CloudWithdrawalReservations.AsNoTracking()
             .AnyAsync(r => r.OwnerId == sourceOwnerId && r.Status == CloudReservationStatus.Active, cancellationToken);
     }
 

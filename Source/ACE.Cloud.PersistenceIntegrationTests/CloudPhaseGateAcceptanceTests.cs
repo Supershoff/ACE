@@ -72,7 +72,8 @@ public sealed class CloudPhaseGateAcceptanceTests
 
         // Stage 2: a Withdrawal Token's exclusive reservation (WDR-001).
         var reserveOutcome = await boundary.ReserveForWithdrawalAsync(
-            biotaId, ShardId, ownerId, tokenHash, TimeSpan.FromMinutes(15), Guid.NewGuid());
+            [CloudWithdrawalReservationRequestTarget.ForItem(biotaId)],
+            ShardId, ownerId, tokenHash, TimeSpan.FromMinutes(15), Guid.NewGuid());
         Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, reserveOutcome.Kind, reserveOutcome.Reason);
 
         // Stage 3: redemption performs the same custody-to-world transition as an ordinary withdrawal
@@ -144,7 +145,8 @@ public sealed class CloudPhaseGateAcceptanceTests
 
         // The lifecycle continues normally from here: recovery from a crash is not a dead end.
         var reserveOutcome = await retryBoundary.ReserveForWithdrawalAsync(
-            biotaId, ShardId, ownerId, tokenHash, TimeSpan.FromMinutes(15), Guid.NewGuid());
+            [CloudWithdrawalReservationRequestTarget.ForItem(biotaId)],
+            ShardId, ownerId, tokenHash, TimeSpan.FromMinutes(15), Guid.NewGuid());
         Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, reserveOutcome.Kind, reserveOutcome.Reason);
 
         var redeemOutcome = await retryBoundary.RedeemWithdrawalReservationAsync(tokenHash, recipientContainerId, Guid.NewGuid());
@@ -173,7 +175,9 @@ public sealed class CloudPhaseGateAcceptanceTests
             await using var context = new CloudDbContext(options);
             var boundary = new CloudCustodyBoundary(context);
             var tokenHash = Convert.ToHexString(Guid.NewGuid().ToByteArray());
-            return await boundary.ReserveForWithdrawalAsync(biotaId, ShardId, ownerId, tokenHash, TimeSpan.FromMinutes(15), Guid.NewGuid());
+            return await boundary.ReserveForWithdrawalAsync(
+                [CloudWithdrawalReservationRequestTarget.ForItem(biotaId)],
+                ShardId, ownerId, tokenHash, TimeSpan.FromMinutes(15), Guid.NewGuid());
         });
 
         var results = await Task.WhenAll(tasks);
@@ -182,7 +186,7 @@ public sealed class CloudPhaseGateAcceptanceTests
         Assert.HasCount(5, results.Where(r => r.Kind == CloudBoundaryOutcomeKind.Conflict), "Every other concurrent attempt must observe the exclusivity conflict, not silently double-reserve.");
 
         await using var verifyContext = new CloudDbContext(options);
-        Assert.AreEqual(1, await verifyContext.CloudWithdrawalReservations.CountAsync(r => r.BiotaId == biotaId), "Only one reservation row may exist for this biota.");
+        Assert.AreEqual(1, await verifyContext.CloudWithdrawalReservationTargets.CountAsync(t => t.ItemBiotaId == biotaId), "Only one reservation target row may exist for this biota.");
     }
 
     [TestMethod]
@@ -239,12 +243,13 @@ public sealed class CloudPhaseGateAcceptanceTests
         await using var unreachableContext = new CloudDbContext(unreachableOptions);
         var unreachableBoundary = new CloudCustodyBoundary(unreachableContext);
         var outcome = await unreachableBoundary.ReserveForWithdrawalAsync(
-            biotaId, ShardId, Guid.NewGuid(), Convert.ToHexString(Guid.NewGuid().ToByteArray()), TimeSpan.FromMinutes(15), Guid.NewGuid());
+            [CloudWithdrawalReservationRequestTarget.ForItem(biotaId)],
+            ShardId, Guid.NewGuid(), Convert.ToHexString(Guid.NewGuid().ToByteArray()), TimeSpan.FromMinutes(15), Guid.NewGuid());
 
         Assert.AreEqual(CloudBoundaryOutcomeKind.Unavailable, outcome.Kind);
 
         await using var verifyContext = new CloudDbContext(reachableOptions);
-        Assert.AreEqual(0, await verifyContext.CloudWithdrawalReservations.CountAsync(r => r.BiotaId == biotaId), "A refused reservation attempt must commit nothing, ever.");
+        Assert.AreEqual(0, await verifyContext.CloudWithdrawalReservationTargets.CountAsync(t => t.ItemBiotaId == biotaId), "A refused reservation attempt must commit nothing, ever.");
     }
 
     private static uint NextId() => Interlocked.Increment(ref _nextId);

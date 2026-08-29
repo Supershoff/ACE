@@ -357,7 +357,7 @@ public sealed class CloudFrozenEnchantmentPersistenceTests
         Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, depositOutcome.Kind, depositOutcome.Reason);
 
         var reserveOutcome = await boundary.ReserveForWithdrawalAsync(
-            biotaId, ShardId, ownerId, tokenHash, TimeSpan.FromMinutes(15), Guid.NewGuid());
+            [CloudWithdrawalReservationRequestTarget.ForItem(biotaId)], ShardId, ownerId, tokenHash, TimeSpan.FromMinutes(15), Guid.NewGuid());
         Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, reserveOutcome.Kind, reserveOutcome.Reason);
 
         var redeemOutcome = await boundary.RedeemWithdrawalReservationAsync(tokenHash, recipientContainerId, Guid.NewGuid());

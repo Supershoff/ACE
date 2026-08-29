@@ -5,11 +5,13 @@ using Microsoft.EntityFrameworkCore;
 namespace ACE.Cloud.PersistenceIntegrationTests;
 
 /// <summary>
-/// Red -> Green tests for issue #16's Cloud Stack Lot withdrawal reservation (WDR-001, WDR-002,
-/// WDR-003, WDR-008, INV-002, INV-003): reserving, redeeming, and cancelling a Withdrawal Token whose
-/// selection is a quantity claim against a stackable biota rather than a whole item, including
-/// ACE-only materialization of the delivered child biota when the reserved lot is not the sole lot
-/// backing its stack.
+/// Focused Cloud Stack Lot coverage for issue #122's unified Withdrawal Reservation: single-lot
+/// reservation lifecycle through the merged <see cref="CloudCustodyBoundary.ReserveForWithdrawalAsync(System.Collections.Generic.IReadOnlyList{CloudWithdrawalReservationRequestTarget}, string, Guid, string, TimeSpan, Guid, System.Threading.CancellationToken)"/>
+/// API (mirroring what a standalone <c>CloudStackLotWithdrawalReservation</c> table proved before
+/// this issue merged it away), the Cloud Stack Lot Transaction Authority's interlock against a lot
+/// with an active reservation, and the redemption-time quantity-drift guard. Mixed multi-target
+/// coverage lives in <see cref="CloudWithdrawalReservationTests"/>; crash-at-every-commit-boundary
+/// evidence lives in <see cref="CloudWithdrawalReservationFaultInjectionTests"/>.
 /// </summary>
 [TestClass]
 [DoNotParallelize]
@@ -55,18 +57,20 @@ public sealed class CloudStackLotWithdrawalReservationTests
         var depositOutcome = await boundary.DepositStackAsync(biotaId, ShardId, ownerId, 25, Guid.NewGuid());
         var lot = depositOutcome.Value!.Lot;
 
-        var reserveOutcome = await boundary.ReserveStackLotForWithdrawalAsync(
-            lot.Id, ShardId, ownerId, tokenHash, TimeSpan.FromMinutes(15), Guid.NewGuid());
+        var reserveOutcome = await boundary.ReserveForWithdrawalAsync(
+            [CloudWithdrawalReservationRequestTarget.ForStackLot(lot.Id)], ShardId, ownerId, tokenHash, TimeSpan.FromMinutes(15), Guid.NewGuid());
         Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, reserveOutcome.Kind, reserveOutcome.Reason);
         Assert.AreEqual(CloudReservationStatus.Active, reserveOutcome.Value!.Status);
-        Assert.AreEqual(25, reserveOutcome.Value!.Quantity);
 
-        var redeemOutcome = await boundary.RedeemStackLotWithdrawalReservationAsync(
-            tokenHash, recipientContainerId, materializedBiotaId: null, Guid.NewGuid());
+        var targets = await boundary.GetReservationTargetsAsync(reserveOutcome.Value!.Id);
+        Assert.AreEqual(25, targets.Single().Quantity);
+
+        var redeemOutcome = await boundary.RedeemWithdrawalReservationAsync(tokenHash, recipientContainerId, Guid.NewGuid());
 
         Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, redeemOutcome.Kind, redeemOutcome.Reason);
-        Assert.AreEqual(biotaId, redeemOutcome.Value!.DeliveredBiotaId, "A full-lot withdrawal of the only lot must deliver the original biota GUID.");
-        Assert.AreEqual(25, redeemOutcome.Value!.Quantity);
+        Assert.HasCount(1, redeemOutcome.Value!.Deliveries);
+        Assert.AreEqual(biotaId, redeemOutcome.Value!.Deliveries[0].DeliveredBiotaId, "A full-lot withdrawal of the only lot must deliver the original biota GUID.");
+        Assert.AreEqual(25, redeemOutcome.Value!.Deliveries[0].Quantity);
         Assert.AreEqual(ownerId, redeemOutcome.Value!.FormerOwnerId);
 
         Assert.IsTrue(await AceShardTestData.HasSpecificContainerAsync(_fixture.AceShardConnectionString, biotaId, recipientContainerId));
@@ -75,63 +79,11 @@ public sealed class CloudStackLotWithdrawalReservationTests
         Assert.AreEqual(0, await verifyContext.CloudStackLots.CountAsync(l => l.Id == lot.Id));
         Assert.AreEqual(0, await verifyContext.CloudCustodyRecords.CountAsync(r => r.Id == depositOutcome.Value!.CustodyRecord.Id));
 
-        var reservation = await verifyContext.CloudStackLotWithdrawalReservations.AsNoTracking().SingleAsync(r => r.LotId == lot.Id);
+        var reservation = await verifyContext.CloudWithdrawalReservations.AsNoTracking().SingleAsync(r => r.Id == reserveOutcome.Value!.Id);
         Assert.AreEqual(CloudReservationStatus.Released, reservation.Status);
         Assert.AreEqual(CloudReservationReleaseReason.Fulfilled, reservation.ReleaseReason);
 
-        Assert.IsNull(await boundary.TryGetActiveStackLotWithdrawalReservationAsync(tokenHash), "A fulfilled reservation is no longer active.");
-    }
-
-    [TestMethod]
-    public async Task ReserveStackLot_ThenRedeem_OfAPartialLot_MaterializesAChildBiota_AndPreservesTheOriginalGuidWithTheRemainder()
-    {
-        var originalBiotaId = NextId();
-        var materializedBiotaId = NextId();
-        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, originalBiotaId);
-
-        var options = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
-        var ownerId = Guid.NewGuid();
-        var tokenHash = NewTokenHash();
-        var recipientContainerId = NextId();
-
-        await using var context = new CloudDbContext(options);
-        var boundary = new CloudCustodyBoundary(context);
-
-        // A reservation always covers one whole lot (the same exclusivity granularity
-        // CloudReservationTarget.ForStackLot already models), so exercising partial materialization
-        // under a reservation requires the reserved lot not to be the sole lot on its custody record.
-        // Splitting the lot is a Cloud-only operation (docs/adr/0002): CloudStackLotTransactionAuthority
-        // carves a second lot off, leaving the original GUID with the remainder.
-        var depositOutcome = await boundary.DepositStackAsync(originalBiotaId, ShardId, ownerId, 100, Guid.NewGuid());
-        var lot = depositOutcome.Value!.Lot;
-
-        var lotAuthority = new CloudStackLotTransactionAuthority(context);
-        var splitOutcome = await lotAuthority.SplitLotAsync(lot.Id, lot.Version, ownerId, quantityToSplit: 40);
-        Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, splitOutcome.Kind, splitOutcome.Reason);
-        var splitLotId = splitOutcome.Value!.NewLot.Id;
-
-        var reserveOutcome = await boundary.ReserveStackLotForWithdrawalAsync(
-            splitLotId, ShardId, ownerId, tokenHash, TimeSpan.FromMinutes(15), Guid.NewGuid());
-        Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, reserveOutcome.Kind, reserveOutcome.Reason);
-        Assert.AreEqual(40, reserveOutcome.Value!.Quantity);
-
-        var redeemOutcome = await boundary.RedeemStackLotWithdrawalReservationAsync(
-            tokenHash, recipientContainerId, materializedBiotaId, Guid.NewGuid());
-
-        Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, redeemOutcome.Kind, redeemOutcome.Reason);
-        Assert.AreEqual(materializedBiotaId, redeemOutcome.Value!.DeliveredBiotaId, "A partial-lot redemption must deliver the materialized child GUID, not the original.");
-        Assert.AreEqual(40, redeemOutcome.Value!.Quantity);
-
-        Assert.IsTrue(await AceShardTestData.HasSpecificContainerAsync(_fixture.AceShardConnectionString, materializedBiotaId, recipientContainerId));
-        Assert.IsFalse(await AceShardTestData.HasContainerAsync(_fixture.AceShardConnectionString, originalBiotaId), "The original biota's remaining quantity stays in Cloud custody, not world possession.");
-
-        await using var verifyContext = new CloudDbContext(options);
-        var remainingRecord = await verifyContext.CloudCustodyRecords.AsNoTracking().SingleAsync(r => r.Id == depositOutcome.Value!.CustodyRecord.Id);
-        Assert.AreEqual(60, remainingRecord.TotalQuantity, "100 deposited minus the 40 redeemed must leave exactly 60 in Cloud custody.");
-
-        var lineage = await verifyContext.CloudStackLotLineageEvents.AsNoTracking().SingleAsync(e => e.ChildBiotaId == materializedBiotaId);
-        Assert.AreEqual(originalBiotaId, lineage.ParentBiotaId);
-        Assert.AreEqual(40, lineage.Quantity);
+        Assert.IsNull(await boundary.TryGetActiveWithdrawalReservationAsync(tokenHash), "A fulfilled reservation is no longer active.");
     }
 
     [TestMethod]
@@ -148,10 +100,12 @@ public sealed class CloudStackLotWithdrawalReservationTests
         var depositOutcome = await boundary.DepositStackAsync(biotaId, ShardId, ownerId, 10, Guid.NewGuid());
         var lot = depositOutcome.Value!.Lot;
 
-        var first = await boundary.ReserveStackLotForWithdrawalAsync(lot.Id, ShardId, ownerId, NewTokenHash(), TimeSpan.FromMinutes(15), Guid.NewGuid());
+        var first = await boundary.ReserveForWithdrawalAsync(
+            [CloudWithdrawalReservationRequestTarget.ForStackLot(lot.Id)], ShardId, ownerId, NewTokenHash(), TimeSpan.FromMinutes(15), Guid.NewGuid());
         Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, first.Kind);
 
-        var second = await boundary.ReserveStackLotForWithdrawalAsync(lot.Id, ShardId, ownerId, NewTokenHash(), TimeSpan.FromMinutes(15), Guid.NewGuid());
+        var second = await boundary.ReserveForWithdrawalAsync(
+            [CloudWithdrawalReservationRequestTarget.ForStackLot(lot.Id)], ShardId, ownerId, NewTokenHash(), TimeSpan.FromMinutes(15), Guid.NewGuid());
 
         Assert.AreEqual(CloudBoundaryOutcomeKind.Conflict, second.Kind);
     }
@@ -169,8 +123,8 @@ public sealed class CloudStackLotWithdrawalReservationTests
         var depositOutcome = await boundary.DepositStackAsync(biotaId, ShardId, Guid.NewGuid(), 10, Guid.NewGuid());
         var lot = depositOutcome.Value!.Lot;
 
-        var outcome = await boundary.ReserveStackLotForWithdrawalAsync(
-            lot.Id, ShardId, Guid.NewGuid(), NewTokenHash(), TimeSpan.FromMinutes(15), Guid.NewGuid());
+        var outcome = await boundary.ReserveForWithdrawalAsync(
+            [CloudWithdrawalReservationRequestTarget.ForStackLot(lot.Id)], ShardId, Guid.NewGuid(), NewTokenHash(), TimeSpan.FromMinutes(15), Guid.NewGuid());
 
         Assert.AreEqual(CloudBoundaryOutcomeKind.Conflict, outcome.Kind);
     }
@@ -191,14 +145,16 @@ public sealed class CloudStackLotWithdrawalReservationTests
         var depositOutcome = await boundary.DepositStackAsync(biotaId, ShardId, ownerId, 10, Guid.NewGuid());
         var lot = depositOutcome.Value!.Lot;
 
-        var first = await boundary.ReserveStackLotForWithdrawalAsync(lot.Id, ShardId, ownerId, tokenHash, TimeSpan.FromMinutes(15), idempotencyKey);
-        var second = await boundary.ReserveStackLotForWithdrawalAsync(lot.Id, ShardId, ownerId, tokenHash, TimeSpan.FromMinutes(15), idempotencyKey);
+        var first = await boundary.ReserveForWithdrawalAsync(
+            [CloudWithdrawalReservationRequestTarget.ForStackLot(lot.Id)], ShardId, ownerId, tokenHash, TimeSpan.FromMinutes(15), idempotencyKey);
+        var second = await boundary.ReserveForWithdrawalAsync(
+            [CloudWithdrawalReservationRequestTarget.ForStackLot(lot.Id)], ShardId, ownerId, tokenHash, TimeSpan.FromMinutes(15), idempotencyKey);
 
         Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, second.Kind);
         Assert.AreEqual(first.Value!.Id, second.Value!.Id);
 
         await using var verifyContext = new CloudDbContext(options);
-        Assert.AreEqual(1, await verifyContext.CloudStackLotWithdrawalReservations.CountAsync(r => r.LotId == lot.Id));
+        Assert.AreEqual(1, await verifyContext.CloudWithdrawalReservationTargets.CountAsync(t => t.StackLotId == lot.Id));
     }
 
     [TestMethod]
@@ -216,12 +172,12 @@ public sealed class CloudStackLotWithdrawalReservationTests
         var depositOutcome = await boundary.DepositStackAsync(biotaId, ShardId, ownerId, 10, Guid.NewGuid());
         var lot = depositOutcome.Value!.Lot;
 
-        var reserveOutcome = await boundary.ReserveStackLotForWithdrawalAsync(
-            lot.Id, ShardId, ownerId, tokenHash, TimeSpan.FromTicks(1), Guid.NewGuid());
+        var reserveOutcome = await boundary.ReserveForWithdrawalAsync(
+            [CloudWithdrawalReservationRequestTarget.ForStackLot(lot.Id)], ShardId, ownerId, tokenHash, TimeSpan.FromTicks(1), Guid.NewGuid());
         Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, reserveOutcome.Kind);
         await Task.Delay(TimeSpan.FromMilliseconds(50));
 
-        var redeemOutcome = await boundary.RedeemStackLotWithdrawalReservationAsync(tokenHash, NextId(), materializedBiotaId: null, Guid.NewGuid());
+        var redeemOutcome = await boundary.RedeemWithdrawalReservationAsync(tokenHash, NextId(), Guid.NewGuid());
 
         Assert.AreEqual(CloudBoundaryOutcomeKind.Conflict, redeemOutcome.Kind);
         StringAssert.Contains(redeemOutcome.Reason, "expired");
@@ -246,17 +202,17 @@ public sealed class CloudStackLotWithdrawalReservationTests
         var depositOutcome = await boundary.DepositStackAsync(biotaId, ShardId, ownerId, 10, Guid.NewGuid());
         var lot = depositOutcome.Value!.Lot;
 
-        var reserveOutcome = await boundary.ReserveStackLotForWithdrawalAsync(
-            lot.Id, ShardId, ownerId, NewTokenHash(), TimeSpan.FromMinutes(15), Guid.NewGuid());
+        var reserveOutcome = await boundary.ReserveForWithdrawalAsync(
+            [CloudWithdrawalReservationRequestTarget.ForStackLot(lot.Id)], ShardId, ownerId, NewTokenHash(), TimeSpan.FromMinutes(15), Guid.NewGuid());
         var reservationId = reserveOutcome.Value!.Id;
 
-        var cancelOutcome = await boundary.CancelStackLotWithdrawalReservationAsync(reservationId, expectedVersion: 1);
+        var cancelOutcome = await boundary.CancelWithdrawalReservationAsync(reservationId, expectedVersion: 1);
 
         Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, cancelOutcome.Kind);
         Assert.AreEqual(CloudReservationStatus.Released, cancelOutcome.Value!.Status);
 
-        var reopenOutcome = await boundary.ReserveStackLotForWithdrawalAsync(
-            lot.Id, ShardId, ownerId, NewTokenHash(), TimeSpan.FromMinutes(15), Guid.NewGuid());
+        var reopenOutcome = await boundary.ReserveForWithdrawalAsync(
+            [CloudWithdrawalReservationRequestTarget.ForStackLot(lot.Id)], ShardId, ownerId, NewTokenHash(), TimeSpan.FromMinutes(15), Guid.NewGuid());
         Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, reopenOutcome.Kind, "Cancelling must free the lot for a fresh reservation.");
     }
 
@@ -276,15 +232,16 @@ public sealed class CloudStackLotWithdrawalReservationTests
         var boundary = new CloudCustodyBoundary(context);
         var depositOutcome = await boundary.DepositStackAsync(biotaId, ShardId, ownerId, 10, Guid.NewGuid());
         var lot = depositOutcome.Value!.Lot;
-        await boundary.ReserveStackLotForWithdrawalAsync(lot.Id, ShardId, ownerId, tokenHash, TimeSpan.FromMinutes(15), Guid.NewGuid());
+        await boundary.ReserveForWithdrawalAsync(
+            [CloudWithdrawalReservationRequestTarget.ForStackLot(lot.Id)], ShardId, ownerId, tokenHash, TimeSpan.FromMinutes(15), Guid.NewGuid());
 
-        var first = await boundary.RedeemStackLotWithdrawalReservationAsync(tokenHash, recipientContainerId, materializedBiotaId: null, idempotencyKey);
+        var first = await boundary.RedeemWithdrawalReservationAsync(tokenHash, recipientContainerId, idempotencyKey);
         Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, first.Kind);
 
-        var second = await boundary.RedeemStackLotWithdrawalReservationAsync(tokenHash, recipientContainerId, materializedBiotaId: null, idempotencyKey);
+        var second = await boundary.RedeemWithdrawalReservationAsync(tokenHash, recipientContainerId, idempotencyKey);
 
         Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, second.Kind);
-        Assert.AreEqual(first.Value!.DeliveredBiotaId, second.Value!.DeliveredBiotaId);
+        Assert.AreEqual(first.Value!.Deliveries[0].DeliveredBiotaId, second.Value!.Deliveries[0].DeliveredBiotaId);
 
         var containerRowCount = await AceShardTestData.CountContainerRowsAsync(_fixture.AceShardConnectionString, biotaId);
         Assert.AreEqual(1, containerRowCount, "Replaying a committed redemption must not grant world possession a second time.");
@@ -304,8 +261,8 @@ public sealed class CloudStackLotWithdrawalReservationTests
         var depositOutcome = await boundary.DepositStackAsync(biotaId, ShardId, ownerId, 100, Guid.NewGuid());
         var lot = depositOutcome.Value!.Lot;
 
-        var reserveOutcome = await boundary.ReserveStackLotForWithdrawalAsync(
-            lot.Id, ShardId, ownerId, NewTokenHash(), TimeSpan.FromMinutes(15), Guid.NewGuid());
+        var reserveOutcome = await boundary.ReserveForWithdrawalAsync(
+            [CloudWithdrawalReservationRequestTarget.ForStackLot(lot.Id)], ShardId, ownerId, NewTokenHash(), TimeSpan.FromMinutes(15), Guid.NewGuid());
         Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, reserveOutcome.Kind, reserveOutcome.Reason);
 
         var lotAuthority = new CloudStackLotTransactionAuthority(context);
@@ -333,8 +290,8 @@ public sealed class CloudStackLotWithdrawalReservationTests
         var depositOutcome = await boundary.DepositStackAsync(biotaId, ShardId, ownerId, 10, Guid.NewGuid());
         var lot = depositOutcome.Value!.Lot;
 
-        var reserveOutcome = await boundary.ReserveStackLotForWithdrawalAsync(
-            lot.Id, ShardId, ownerId, NewTokenHash(), TimeSpan.FromMinutes(15), Guid.NewGuid());
+        var reserveOutcome = await boundary.ReserveForWithdrawalAsync(
+            [CloudWithdrawalReservationRequestTarget.ForStackLot(lot.Id)], ShardId, ownerId, NewTokenHash(), TimeSpan.FromMinutes(15), Guid.NewGuid());
         Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, reserveOutcome.Kind, reserveOutcome.Reason);
 
         var lotAuthority = new CloudStackLotTransactionAuthority(context);
@@ -366,8 +323,8 @@ public sealed class CloudStackLotWithdrawalReservationTests
         Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, splitOutcome.Kind, splitOutcome.Reason);
         var mergeLot = splitOutcome.Value!.NewLot;
 
-        var reserveOutcome = await boundary.ReserveStackLotForWithdrawalAsync(
-            mergeLot.Id, ShardId, ownerId, NewTokenHash(), TimeSpan.FromMinutes(15), Guid.NewGuid());
+        var reserveOutcome = await boundary.ReserveForWithdrawalAsync(
+            [CloudWithdrawalReservationRequestTarget.ForStackLot(mergeLot.Id)], ShardId, ownerId, NewTokenHash(), TimeSpan.FromMinutes(15), Guid.NewGuid());
         Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, reserveOutcome.Kind, reserveOutcome.Reason);
 
         var mergeOutcome = await lotAuthority.MergeLotsAsync(
@@ -401,8 +358,8 @@ public sealed class CloudStackLotWithdrawalReservationTests
         var mergeLot = splitOutcome.Value!.NewLot;
         var keepLotAfterSplit = splitOutcome.Value!.RemainingLot;
 
-        var reserveOutcome = await boundary.ReserveStackLotForWithdrawalAsync(
-            keepLot.Id, ShardId, ownerId, NewTokenHash(), TimeSpan.FromMinutes(15), Guid.NewGuid());
+        var reserveOutcome = await boundary.ReserveForWithdrawalAsync(
+            [CloudWithdrawalReservationRequestTarget.ForStackLot(keepLot.Id)], ShardId, ownerId, NewTokenHash(), TimeSpan.FromMinutes(15), Guid.NewGuid());
         Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, reserveOutcome.Kind, reserveOutcome.Reason);
 
         var mergeOutcome = await lotAuthority.MergeLotsAsync(
@@ -436,10 +393,9 @@ public sealed class CloudStackLotWithdrawalReservationTests
         Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, splitOutcome.Kind, splitOutcome.Reason);
         var reservedLot = splitOutcome.Value!.NewLot;
 
-        var reserveOutcome = await boundary.ReserveStackLotForWithdrawalAsync(
-            reservedLot.Id, ShardId, ownerId, tokenHash, TimeSpan.FromMinutes(15), Guid.NewGuid());
+        var reserveOutcome = await boundary.ReserveForWithdrawalAsync(
+            [CloudWithdrawalReservationRequestTarget.ForStackLot(reservedLot.Id)], ShardId, ownerId, tokenHash, TimeSpan.FromMinutes(15), Guid.NewGuid());
         Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, reserveOutcome.Kind, reserveOutcome.Reason);
-        Assert.AreEqual(40, reserveOutcome.Value!.Quantity);
 
         // Simulates the reserved lot's quantity drifting after the reservation captured it, by any
         // means other than CloudStackLotTransactionAuthority (which now refuses to touch a reserved
@@ -452,8 +408,9 @@ public sealed class CloudStackLotWithdrawalReservationTests
             await driftContext.SaveChangesAsync();
         }
 
-        var redeemOutcome = await boundary.RedeemStackLotWithdrawalReservationAsync(
-            tokenHash, NextId(), materializedBiotaId: NextId(), Guid.NewGuid());
+        var redeemOutcome = await boundary.RedeemWithdrawalReservationAsync(
+            tokenHash, NextId(), new Dictionary<Guid, uint> { [(await boundary.GetReservationTargetsAsync(reserveOutcome.Value!.Id)).Single().Id] = NextId() },
+            Guid.NewGuid());
 
         Assert.AreEqual(CloudBoundaryOutcomeKind.Conflict, redeemOutcome.Kind,
             "A redemption must refuse to deliver a quantity the reserved lot no longer actually holds.");

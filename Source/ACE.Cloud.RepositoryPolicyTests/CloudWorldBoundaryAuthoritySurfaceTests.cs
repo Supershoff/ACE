@@ -31,6 +31,8 @@ public sealed class CloudWorldBoundaryAuthoritySurfaceTests
         nameof(CloudCustodyBoundary.TryGetWithdrawalReservationOutcomeAsync),
         nameof(CloudCustodyBoundary.CancelWithdrawalReservationAsync),
         nameof(CloudCustodyBoundary.TryGetActiveWithdrawalReservationAsync),
+        nameof(CloudCustodyBoundary.GetReservationTargetsAsync),
+        nameof(CloudCustodyBoundary.PreviewWithdrawalReservationAsync),
         nameof(CloudCustodyBoundary.RedeemWithdrawalReservationAsync),
         nameof(CloudCustodyBoundary.TryGetWithdrawalRedemptionOutcomeAsync),
 
@@ -45,20 +47,6 @@ public sealed class CloudWorldBoundaryAuthoritySurfaceTests
         nameof(CloudCustodyBoundary.TryGetPyrealConversionOutcomeAsync),
         nameof(CloudCustodyBoundary.WithdrawPyrealRemainderAsync),
         nameof(CloudCustodyBoundary.TryGetPyrealRemainderWithdrawalOutcomeAsync),
-
-        // Deliberate authority-boundary review (issue #16, WDR-001/WDR-002/WDR-003/INV-002/INV-003):
-        // a Cloud Stack Lot Withdrawal Reservation is the exact same World Boundary Authority concept
-        // as the whole-item ReserveForWithdrawalAsync/RedeemWithdrawalReservationAsync family above,
-        // just targeting a quantity claim instead of a whole biota. It creates/materializes/delivers
-        // native biotas and releases custody exactly like every other allow-listed operation, never a
-        // marketplace listing/bid/offer/vault concept.
-        nameof(CloudCustodyBoundary.ReserveStackLotForWithdrawalAsync),
-        nameof(CloudCustodyBoundary.TryGetStackLotWithdrawalReservationOutcomeAsync),
-        nameof(CloudCustodyBoundary.CancelStackLotWithdrawalReservationAsync),
-        nameof(CloudCustodyBoundary.TryGetActiveStackLotWithdrawalReservationAsync),
-        nameof(CloudCustodyBoundary.RedeemStackLotWithdrawalReservationAsync),
-        nameof(CloudCustodyBoundary.TryGetStackLotWithdrawalRedemptionOutcomeAsync),
-        nameof(CloudCustodyBoundary.PreviewStackLotWithdrawalAsync),
     };
 
     /// <summary>

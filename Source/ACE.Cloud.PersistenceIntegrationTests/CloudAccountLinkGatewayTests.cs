@@ -173,7 +173,8 @@ public sealed class CloudAccountLinkGatewayTests
             Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, depositOutcome.Kind);
 
             var reserveOutcome = await boundary.ReserveForWithdrawalAsync(
-                biotaId, ShardId, sourceOwnerId, Convert.ToHexString(Guid.NewGuid().ToByteArray()), TimeSpan.FromMinutes(15), Guid.NewGuid());
+                [CloudWithdrawalReservationRequestTarget.ForItem(biotaId)],
+                ShardId, sourceOwnerId, Convert.ToHexString(Guid.NewGuid().ToByteArray()), TimeSpan.FromMinutes(15), Guid.NewGuid());
             Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, reserveOutcome.Kind);
         }
 
@@ -239,7 +240,8 @@ public sealed class CloudAccountLinkGatewayTests
         var record = await verifyContext.CloudCustodyRecords.AsNoTracking().SingleAsync(r => r.BiotaId == biotaId);
         Assert.AreEqual(sourceOwnerId, record.OwnerId, "A rejected link must never reassign the source's Cloud Custody Record.");
 
-        var reservation = await verifyContext.CloudWithdrawalReservations.AsNoTracking().SingleAsync(r => r.BiotaId == biotaId);
+        var target = await verifyContext.CloudWithdrawalReservationTargets.AsNoTracking().SingleAsync(t => t.ItemBiotaId == biotaId);
+        var reservation = await verifyContext.CloudWithdrawalReservations.AsNoTracking().SingleAsync(r => r.Id == target.ReservationId);
         Assert.AreEqual(CloudReservationStatus.Active, reservation.Status);
         Assert.AreEqual(sourceOwnerId, reservation.OwnerId);
     }
@@ -573,21 +575,37 @@ public sealed class CloudAccountLinkGatewayTests
     private static async Task InsertWithdrawalReservationAsync(
         MySqlConnection connection, MySqlTransaction transaction, uint biotaId, Guid ownerId, string tokenHash)
     {
-        await using var command = connection.CreateCommand();
-        command.Transaction = transaction;
-        command.CommandText = """
-            INSERT INTO CloudWithdrawalReservation
-                (Id, ShardId, BiotaId, OwnerId, TokenHash, OpenIdempotencyKey, Status, Version, ExpiresAtUtc)
-            VALUES
-                (@id, @shardId, @biotaId, @ownerId, @tokenHash, @openIdempotencyKey, 'Active', 1, @expiresAtUtc);
-            """;
-        command.Parameters.AddWithValue("@id", Guid.NewGuid().ToString());
-        command.Parameters.AddWithValue("@shardId", ShardId);
-        command.Parameters.AddWithValue("@biotaId", biotaId);
-        command.Parameters.AddWithValue("@ownerId", ownerId.ToString());
-        command.Parameters.AddWithValue("@tokenHash", tokenHash);
-        command.Parameters.AddWithValue("@openIdempotencyKey", Guid.NewGuid().ToString());
-        command.Parameters.AddWithValue("@expiresAtUtc", DateTime.UtcNow.AddMinutes(15));
-        await command.ExecuteNonQueryAsync();
+        var reservationId = Guid.NewGuid();
+
+        await using (var reservationCommand = connection.CreateCommand())
+        {
+            reservationCommand.Transaction = transaction;
+            reservationCommand.CommandText = """
+                INSERT INTO CloudWithdrawalReservation
+                    (Id, ShardId, OwnerId, TokenHash, OpenIdempotencyKey, Status, Version, ExpiresAtUtc)
+                VALUES
+                    (@id, @shardId, @ownerId, @tokenHash, @openIdempotencyKey, 'Active', 1, @expiresAtUtc);
+                """;
+            reservationCommand.Parameters.AddWithValue("@id", reservationId.ToString());
+            reservationCommand.Parameters.AddWithValue("@shardId", ShardId);
+            reservationCommand.Parameters.AddWithValue("@ownerId", ownerId.ToString());
+            reservationCommand.Parameters.AddWithValue("@tokenHash", tokenHash);
+            reservationCommand.Parameters.AddWithValue("@openIdempotencyKey", Guid.NewGuid().ToString());
+            reservationCommand.Parameters.AddWithValue("@expiresAtUtc", DateTime.UtcNow.AddMinutes(15));
+            await reservationCommand.ExecuteNonQueryAsync();
+        }
+
+        await using (var targetCommand = connection.CreateCommand())
+        {
+            targetCommand.Transaction = transaction;
+            targetCommand.CommandText = """
+                INSERT INTO CloudWithdrawalReservationTarget (Id, ReservationId, Kind, ItemBiotaId)
+                VALUES (@id, @reservationId, 'Item', @biotaId);
+                """;
+            targetCommand.Parameters.AddWithValue("@id", Guid.NewGuid().ToString());
+            targetCommand.Parameters.AddWithValue("@reservationId", reservationId.ToString());
+            targetCommand.Parameters.AddWithValue("@biotaId", biotaId);
+            await targetCommand.ExecuteNonQueryAsync();
+        }
     }
 }

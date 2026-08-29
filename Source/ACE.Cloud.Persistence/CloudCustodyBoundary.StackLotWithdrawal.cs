@@ -4,45 +4,73 @@ using Microsoft.EntityFrameworkCore;
 namespace ACE.Cloud.Persistence;
 
 /// <summary>
-/// Issue #16's Cloud Stack Lot withdrawal reservation half of the World Boundary Authority (WDR-001,
-/// WDR-002, WDR-003, WDR-008, INV-002, INV-003, ARCH-002, ARCH-006). Mirrors
-/// <see cref="CloudCustodyBoundary"/>'s whole-item Withdrawal Reservation methods exactly (open,
-/// cancel, redeem, idempotent replay, commit-time revalidation under a held row lock), but targets an
-/// entire <see cref="CloudStackLot"/> as its exclusive unit -- the same granularity
-/// <see cref="CloudReservationTarget.ForStackLot"/> already models -- rather than a whole biota.
+/// Issue #122's unified Withdrawal Reservation lifecycle (WDR-001, WDR-002, WDR-003, WDR-004,
+/// WDR-005, WDR-008, INV-002, INV-003, ARCH-002, ARCH-006, EVT-001, EVT-002): one Withdrawal Token
+/// reserves, and later redeems, an arbitrary mixed selection of whole Cloud Items and Cloud Stack Lot
+/// quantities as a single atomic aggregate. This file predates that generalization (it originally
+/// held only the Cloud Stack Lot half of a two-table design split from whole-item reservations in
+/// <c>CloudCustodyBoundary.cs</c>); every reservation/redemption method for every target kind now
+/// lives here together, because the previous split -- two independent tables, each with its own
+/// <c>TokenHash</c> uniqueness constraint -- was exactly the bug this issue corrects: the same token
+/// secret could open one row in each table at once, addressing two independently consumable
+/// reservations from a single high-entropy secret.
 ///
-/// A reservation always covers one whole lot's current quantity; a caller who wants to reserve fewer
-/// than a stack's full quantity must first split off a new lot for exactly that quantity through
-/// <see cref="CloudStackLotTransactionAuthority.SplitLotAsync"/> (a pure Cloud-schema operation that
-/// works even while ACE is offline, ADR-0002) and then reserve that new lot. Redemption reuses the
-/// exact materialize-or-deliver-original branching <see cref="WithdrawLotAsync"/> already proved
-/// (INV-003): delivering the original biota when the reserved lot is the only lot left on its stack,
-/// or materializing a child under a caller-supplied (ACE-allocated) GUID otherwise.
+/// Every public entry point below operates on the single <see cref="CloudWithdrawalReservation"/>
+/// aggregate plus its <see cref="CloudWithdrawalReservationTarget"/> child rows. Multi-target
+/// exclusivity and lock ordering reuse <see cref="CloudReservationPolicy"/> and
+/// <see cref="CloudReservationTargetOrdering"/> (ACE.Cloud.Domain) unchanged -- the exact policy the
+/// companion backend's own multi-target reservation workflows (listings, offers, escrow) already
+/// share -- rather than duplicating exclusivity/ordering rules here.
 /// </summary>
 public sealed partial class CloudCustodyBoundary
 {
+    private static readonly IReadOnlyDictionary<Guid, uint> EmptyMaterializedBiotaIdsByTargetId = new Dictionary<Guid, uint>();
+
     /// <summary>
-    /// Opens ACE's local authority record for a new Withdrawal Token's exclusive reservation over an
-    /// entire Cloud Stack Lot (WDR-001, WDR-002, INV-002). Reuses
-    /// <see cref="CloudReservationPolicy.Open"/> for the exclusivity decision, exactly like
-    /// <see cref="ReserveForWithdrawalAsync"/>. Repeating this call with the same
+    /// Opens ACE's local authority record for a new Withdrawal Token's exclusive reservation over
+    /// every requested target -- any mix of whole Cloud Items and Cloud Stack Lots -- or none of them
+    /// (WDR-001, WDR-002, WDR-003). Every target is locked in the same deterministic order
+    /// (<see cref="CloudReservationTargetOrdering.Order"/>) regardless of the order the caller listed
+    /// them in, so two concurrent multi-target reservations that overlap can never deadlock against
+    /// each other (transaction rule 2). Repeating this call with the same
     /// <paramref name="idempotencyKey"/> replays the original committed reservation (transaction
-    /// rule 4).
+    /// rule 4). A Cloud Stack Lot target always reserves that lot's entire current quantity; a caller
+    /// who wants a smaller amount must first split a new lot for exactly that quantity through
+    /// <see cref="CloudStackLotTransactionAuthority.SplitLotAsync"/> and reserve that new lot.
     /// </summary>
-    public Task<CloudBoundaryOutcome<CloudStackLotWithdrawalReservation>> ReserveStackLotForWithdrawalAsync(
-        Guid lotId,
+    public Task<CloudBoundaryOutcome<CloudWithdrawalReservation>> ReserveForWithdrawalAsync(
+        IReadOnlyList<CloudWithdrawalReservationRequestTarget> targets,
         string shardId,
         Guid ownerId,
         string tokenHash,
         TimeSpan timeToLive,
         Guid idempotencyKey,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        ReserveForWithdrawalAsync(targets, shardId, ownerId, tokenHash, timeToLive, idempotencyKey, faultInjector: null, cancellationToken);
+
+    /// <summary>
+    /// Test-only overload: <paramref name="faultInjector"/> is invoked at every named
+    /// <see cref="CloudBoundaryFaultPoint"/> so fault-injection tests can simulate a crash at each
+    /// boundary of a multi-target reservation open. Internal and reachable only from
+    /// ACE.Cloud.PersistenceIntegrationTests (AssemblyInfo.cs); production callers always use the
+    /// public overload above.
+    /// </summary>
+    internal Task<CloudBoundaryOutcome<CloudWithdrawalReservation>> ReserveForWithdrawalAsync(
+        IReadOnlyList<CloudWithdrawalReservationRequestTarget> targets,
+        string shardId,
+        Guid ownerId,
+        string tokenHash,
+        TimeSpan timeToLive,
+        Guid idempotencyKey,
+        Func<CloudBoundaryFaultPoint, Task>? faultInjector,
+        CancellationToken cancellationToken)
     {
         RequireIdempotencyKey(idempotencyKey);
 
-        if (lotId == Guid.Empty)
+        ArgumentNullException.ThrowIfNull(targets);
+        if (targets.Count == 0)
         {
-            throw new ArgumentException("A Cloud Stack Lot Withdrawal Reservation requires a real Cloud Stack Lot ID.", nameof(lotId));
+            throw new ArgumentException("A Withdrawal Reservation requires at least one target.", nameof(targets));
         }
 
         if (string.IsNullOrWhiteSpace(tokenHash))
@@ -56,7 +84,7 @@ public sealed partial class CloudCustodyBoundary
         }
 
         return CloudBoundaryRetry.ExecuteAsync(
-            () => TryReserveStackLotForWithdrawalOnceAsync(lotId, shardId, ownerId, tokenHash, timeToLive, idempotencyKey, cancellationToken),
+            () => TryReserveForWithdrawalOnceAsync(targets, shardId, ownerId, tokenHash, timeToLive, idempotencyKey, faultInjector, cancellationToken),
             cancellationToken: cancellationToken);
     }
 
@@ -64,30 +92,35 @@ public sealed partial class CloudCustodyBoundary
     /// Returns the committed result of a reservation open previously started with
     /// <paramref name="idempotencyKey"/>, or null if none has committed yet (transaction rule 8).
     /// </summary>
-    public async Task<CloudBoundaryOutcome<CloudStackLotWithdrawalReservation>?> TryGetStackLotWithdrawalReservationOutcomeAsync(
+    public async Task<CloudBoundaryOutcome<CloudWithdrawalReservation>?> TryGetWithdrawalReservationOutcomeAsync(
         Guid idempotencyKey, CancellationToken cancellationToken = default)
     {
-        var existing = await _context.CloudStackLotWithdrawalReservations.AsNoTracking()
+        var existing = await _context.CloudWithdrawalReservations.AsNoTracking()
             .SingleOrDefaultAsync(r => r.OpenIdempotencyKey == idempotencyKey, cancellationToken);
-        return existing is null ? null : CloudBoundaryOutcome<CloudStackLotWithdrawalReservation>.Committed(existing);
+        return existing is null ? null : CloudBoundaryOutcome<CloudWithdrawalReservation>.Committed(existing);
     }
 
     /// <summary>
-    /// Cancels an active Cloud Stack Lot Withdrawal Reservation before redemption (WDR-003).
-    /// Idempotent by construction, exactly like <see cref="CancelWithdrawalReservationAsync"/>.
+    /// Cancels an active Withdrawal Reservation and every one of its targets before redemption
+    /// (WDR-003). Idempotent by construction rather than by a stored idempotency key: cancelling an
+    /// already-cancelled reservation is a no-op success, while cancelling one already released for a
+    /// different reason (for example already redeemed) is a Conflict.
     /// </summary>
-    public Task<CloudBoundaryOutcome<CloudStackLotWithdrawalReservation>> CancelStackLotWithdrawalReservationAsync(
+    public Task<CloudBoundaryOutcome<CloudWithdrawalReservation>> CancelWithdrawalReservationAsync(
         Guid reservationId, int expectedVersion, CancellationToken cancellationToken = default) =>
         CloudBoundaryRetry.ExecuteAsync(
-            () => TryCancelStackLotWithdrawalReservationOnceAsync(reservationId, expectedVersion, cancellationToken),
+            () => TryCancelWithdrawalReservationOnceAsync(reservationId, expectedVersion, cancellationToken),
             cancellationToken: cancellationToken);
 
     /// <summary>
-    /// Reads whether a Withdrawal Token's local Cloud Stack Lot reservation is currently active
-    /// without consuming it (WDR-008). Returns null when no active reservation matches
-    /// <paramref name="tokenHash"/>.
+    /// Reads whether a Withdrawal Token's local reservation is currently active without consuming it
+    /// (WDR-008: ACE validates an already-issued token's local reservation and redemption rules even
+    /// while the companion web service is unreachable). Returns null when no active reservation
+    /// matches <paramref name="tokenHash"/> -- either none was ever opened, or it was already
+    /// released. Callers use <see cref="GetReservationTargetsAsync"/> or
+    /// <see cref="PreviewWithdrawalReservationAsync"/> to inspect the exact target set.
     /// </summary>
-    public async Task<CloudStackLotWithdrawalReservation?> TryGetActiveStackLotWithdrawalReservationAsync(
+    public async Task<CloudWithdrawalReservation?> TryGetActiveWithdrawalReservationAsync(
         string tokenHash, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(tokenHash))
@@ -95,54 +128,120 @@ public sealed partial class CloudCustodyBoundary
             throw new ArgumentException("Looking up a Withdrawal Reservation requires its Withdrawal Token hash.", nameof(tokenHash));
         }
 
-        return await _context.CloudStackLotWithdrawalReservations.AsNoTracking()
+        return await _context.CloudWithdrawalReservations.AsNoTracking()
             .SingleOrDefaultAsync(r => r.TokenHash == tokenHash && r.Status == CloudReservationStatus.Active, cancellationToken);
     }
 
+    /// <summary>Every target row locked by <paramref name="reservationId"/>'s reservation, in no particular order.</summary>
+    public async Task<IReadOnlyList<CloudWithdrawalReservationTarget>> GetReservationTargetsAsync(
+        Guid reservationId, CancellationToken cancellationToken = default) =>
+        await _context.CloudWithdrawalReservationTargets.AsNoTracking()
+            .Where(t => t.ReservationId == reservationId)
+            .ToListAsync(cancellationToken);
+
     /// <summary>
-    /// Informational, unlocked read (not itself a commit-time revalidation -- <see cref="RedeemStackLotWithdrawalReservationAsync"/>
-    /// re-derives this fact fresh under its own row lock) that an ACE-side caller uses to decide
-    /// whether it needs to pre-allocate a materialized child GUID before calling redeem at all
-    /// (ARCH-010: only ACE may allocate that GUID, and only ACE's own GuidManager can do so, which
-    /// this pure-data-access project has no way to reach). Returns null if the lot no longer exists.
+    /// Informational, unlocked preview of every target a Withdrawal Token's reservation locks, used
+    /// solely by an ACE-side caller to decide -- before ever calling
+    /// <see cref="RedeemWithdrawalReservationAsync(string, uint, IReadOnlyDictionary{Guid, uint}, Guid, CancellationToken)"/> --
+    /// which Cloud Stack Lot targets need a freshly ACE-allocated materialized child GUID (ARCH-010)
+    /// and what the prospective delivered items look like for a combined native-receive capacity
+    /// check across the whole selection (WDR-005). Not itself a commit-time revalidation: redemption
+    /// re-derives every one of these facts fresh under its own row locks and refuses the request if a
+    /// stale preview turns out wrong. Returns null when no reservation matches
+    /// <paramref name="tokenHash"/> at all, or a same-length null-free list otherwise.
     /// </summary>
-    public async Task<CloudStackLotWithdrawalPreview?> PreviewStackLotWithdrawalAsync(Guid lotId, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<CloudWithdrawalReservationTargetPreview>?> PreviewWithdrawalReservationAsync(
+        string tokenHash, CancellationToken cancellationToken = default)
     {
-        var lot = await _context.CloudStackLots.AsNoTracking().SingleOrDefaultAsync(l => l.Id == lotId, cancellationToken);
-        if (lot is null)
+        if (string.IsNullOrWhiteSpace(tokenHash))
+        {
+            throw new ArgumentException("Previewing a Withdrawal Reservation requires its Withdrawal Token hash.", nameof(tokenHash));
+        }
+
+        var reservation = await _context.CloudWithdrawalReservations.AsNoTracking()
+            .SingleOrDefaultAsync(r => r.TokenHash == tokenHash, cancellationToken);
+        if (reservation is null)
         {
             return null;
         }
 
-        var record = await _context.CloudCustodyRecords.AsNoTracking()
-            .SingleOrDefaultAsync(r => r.Id == lot.CustodyRecordId, cancellationToken);
-        if (record is null)
+        var targets = await GetReservationTargetsAsync(reservation.Id, cancellationToken);
+        var previews = new List<CloudWithdrawalReservationTargetPreview>(targets.Count);
+
+        foreach (var target in targets)
         {
-            return null;
+            if (target.Kind == CloudWithdrawalReservationTargetKind.Item)
+            {
+                previews.Add(new CloudWithdrawalReservationTargetPreview(
+                    target.Id, target.Kind, target.ItemBiotaId!.Value, Quantity: null, RequiresMaterialization: false));
+                continue;
+            }
+
+            var lot = await _context.CloudStackLots.AsNoTracking()
+                .SingleOrDefaultAsync(l => l.Id == target.StackLotId!.Value, cancellationToken);
+            if (lot is null)
+            {
+                return null;
+            }
+
+            var record = await _context.CloudCustodyRecords.AsNoTracking()
+                .SingleOrDefaultAsync(r => r.Id == lot.CustodyRecordId, cancellationToken);
+            if (record is null)
+            {
+                return null;
+            }
+
+            var siblingCount = await _context.CloudStackLots.AsNoTracking()
+                .CountAsync(l => l.CustodyRecordId == lot.CustodyRecordId && l.Id != lot.Id, cancellationToken);
+
+            previews.Add(new CloudWithdrawalReservationTargetPreview(
+                target.Id, target.Kind, record.BiotaId, lot.Quantity, RequiresMaterialization: siblingCount != 0));
         }
 
-        var siblingCount = await _context.CloudStackLots.AsNoTracking()
-            .CountAsync(l => l.CustodyRecordId == lot.CustodyRecordId && l.Id != lot.Id, cancellationToken);
-
-        return new CloudStackLotWithdrawalPreview(record.BiotaId, siblingCount == 0);
+        return previews;
     }
 
     /// <summary>
-    /// Redeems a Withdrawal Token whose reservation targets a Cloud Stack Lot: atomically performs
-    /// the same materialize-or-deliver-original transition <see cref="WithdrawLotAsync"/> proves
-    /// (INV-003) and releases the reservation as fulfilled, in one transaction (WDR-001, WDR-003).
+    /// Redeems a Withdrawal Token whose reservation targets only whole Cloud Items (no Cloud Stack
+    /// Lot requiring materialization). Equivalent to calling the full overload with an empty
+    /// materialized-GUID map.
+    /// </summary>
+    public Task<CloudBoundaryOutcome<CloudMultiWithdrawalResult>> RedeemWithdrawalReservationAsync(
+        string tokenHash, uint recipientContainerId, Guid idempotencyKey, CancellationToken cancellationToken = default) =>
+        RedeemWithdrawalReservationAsync(tokenHash, recipientContainerId, EmptyMaterializedBiotaIdsByTargetId, idempotencyKey, cancellationToken);
+
+    /// <summary>
+    /// Redeems a Withdrawal Token: atomically performs the same custody-to-world transition as
+    /// <see cref="WithdrawAsync"/> or <see cref="WithdrawLotAsync"/> for every one of the
+    /// reservation's targets, and releases the reservation as fulfilled, in one transaction, so the
+    /// reservation can never observably outlive (or be released without) its custody transitions
+    /// (WDR-001, WDR-003) and a multi-target redemption always delivers every target or none of them.
     /// Refuses an expired or already-released reservation instead of redeeming it. Repeating this
     /// call with the same <paramref name="idempotencyKey"/> replays the original committed result
-    /// (transaction rule 4). <paramref name="materializedBiotaId"/> must be supplied (ACE-allocated,
-    /// ARCH-010) whenever the reserved lot is not the sole lot backing its stack; passing null when
-    /// one is required refuses with a Conflict rather than guessing.
+    /// (transaction rule 4). <paramref name="materializedBiotaIdsByTargetId"/> must supply an
+    /// ACE-allocated (ARCH-010) child GUID, keyed by <see cref="CloudWithdrawalReservationTarget.Id"/>,
+    /// for every Cloud Stack Lot target that is not the sole lot backing its stack; a required entry
+    /// missing from the map refuses the whole redemption with a Conflict rather than guessing.
     /// </summary>
-    public Task<CloudBoundaryOutcome<CloudStackWithdrawalResult>> RedeemStackLotWithdrawalReservationAsync(
+    public Task<CloudBoundaryOutcome<CloudMultiWithdrawalResult>> RedeemWithdrawalReservationAsync(
         string tokenHash,
         uint recipientContainerId,
-        uint? materializedBiotaId,
+        IReadOnlyDictionary<Guid, uint> materializedBiotaIdsByTargetId,
         Guid idempotencyKey,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        RedeemWithdrawalReservationAsync(tokenHash, recipientContainerId, materializedBiotaIdsByTargetId, idempotencyKey, faultInjector: null, cancellationToken);
+
+    /// <summary>
+    /// Test-only overload; see <see cref="ReserveForWithdrawalAsync(IReadOnlyList{CloudWithdrawalReservationRequestTarget}, string, Guid, string, TimeSpan, Guid, Func{CloudBoundaryFaultPoint, Task}, CancellationToken)"/>'s
+    /// doc comment.
+    /// </summary>
+    internal Task<CloudBoundaryOutcome<CloudMultiWithdrawalResult>> RedeemWithdrawalReservationAsync(
+        string tokenHash,
+        uint recipientContainerId,
+        IReadOnlyDictionary<Guid, uint> materializedBiotaIdsByTargetId,
+        Guid idempotencyKey,
+        Func<CloudBoundaryFaultPoint, Task>? faultInjector,
+        CancellationToken cancellationToken)
     {
         RequireIdempotencyKey(idempotencyKey);
 
@@ -156,8 +255,11 @@ public sealed partial class CloudCustodyBoundary
             throw new ArgumentOutOfRangeException(nameof(recipientContainerId), "A withdrawal requires a real recipient container GUID.");
         }
 
+        ArgumentNullException.ThrowIfNull(materializedBiotaIdsByTargetId);
+
         return CloudBoundaryRetry.ExecuteAsync(
-            () => TryRedeemStackLotWithdrawalReservationOnceAsync(tokenHash, recipientContainerId, materializedBiotaId, idempotencyKey, cancellationToken),
+            () => TryRedeemWithdrawalReservationOnceAsync(
+                tokenHash, recipientContainerId, materializedBiotaIdsByTargetId, idempotencyKey, faultInjector, cancellationToken),
             cancellationToken: cancellationToken);
     }
 
@@ -165,71 +267,148 @@ public sealed partial class CloudCustodyBoundary
     /// Returns the committed result of a reservation redemption previously started with
     /// <paramref name="idempotencyKey"/>, or null if none has committed yet (transaction rule 8).
     /// </summary>
-    public async Task<CloudBoundaryOutcome<CloudStackWithdrawalResult>?> TryGetStackLotWithdrawalRedemptionOutcomeAsync(
+    public async Task<CloudBoundaryOutcome<CloudMultiWithdrawalResult>?> TryGetWithdrawalRedemptionOutcomeAsync(
         Guid idempotencyKey, CancellationToken cancellationToken = default)
     {
         var existing = await FindIdempotencyRecordAsync(idempotencyKey, cancellationToken);
-        return existing is null ? null : ReplayStackLotWithdrawalReservationRedemption(existing);
+        return existing is null ? null : await ReplayWithdrawalReservationRedemptionAsync(existing, cancellationToken);
     }
 
-    private async Task<CloudBoundaryOutcome<CloudStackLotWithdrawalReservation>> TryReserveStackLotForWithdrawalOnceAsync(
-        Guid lotId, string shardId, Guid ownerId, string tokenHash, TimeSpan timeToLive, Guid idempotencyKey, CancellationToken cancellationToken)
+    private async Task<CloudBoundaryOutcome<CloudWithdrawalReservation>> TryReserveForWithdrawalOnceAsync(
+        IReadOnlyList<CloudWithdrawalReservationRequestTarget> requestedTargets,
+        string shardId,
+        Guid ownerId,
+        string tokenHash,
+        TimeSpan timeToLive,
+        Guid idempotencyKey,
+        Func<CloudBoundaryFaultPoint, Task>? faultInjector,
+        CancellationToken cancellationToken)
     {
         _context.ChangeTracker.Clear();
 
-        var incompatible = await CheckProtocolCompatibilityAsync<CloudStackLotWithdrawalReservation>(cancellationToken);
+        await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.BeforeLocks);
+
+        var incompatible = await CheckProtocolCompatibilityAsync<CloudWithdrawalReservation>(cancellationToken);
         if (incompatible is not null)
         {
             return incompatible;
         }
 
-        var existingByKey = await _context.CloudStackLotWithdrawalReservations.AsNoTracking()
+        var existingByKey = await _context.CloudWithdrawalReservations.AsNoTracking()
             .SingleOrDefaultAsync(r => r.OpenIdempotencyKey == idempotencyKey, cancellationToken);
         if (existingByKey is not null)
         {
-            return CloudBoundaryOutcome<CloudStackLotWithdrawalReservation>.Committed(existingByKey);
+            return CloudBoundaryOutcome<CloudWithdrawalReservation>.Committed(existingByKey);
         }
+
+        // Deterministic multi-target lock order (transaction rule 2): every requested target, whole
+        // item or stack lot, is locked in the exact same relative order two concurrent overlapping
+        // reservation attempts would compute independently, so neither can deadlock the other.
+        var orderedPolicyTargets = CloudReservationTargetOrdering.Order(requestedTargets.Select(ToPolicyTarget));
 
         await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
 
-        var custodyRecordId = await _context.CloudStackLots.AsNoTracking()
-            .Where(l => l.Id == lotId)
-            .Select(l => (Guid?)l.CustodyRecordId)
-            .SingleOrDefaultAsync(cancellationToken);
+        var lockedLotsByLotId = new Dictionary<Guid, CloudStackLot>();
+        var backingBiotaIdByLotId = new Dictionary<Guid, uint>();
 
-        if (custodyRecordId is null)
+        foreach (var policyTarget in orderedPolicyTargets)
         {
-            await transaction.RollbackAsync(cancellationToken);
-            return CloudBoundaryOutcome<CloudStackLotWithdrawalReservation>.Conflict($"Cloud Stack Lot {lotId} does not exist.");
+            if (policyTarget.Kind == CloudReservationTargetKind.Item)
+            {
+                var biotaId = policyTarget.ItemId!.Value;
+
+                // Locking the custody record row serializes every concurrent Reserve attempt for the
+                // same biota, which is what makes the exclusivity check below race-free without
+                // needing a partial-unique index (INV-001).
+                var record = await LockCustodyRecordByBiotaIdAsync(biotaId, cancellationToken);
+                if (record is null)
+                {
+                    await transaction.RollbackAsync(cancellationToken);
+                    return CloudBoundaryOutcome<CloudWithdrawalReservation>.Conflict(
+                        $"Biota {biotaId} has no Cloud Custody Record to reserve for withdrawal.");
+                }
+
+                if (record.IsStack)
+                {
+                    await transaction.RollbackAsync(cancellationToken);
+                    return CloudBoundaryOutcome<CloudWithdrawalReservation>.Conflict(
+                        $"Biota {biotaId} is a stack Cloud Custody Record; reserve its Cloud Stack Lot(s) instead.");
+                }
+
+                if (record.OwnerId != ownerId)
+                {
+                    await transaction.RollbackAsync(cancellationToken);
+                    return CloudBoundaryOutcome<CloudWithdrawalReservation>.Conflict($"Biota {biotaId} is not owned by {ownerId}.");
+                }
+            }
+            else
+            {
+                var lotId = policyTarget.StackLotId!.Value;
+
+                var custodyRecordId = await _context.CloudStackLots.AsNoTracking()
+                    .Where(l => l.Id == lotId)
+                    .Select(l => (Guid?)l.CustodyRecordId)
+                    .SingleOrDefaultAsync(cancellationToken);
+                if (custodyRecordId is null)
+                {
+                    await transaction.RollbackAsync(cancellationToken);
+                    return CloudBoundaryOutcome<CloudWithdrawalReservation>.Conflict($"Cloud Stack Lot {lotId} does not exist.");
+                }
+
+                // Deterministic lock order within one lot (transaction rule 2): its backing stack
+                // record before the lot itself, matching every other stack-mutating operation.
+                // Re-locking a row this same transaction already holds is a harmless no-op in
+                // InnoDB, so two lot targets that happen to share one backing stack simply lock it
+                // twice rather than needing extra bookkeeping to avoid it.
+                var lotRecord = await LockCustodyRecordAsync(custodyRecordId.Value, cancellationToken);
+
+                var lot = await LockStackLotAsync(lotId, cancellationToken);
+                if (lot is null || lotRecord is null)
+                {
+                    await transaction.RollbackAsync(cancellationToken);
+                    return CloudBoundaryOutcome<CloudWithdrawalReservation>.Conflict($"Cloud Stack Lot {lotId} does not exist.");
+                }
+
+                if (lot.OwnerId != ownerId)
+                {
+                    await transaction.RollbackAsync(cancellationToken);
+                    return CloudBoundaryOutcome<CloudWithdrawalReservation>.Conflict($"Cloud Stack Lot {lotId} is not owned by {ownerId}.");
+                }
+
+                lockedLotsByLotId[lotId] = lot;
+                backingBiotaIdByLotId[lotId] = lotRecord.BiotaId;
+            }
         }
 
-        // Deterministic lock order (transaction rule 2): the backing stack record before the lot,
-        // matching every other stack-mutating operation in this class.
-        await LockCustodyRecordAsync(custodyRecordId.Value, cancellationToken);
-        var lot = await LockStackLotAsync(lotId, cancellationToken);
+        // Build the exclusivity map from every currently active target row (any reservation, any
+        // kind) that names one of the requested biotas/lots.
+        var requestedBiotaIds = orderedPolicyTargets
+            .Where(t => t.Kind == CloudReservationTargetKind.Item)
+            .Select(t => t.ItemId!.Value)
+            .ToList();
+        var requestedLotIds = orderedPolicyTargets
+            .Where(t => t.Kind == CloudReservationTargetKind.StackLot)
+            .Select(t => t.StackLotId!.Value)
+            .ToList();
 
-        if (lot is null)
-        {
-            await transaction.RollbackAsync(cancellationToken);
-            return CloudBoundaryOutcome<CloudStackLotWithdrawalReservation>.Conflict($"Cloud Stack Lot {lotId} does not exist.");
-        }
+        var activeConflicts = await (
+            from t in _context.CloudWithdrawalReservationTargets.AsNoTracking()
+            join r in _context.CloudWithdrawalReservations.AsNoTracking() on t.ReservationId equals r.Id
+            where r.Status == CloudReservationStatus.Active
+                && ((t.Kind == CloudWithdrawalReservationTargetKind.Item && requestedBiotaIds.Contains(t.ItemBiotaId!.Value))
+                    || (t.Kind == CloudWithdrawalReservationTargetKind.StackLot && requestedLotIds.Contains(t.StackLotId!.Value)))
+            select new { t.Kind, t.ItemBiotaId, t.StackLotId, r.Id })
+            .ToListAsync(cancellationToken);
 
-        if (lot.OwnerId != ownerId)
-        {
-            await transaction.RollbackAsync(cancellationToken);
-            return CloudBoundaryOutcome<CloudStackLotWithdrawalReservation>.Conflict($"Cloud Stack Lot {lotId} is not owned by {ownerId}.");
-        }
-
-        var activeReservation = await _context.CloudStackLotWithdrawalReservations.AsNoTracking()
-            .Where(r => r.LotId == lotId && r.Status == CloudReservationStatus.Active)
-            .SingleOrDefaultAsync(cancellationToken);
-
-        var target = CloudReservationTarget.ForStackLot(new CloudStackLotId(lotId));
         var existingAllocationsByTarget = new Dictionary<CloudReservationTarget, CloudReservationAllocation>();
-        if (activeReservation is not null)
+        foreach (var conflict in activeConflicts)
         {
-            existingAllocationsByTarget[target] = new CloudReservationAllocation(
-                new CloudReservationId(activeReservation.Id), target, CloudReservationKind.Withdrawal, CloudReservationStatus.Active);
+            var conflictTarget = conflict.Kind == CloudWithdrawalReservationTargetKind.Item
+                ? CloudReservationTarget.ForItem(new CloudItemId(conflict.ItemBiotaId!.Value))
+                : CloudReservationTarget.ForStackLot(new CloudStackLotId(conflict.StackLotId!.Value));
+
+            existingAllocationsByTarget[conflictTarget] = new CloudReservationAllocation(
+                new CloudReservationId(conflict.Id), conflictTarget, CloudReservationKind.Withdrawal, CloudReservationStatus.Active);
         }
 
         var nowUtc = await GetDatabaseUtcNowAsync(cancellationToken);
@@ -237,7 +416,7 @@ public sealed partial class CloudCustodyBoundary
             new CloudReservationId(Guid.NewGuid()),
             CloudReservationKind.Withdrawal,
             new CloudAccountId(ownerId),
-            [target],
+            orderedPolicyTargets,
             existingAllocationsByTarget,
             new DateTimeOffset(nowUtc, TimeSpan.Zero),
             CloudMutationGateState.Open,
@@ -246,13 +425,25 @@ public sealed partial class CloudCustodyBoundary
         if (!policyResult.IsSuccess)
         {
             await transaction.RollbackAsync(cancellationToken);
-            return CloudBoundaryOutcome<CloudStackLotWithdrawalReservation>.Conflict(policyResult.Reason!);
+            return CloudBoundaryOutcome<CloudWithdrawalReservation>.Conflict(policyResult.Reason!);
         }
 
-        var reservation = CloudStackLotWithdrawalReservation.Open(
-            shardId, lotId, lot.Quantity, ownerId, tokenHash, idempotencyKey,
+        await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterValidation);
+
+        var reservation = CloudWithdrawalReservation.Open(
+            shardId, ownerId, tokenHash, idempotencyKey,
             policyResult.Reservation!.CreatedAtUtc.UtcDateTime, policyResult.Reservation!.ExpiresAtUtc!.Value.UtcDateTime);
-        _context.CloudStackLotWithdrawalReservations.Add(reservation);
+        _context.CloudWithdrawalReservations.Add(reservation);
+
+        var targetRows = new List<CloudWithdrawalReservationTarget>(orderedPolicyTargets.Count);
+        foreach (var policyTarget in orderedPolicyTargets)
+        {
+            targetRows.Add(policyTarget.Kind == CloudReservationTargetKind.Item
+                ? CloudWithdrawalReservationTarget.ForItem(reservation.Id, policyTarget.ItemId!.Value)
+                : CloudWithdrawalReservationTarget.ForStackLot(
+                    reservation.Id, policyTarget.StackLotId!.Value, lockedLotsByLotId[policyTarget.StackLotId!.Value].Quantity));
+        }
+        _context.CloudWithdrawalReservationTargets.AddRange(targetRows);
 
         try
         {
@@ -262,34 +453,43 @@ public sealed partial class CloudCustodyBoundary
         {
             await transaction.RollbackAsync(cancellationToken);
 
-            var winner = await _context.CloudStackLotWithdrawalReservations.AsNoTracking()
+            var winner = await _context.CloudWithdrawalReservations.AsNoTracking()
                 .SingleOrDefaultAsync(r => r.OpenIdempotencyKey == idempotencyKey, cancellationToken);
             if (winner is not null)
             {
-                return CloudBoundaryOutcome<CloudStackLotWithdrawalReservation>.Committed(winner);
+                return CloudBoundaryOutcome<CloudWithdrawalReservation>.Committed(winner);
             }
 
-            return CloudBoundaryOutcome<CloudStackLotWithdrawalReservation>.Conflict(
-                $"A Withdrawal Reservation for Cloud Stack Lot {lotId} or this Withdrawal Token already exists.");
+            return CloudBoundaryOutcome<CloudWithdrawalReservation>.Conflict(
+                "One or more requested targets, or this Withdrawal Token, already have an active Withdrawal Reservation.");
         }
 
+        await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterCustodyChange);
+
         var correlationId = Guid.NewGuid();
-        var backingBiotaId = await ResolveBackingBiotaIdAsync(lot.CustodyRecordId, cancellationToken);
-        await AppendLedgerAndOutboxAsync(
-            correlationId, shardId, CloudBoundaryOperationType.StackLotReservationOpened, backingBiotaId, ownerId,
-            faultInjector: null, cancellationToken);
+        foreach (var targetRow in targetRows)
+        {
+            var biotaId = targetRow.Kind == CloudWithdrawalReservationTargetKind.Item
+                ? targetRow.ItemBiotaId!.Value
+                : backingBiotaIdByLotId[targetRow.StackLotId!.Value];
 
+            await AppendLedgerAndOutboxAsync(
+                correlationId, shardId, CloudBoundaryOperationType.WithdrawalReservationOpened, biotaId, ownerId, faultInjector, cancellationToken);
+        }
+
+        await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.BeforeCommit);
         await transaction.CommitAsync(cancellationToken);
+        await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterCommit);
 
-        return CloudBoundaryOutcome<CloudStackLotWithdrawalReservation>.Committed(reservation);
+        return CloudBoundaryOutcome<CloudWithdrawalReservation>.Committed(reservation);
     }
 
-    private async Task<CloudBoundaryOutcome<CloudStackLotWithdrawalReservation>> TryCancelStackLotWithdrawalReservationOnceAsync(
+    private async Task<CloudBoundaryOutcome<CloudWithdrawalReservation>> TryCancelWithdrawalReservationOnceAsync(
         Guid reservationId, int expectedVersion, CancellationToken cancellationToken)
     {
         _context.ChangeTracker.Clear();
 
-        var incompatible = await CheckProtocolCompatibilityAsync<CloudStackLotWithdrawalReservation>(cancellationToken);
+        var incompatible = await CheckProtocolCompatibilityAsync<CloudWithdrawalReservation>(cancellationToken);
         if (incompatible is not null)
         {
             return incompatible;
@@ -297,11 +497,11 @@ public sealed partial class CloudCustodyBoundary
 
         await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
 
-        var reservation = await LockStackLotWithdrawalReservationAsync(reservationId, cancellationToken);
+        var reservation = await LockWithdrawalReservationAsync(reservationId, cancellationToken);
         if (reservation is null)
         {
             await transaction.RollbackAsync(cancellationToken);
-            return CloudBoundaryOutcome<CloudStackLotWithdrawalReservation>.Conflict($"Withdrawal Reservation {reservationId} does not exist.");
+            return CloudBoundaryOutcome<CloudWithdrawalReservation>.Conflict($"Withdrawal Reservation {reservationId} does not exist.");
         }
 
         if (reservation.Status == CloudReservationStatus.Released)
@@ -310,45 +510,56 @@ public sealed partial class CloudCustodyBoundary
 
             if (reservation.ReleaseReason == CloudReservationReleaseReason.Cancelled)
             {
-                return CloudBoundaryOutcome<CloudStackLotWithdrawalReservation>.Committed(reservation);
+                return CloudBoundaryOutcome<CloudWithdrawalReservation>.Committed(reservation);
             }
 
-            return CloudBoundaryOutcome<CloudStackLotWithdrawalReservation>.Conflict(
+            return CloudBoundaryOutcome<CloudWithdrawalReservation>.Conflict(
                 $"Withdrawal Reservation {reservationId} was already released ({reservation.ReleaseReason}) and cannot be cancelled.");
         }
 
         if (reservation.Version != expectedVersion)
         {
             await transaction.RollbackAsync(cancellationToken);
-            return CloudBoundaryOutcome<CloudStackLotWithdrawalReservation>.Conflict(
+            return CloudBoundaryOutcome<CloudWithdrawalReservation>.Conflict(
                 $"Withdrawal Reservation {reservationId} is at version {reservation.Version}, not the expected version {expectedVersion}.");
         }
 
+        var targets = await _context.CloudWithdrawalReservationTargets.AsNoTracking()
+            .Where(t => t.ReservationId == reservationId)
+            .ToListAsync(cancellationToken);
+
         var nowUtc = await GetDatabaseUtcNowAsync(cancellationToken);
         reservation.Release(nowUtc, CloudReservationReleaseReason.Cancelled);
-        _context.CloudStackLotWithdrawalReservations.Update(reservation);
+        _context.CloudWithdrawalReservations.Update(reservation);
         await _context.SaveChangesAsync(cancellationToken);
 
         var correlationId = Guid.NewGuid();
-        var custodyRecordId = await _context.CloudStackLots.AsNoTracking()
-            .Where(l => l.Id == reservation.LotId)
-            .Select(l => (Guid?)l.CustodyRecordId)
-            .SingleOrDefaultAsync(cancellationToken);
-        await AppendLedgerAndOutboxAsync(
-            correlationId, reservation.ShardId, CloudBoundaryOperationType.StackLotReservationCancelled,
-            await ResolveBackingBiotaIdAsync(custodyRecordId, cancellationToken), reservation.OwnerId, faultInjector: null, cancellationToken);
+        foreach (var target in targets)
+        {
+            var biotaId = await ResolveTargetBackingBiotaIdAsync(target, cancellationToken);
+            await AppendLedgerAndOutboxAsync(
+                correlationId, reservation.ShardId, CloudBoundaryOperationType.WithdrawalReservationCancelled,
+                biotaId, reservation.OwnerId, faultInjector: null, cancellationToken);
+        }
 
         await transaction.CommitAsync(cancellationToken);
 
-        return CloudBoundaryOutcome<CloudStackLotWithdrawalReservation>.Committed(reservation);
+        return CloudBoundaryOutcome<CloudWithdrawalReservation>.Committed(reservation);
     }
 
-    private async Task<CloudBoundaryOutcome<CloudStackWithdrawalResult>> TryRedeemStackLotWithdrawalReservationOnceAsync(
-        string tokenHash, uint recipientContainerId, uint? materializedBiotaId, Guid idempotencyKey, CancellationToken cancellationToken)
+    private async Task<CloudBoundaryOutcome<CloudMultiWithdrawalResult>> TryRedeemWithdrawalReservationOnceAsync(
+        string tokenHash,
+        uint recipientContainerId,
+        IReadOnlyDictionary<Guid, uint> materializedBiotaIdsByTargetId,
+        Guid idempotencyKey,
+        Func<CloudBoundaryFaultPoint, Task>? faultInjector,
+        CancellationToken cancellationToken)
     {
         _context.ChangeTracker.Clear();
 
-        var incompatible = await CheckProtocolCompatibilityAsync<CloudStackWithdrawalResult>(cancellationToken);
+        await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.BeforeLocks);
+
+        var incompatible = await CheckProtocolCompatibilityAsync<CloudMultiWithdrawalResult>(cancellationToken);
         if (incompatible is not null)
         {
             return incompatible;
@@ -357,12 +568,12 @@ public sealed partial class CloudCustodyBoundary
         var existingIdempotency = await FindIdempotencyRecordAsync(idempotencyKey, cancellationToken);
         if (existingIdempotency is not null)
         {
-            return ReplayStackLotWithdrawalReservationRedemption(existingIdempotency);
+            return await ReplayWithdrawalReservationRedemptionAsync(existingIdempotency, cancellationToken);
         }
 
         await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
 
-        var reservation = await LockStackLotWithdrawalReservationByTokenHashAsync(tokenHash, cancellationToken);
+        var reservation = await LockWithdrawalReservationByTokenHashAsync(tokenHash, cancellationToken);
         if (reservation is null)
         {
             await transaction.RollbackAsync(cancellationToken);
@@ -370,16 +581,16 @@ public sealed partial class CloudCustodyBoundary
             var winner = await FindIdempotencyRecordAsync(idempotencyKey, cancellationToken);
             if (winner is not null)
             {
-                return ReplayStackLotWithdrawalReservationRedemption(winner);
+                return await ReplayWithdrawalReservationRedemptionAsync(winner, cancellationToken);
             }
 
-            return CloudBoundaryOutcome<CloudStackWithdrawalResult>.Conflict("No Withdrawal Reservation matches this Withdrawal Token.");
+            return CloudBoundaryOutcome<CloudMultiWithdrawalResult>.Conflict("No Withdrawal Reservation matches this Withdrawal Token.");
         }
 
         if (reservation.Status != CloudReservationStatus.Active)
         {
             await transaction.RollbackAsync(cancellationToken);
-            return CloudBoundaryOutcome<CloudStackWithdrawalResult>.Conflict(
+            return CloudBoundaryOutcome<CloudMultiWithdrawalResult>.Conflict(
                 $"Withdrawal Reservation {reservation.Id} is not active ({reservation.ReleaseReason}); its Withdrawal Token cannot be redeemed.");
         }
 
@@ -387,140 +598,231 @@ public sealed partial class CloudCustodyBoundary
         if (reservation.IsExpiredAt(nowUtc))
         {
             await transaction.RollbackAsync(cancellationToken);
-            return CloudBoundaryOutcome<CloudStackWithdrawalResult>.Conflict(
+            return CloudBoundaryOutcome<CloudMultiWithdrawalResult>.Conflict(
                 $"Withdrawal Reservation {reservation.Id} expired at {reservation.ExpiresAtUtc:O} and cannot be redeemed.");
         }
 
+        await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterValidation);
+
+        var targets = await _context.CloudWithdrawalReservationTargets.AsNoTracking()
+            .Where(t => t.ReservationId == reservation.Id)
+            .ToListAsync(cancellationToken);
+
+        // Deterministic multi-target lock order (transaction rule 2), the exact same order
+        // ReserveForWithdrawalAsync locked them in.
+        var targetsByPolicyTarget = targets.ToDictionary(t => t.ToPolicyTarget());
+        var orderedPolicyTargets = CloudReservationTargetOrdering.Order(targetsByPolicyTarget.Keys);
+
+        var shardId = reservation.ShardId;
+        var ownerId = reservation.OwnerId;
+        var correlationId = Guid.NewGuid();
+        var deliveries = new List<CloudWithdrawalDeliveryItem>(targets.Count);
+
+        foreach (var policyTarget in orderedPolicyTargets)
+        {
+            var target = targetsByPolicyTarget[policyTarget];
+
+            if (target.Kind == CloudWithdrawalReservationTargetKind.Item)
+            {
+                var record = await LockCustodyRecordByBiotaIdAsync(target.ItemBiotaId!.Value, cancellationToken);
+                if (record is null)
+                {
+                    await transaction.RollbackAsync(cancellationToken);
+                    return CloudBoundaryOutcome<CloudMultiWithdrawalResult>.Conflict(
+                        $"Biota {target.ItemBiotaId} no longer has a Cloud Custody Record to withdraw.");
+                }
+
+                await ReleaseCustodyRecordAsync(record, cancellationToken);
+                await _context.SaveChangesAsync(cancellationToken);
+                await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterCustodyChange);
+
+                await GrantContainerAsync(record.BiotaId, recipientContainerId, cancellationToken);
+                await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterPossessionChange);
+
+                await AppendLedgerAndOutboxAsync(
+                    correlationId, shardId, CloudBoundaryOperationType.Withdrawal, record.BiotaId, ownerId, faultInjector, cancellationToken);
+
+                deliveries.Add(new CloudWithdrawalDeliveryItem(record.BiotaId, Quantity: null));
+            }
+            else
+            {
+                var lotId = target.StackLotId!.Value;
+
+                var custodyRecordId = await _context.CloudStackLots.AsNoTracking()
+                    .Where(l => l.Id == lotId)
+                    .Select(l => (Guid?)l.CustodyRecordId)
+                    .SingleOrDefaultAsync(cancellationToken);
+                if (custodyRecordId is null)
+                {
+                    await transaction.RollbackAsync(cancellationToken);
+                    return CloudBoundaryOutcome<CloudMultiWithdrawalResult>.Conflict($"Cloud Stack Lot {lotId} no longer exists to withdraw.");
+                }
+
+                // Deterministic lock order (transaction rule 2): the backing stack record before the lot.
+                var record = await LockCustodyRecordAsync(custodyRecordId.Value, cancellationToken);
+                var lot = await LockStackLotAsync(lotId, cancellationToken);
+
+                if (record is null || lot is null || lot.CustodyRecordId != record.Id)
+                {
+                    await transaction.RollbackAsync(cancellationToken);
+                    return CloudBoundaryOutcome<CloudMultiWithdrawalResult>.Conflict($"Cloud Stack Lot {lotId} no longer exists to withdraw.");
+                }
+
+                // Defense in depth: never trust the quantity captured when the reservation was
+                // opened for what to actually deliver -- re-derive it from the lot this transaction
+                // just locked.
+                if (lot.Quantity != target.Quantity)
+                {
+                    await transaction.RollbackAsync(cancellationToken);
+                    return CloudBoundaryOutcome<CloudMultiWithdrawalResult>.Conflict(
+                        $"Cloud Stack Lot {lotId} quantity changed from {target.Quantity} to {lot.Quantity} since its Withdrawal "
+                            + "Reservation was opened; this reservation can no longer be redeemed safely.");
+                }
+
+                var quantityToWithdraw = target.Quantity!.Value;
+                var siblingCount = await _context.CloudStackLots
+                    .CountAsync(l => l.CustodyRecordId == record.Id && l.Id != lot.Id, cancellationToken);
+                var isFullStackWithdrawal = siblingCount == 0;
+
+                if (!isFullStackWithdrawal && !materializedBiotaIdsByTargetId.TryGetValue(target.Id, out var materializedBiotaId))
+                {
+                    await transaction.RollbackAsync(cancellationToken);
+                    return CloudBoundaryOutcome<CloudMultiWithdrawalResult>.Conflict(
+                        $"A materialized child GUID (allocated by ACE) is required to redeem Cloud Stack Lot {lotId}, which is not "
+                            + "the sole lot on its stack.");
+                }
+
+                var originalBiotaId = record.BiotaId;
+                uint deliveredBiotaId;
+
+                if (isFullStackWithdrawal)
+                {
+                    _context.CloudStackLots.Remove(lot);
+                    await ReleaseCustodyRecordAsync(record, cancellationToken);
+                    await _context.SaveChangesAsync(cancellationToken);
+                    await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterCustodyChange);
+
+                    await GrantContainerAsync(originalBiotaId, recipientContainerId, cancellationToken);
+                    await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterPossessionChange);
+
+                    deliveredBiotaId = originalBiotaId;
+                }
+                else
+                {
+                    var materializedBiotaId2 = materializedBiotaIdsByTargetId[target.Id];
+
+                    _context.CloudStackLots.Remove(lot);
+                    record.ReduceStackTotalQuantity(quantityToWithdraw);
+                    _context.CloudCustodyRecords.Update(record);
+                    await _context.SaveChangesAsync(cancellationToken);
+                    await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterCustodyChange);
+
+                    await MaterializeChildBiotaAsync(originalBiotaId, materializedBiotaId2, quantityToWithdraw, cancellationToken);
+                    await UpsertStackSizeAsync(originalBiotaId, record.TotalQuantity!.Value, cancellationToken);
+                    await GrantContainerAsync(materializedBiotaId2, recipientContainerId, cancellationToken);
+                    await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterPossessionChange);
+
+                    deliveredBiotaId = materializedBiotaId2;
+
+                    _context.CloudStackLotLineageEvents.Add(
+                        new CloudStackLotLineageEvent(correlationId, shardId, originalBiotaId, materializedBiotaId2, quantityToWithdraw, ownerId));
+                    await _context.SaveChangesAsync(cancellationToken);
+                }
+
+                await AppendLedgerAndOutboxAsync(
+                    correlationId, shardId, CloudBoundaryOperationType.StackWithdrawal, deliveredBiotaId, ownerId, faultInjector, cancellationToken);
+
+                deliveries.Add(new CloudWithdrawalDeliveryItem(deliveredBiotaId, quantityToWithdraw));
+            }
+        }
+
+        reservation.Release(nowUtc, CloudReservationReleaseReason.Fulfilled);
+        _context.CloudWithdrawalReservations.Update(reservation);
+        await _context.SaveChangesAsync(cancellationToken);
+
+        // CloudIdempotencyRecord requires *a* representative non-zero biota GUID; the complete
+        // ordered delivery list -- the actual replay contract -- lives in the
+        // CloudWithdrawalRedemptionDeliveryItem rows added below.
+        _context.CloudIdempotencyRecords.Add(
+            new CloudIdempotencyRecord(
+                idempotencyKey, shardId, CloudBoundaryOperationType.WithdrawalReservationRedeemed, deliveries[0].DeliveredBiotaId, ownerId,
+                custodyRecordId: null, targetContainerId: recipientContainerId, correlationId));
+        await _context.SaveChangesAsync(cancellationToken);
+
+        _context.CloudWithdrawalRedemptionDeliveryItems.AddRange(
+            deliveries.Select((delivery, index) =>
+                new CloudWithdrawalRedemptionDeliveryItem(idempotencyKey, index, delivery.DeliveredBiotaId, delivery.Quantity)));
+        await _context.SaveChangesAsync(cancellationToken);
+
+        await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.BeforeCommit);
+        await transaction.CommitAsync(cancellationToken);
+        await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterCommit);
+
+        return CloudBoundaryOutcome<CloudMultiWithdrawalResult>.Committed(
+            new CloudMultiWithdrawalResult(deliveries, recipientContainerId, ownerId));
+    }
+
+    private async Task<CloudBoundaryOutcome<CloudMultiWithdrawalResult>> ReplayWithdrawalReservationRedemptionAsync(
+        CloudIdempotencyRecord existing, CancellationToken cancellationToken)
+    {
+        if (existing.OperationType != CloudBoundaryOperationType.WithdrawalReservationRedeemed)
+        {
+            return CloudBoundaryOutcome<CloudMultiWithdrawalResult>.Conflict(
+                $"Idempotency key {existing.IdempotencyKey} was already committed as a {existing.OperationType}, not a WithdrawalReservationRedeemed.");
+        }
+
+        var deliveryRows = await _context.CloudWithdrawalRedemptionDeliveryItems.AsNoTracking()
+            .Where(d => d.RedemptionIdempotencyKey == existing.IdempotencyKey)
+            .OrderBy(d => d.OrdinalPosition)
+            .ToListAsync(cancellationToken);
+
+        if (deliveryRows.Count == 0)
+        {
+            // ARCH-006 commits the idempotency record and every delivery row in the same
+            // transaction, so a committed redemption whose delivery rows are gone is not a normal
+            // conflict -- it means that invariant was broken out of band.
+            throw new CloudCustodyConflictException(
+                $"Idempotency key {existing.IdempotencyKey} committed a Withdrawal Reservation redemption whose delivery rows no longer exist.");
+        }
+
+        var deliveries = deliveryRows
+            .Select(d => new CloudWithdrawalDeliveryItem(d.DeliveredBiotaId, d.Quantity))
+            .ToList();
+
+        return CloudBoundaryOutcome<CloudMultiWithdrawalResult>.Committed(
+            new CloudMultiWithdrawalResult(deliveries, existing.TargetContainerId!.Value, existing.OwnerId));
+    }
+
+    private static CloudReservationTarget ToPolicyTarget(CloudWithdrawalReservationRequestTarget requestTarget) => requestTarget.Kind switch
+    {
+        CloudWithdrawalReservationTargetKind.Item => CloudReservationTarget.ForItem(new CloudItemId(requestTarget.ItemBiotaId)),
+        CloudWithdrawalReservationTargetKind.StackLot => CloudReservationTarget.ForStackLot(new CloudStackLotId(requestTarget.StackLotId)),
+        _ => throw new ArgumentOutOfRangeException(nameof(requestTarget), "Unrecognized Cloud Withdrawal Reservation request target kind."),
+    };
+
+    private async Task<uint> ResolveTargetBackingBiotaIdAsync(CloudWithdrawalReservationTarget target, CancellationToken cancellationToken)
+    {
+        if (target.Kind == CloudWithdrawalReservationTargetKind.Item)
+        {
+            return target.ItemBiotaId!.Value;
+        }
+
         var custodyRecordId = await _context.CloudStackLots.AsNoTracking()
-            .Where(l => l.Id == reservation.LotId)
+            .Where(l => l.Id == target.StackLotId!.Value)
             .Select(l => (Guid?)l.CustodyRecordId)
             .SingleOrDefaultAsync(cancellationToken);
 
-        if (custodyRecordId is null)
-        {
-            await transaction.RollbackAsync(cancellationToken);
-            return CloudBoundaryOutcome<CloudStackWithdrawalResult>.Conflict(
-                $"Cloud Stack Lot {reservation.LotId} no longer exists to withdraw.");
-        }
-
-        // Deterministic lock order (transaction rule 2): the backing stack record before the lot.
-        var record = await LockCustodyRecordAsync(custodyRecordId.Value, cancellationToken);
-        var lot = await LockStackLotAsync(reservation.LotId, cancellationToken);
-
-        if (record is null || lot is null || lot.CustodyRecordId != record.Id)
-        {
-            await transaction.RollbackAsync(cancellationToken);
-            return CloudBoundaryOutcome<CloudStackWithdrawalResult>.Conflict(
-                $"Cloud Stack Lot {reservation.LotId} no longer exists to withdraw.");
-        }
-
-        // Defense in depth alongside CloudStackLotTransactionAuthority's exclusivity check: never
-        // trust the quantity captured when the reservation was opened for what to actually deliver.
-        // Re-derive it from the lot this transaction just locked, mirroring the
-        // `quantityToWithdraw > lot.Quantity` guard TryWithdrawLotOnceAsync already has.
-        if (lot.Quantity != reservation.Quantity)
-        {
-            await transaction.RollbackAsync(cancellationToken);
-            return CloudBoundaryOutcome<CloudStackWithdrawalResult>.Conflict(
-                $"Cloud Stack Lot {reservation.LotId} quantity changed from {reservation.Quantity} to {lot.Quantity} since its Withdrawal Reservation was opened; this reservation can no longer be redeemed safely.");
-        }
-
-        var quantityToWithdraw = reservation.Quantity;
-        var siblingCount = await _context.CloudStackLots
-            .CountAsync(l => l.CustodyRecordId == record.Id && l.Id != lot.Id, cancellationToken);
-        var isFullStackWithdrawal = siblingCount == 0;
-
-        if (!isFullStackWithdrawal && (materializedBiotaId is null or 0))
-        {
-            await transaction.RollbackAsync(cancellationToken);
-            return CloudBoundaryOutcome<CloudStackWithdrawalResult>.Conflict(
-                "A materialized child GUID (allocated by ACE) is required to redeem a reservation that is not the sole lot on its stack.");
-        }
-
-        var originalBiotaId = record.BiotaId;
-        var shardId = record.ShardId;
-        var ownerId = reservation.OwnerId;
-        var correlationId = Guid.NewGuid();
-        uint deliveredBiotaId;
-
-        if (isFullStackWithdrawal)
-        {
-            _context.CloudStackLots.Remove(lot);
-            await ReleaseCustodyRecordAsync(record, cancellationToken);
-            await _context.SaveChangesAsync(cancellationToken);
-
-            await GrantContainerAsync(originalBiotaId, recipientContainerId, cancellationToken);
-
-            deliveredBiotaId = originalBiotaId;
-        }
-        else
-        {
-            _context.CloudStackLots.Remove(lot);
-            record.ReduceStackTotalQuantity(quantityToWithdraw);
-            _context.CloudCustodyRecords.Update(record);
-            await _context.SaveChangesAsync(cancellationToken);
-
-            await MaterializeChildBiotaAsync(originalBiotaId, materializedBiotaId!.Value, quantityToWithdraw, cancellationToken);
-            await UpsertStackSizeAsync(originalBiotaId, record.TotalQuantity!.Value, cancellationToken);
-            await GrantContainerAsync(materializedBiotaId.Value, recipientContainerId, cancellationToken);
-
-            deliveredBiotaId = materializedBiotaId.Value;
-
-            _context.CloudStackLotLineageEvents.Add(
-                new CloudStackLotLineageEvent(correlationId, shardId, originalBiotaId, materializedBiotaId.Value, quantityToWithdraw, ownerId));
-            await _context.SaveChangesAsync(cancellationToken);
-        }
-
-        await AppendLedgerAndOutboxAsync(
-            correlationId, shardId, CloudBoundaryOperationType.StackLotReservationRedeemed, deliveredBiotaId, ownerId, faultInjector: null, cancellationToken);
-
-        reservation.Release(nowUtc, CloudReservationReleaseReason.Fulfilled);
-        _context.CloudStackLotWithdrawalReservations.Update(reservation);
-        await _context.SaveChangesAsync(cancellationToken);
-
-        _context.CloudIdempotencyRecords.Add(
-            new CloudIdempotencyRecord(
-                idempotencyKey, shardId, CloudBoundaryOperationType.StackLotReservationRedeemed, deliveredBiotaId, ownerId,
-                custodyRecordId: record.Id, targetContainerId: recipientContainerId, correlationId, quantityToWithdraw));
-        await _context.SaveChangesAsync(cancellationToken);
-
-        await transaction.CommitAsync(cancellationToken);
-
-        return CloudBoundaryOutcome<CloudStackWithdrawalResult>.Committed(
-            new CloudStackWithdrawalResult(deliveredBiotaId, recipientContainerId, ownerId, quantityToWithdraw));
+        return await ResolveBackingBiotaIdAsync(custodyRecordId, cancellationToken);
     }
-
-    private static CloudBoundaryOutcome<CloudStackWithdrawalResult> ReplayStackLotWithdrawalReservationRedemption(CloudIdempotencyRecord existing)
-    {
-        if (existing.OperationType != CloudBoundaryOperationType.StackLotReservationRedeemed)
-        {
-            return CloudBoundaryOutcome<CloudStackWithdrawalResult>.Conflict(
-                $"Idempotency key {existing.IdempotencyKey} was already committed as a {existing.OperationType}, not a StackLotReservationRedeemed.");
-        }
-
-        return CloudBoundaryOutcome<CloudStackWithdrawalResult>.Committed(
-            new CloudStackWithdrawalResult(existing.BiotaId, existing.TargetContainerId!.Value, existing.OwnerId, existing.Quantity!.Value));
-    }
-
-    private async Task<CloudStackLotWithdrawalReservation?> LockStackLotWithdrawalReservationAsync(Guid reservationId, CancellationToken cancellationToken) =>
-        await _context.CloudStackLotWithdrawalReservations
-            .FromSqlInterpolated($"SELECT * FROM CloudStackLotWithdrawalReservation WHERE Id = {reservationId} FOR UPDATE")
-            .SingleOrDefaultAsync(cancellationToken);
-
-    private async Task<CloudStackLotWithdrawalReservation?> LockStackLotWithdrawalReservationByTokenHashAsync(string tokenHash, CancellationToken cancellationToken) =>
-        await _context.CloudStackLotWithdrawalReservations
-            .FromSqlInterpolated($"SELECT * FROM CloudStackLotWithdrawalReservation WHERE TokenHash = {tokenHash} FOR UPDATE")
-            .SingleOrDefaultAsync(cancellationToken);
 
     /// <summary>
-    /// Resolves the lot's backing biota GUID for ledger/outbox display (Reserve/Cancel only ever
-    /// touch the lot itself, never the biota row). By the time either caller reaches this, the lot's
-    /// own row lock (Reserve) or its still-Active reservation (Cancel) already guarantees the backing
-    /// <see cref="CloudCustodyRecord"/> exists -- <see cref="CloudStackLot.CustodyRecordId"/>'s
-    /// foreign key makes it impossible for that row to be missing. A null <paramref name="custodyRecordId"/>
-    /// or missing record therefore means an out-of-band integrity violation, not a normal race; this
-    /// method still fails closed with an explicit exception (<see cref="CloudActivityLedgerEvent"/>'s
-    /// own constructor rejects a zero biota ID) rather than silently recording a bogus ledger entry.
+    /// Resolves a Cloud Stack Lot's backing biota GUID for ledger/outbox display. By the time any
+    /// caller reaches this, the lot's own row lock (Reserve) or its still-Active reservation (Cancel)
+    /// already guarantees the backing <see cref="CloudCustodyRecord"/> exists --
+    /// <see cref="CloudStackLot.CustodyRecordId"/>'s foreign key makes it impossible for that row to
+    /// be missing. A null <paramref name="custodyRecordId"/> or missing record therefore means an
+    /// out-of-band integrity violation, not a normal race; this method still fails closed with an
+    /// explicit exception rather than silently recording a bogus ledger entry.
     /// </summary>
     private async Task<uint> ResolveBackingBiotaIdAsync(Guid? custodyRecordId, CancellationToken cancellationToken)
     {
@@ -537,4 +839,19 @@ public sealed partial class CloudCustodyBoundary
         return biotaId ?? throw new CloudCustodyConflictException(
             $"Cloud Custody Record {custodyRecordId.Value} could not be resolved despite its foreign key guarantee.");
     }
+
+    private async Task<CloudCustodyRecord?> LockCustodyRecordByBiotaIdAsync(uint biotaId, CancellationToken cancellationToken) =>
+        await _context.CloudCustodyRecords
+            .FromSqlInterpolated($"SELECT * FROM CloudCustodyRecord WHERE BiotaId = {biotaId} FOR UPDATE")
+            .SingleOrDefaultAsync(cancellationToken);
+
+    private async Task<CloudWithdrawalReservation?> LockWithdrawalReservationAsync(Guid reservationId, CancellationToken cancellationToken) =>
+        await _context.CloudWithdrawalReservations
+            .FromSqlInterpolated($"SELECT * FROM CloudWithdrawalReservation WHERE Id = {reservationId} FOR UPDATE")
+            .SingleOrDefaultAsync(cancellationToken);
+
+    private async Task<CloudWithdrawalReservation?> LockWithdrawalReservationByTokenHashAsync(string tokenHash, CancellationToken cancellationToken) =>
+        await _context.CloudWithdrawalReservations
+            .FromSqlInterpolated($"SELECT * FROM CloudWithdrawalReservation WHERE TokenHash = {tokenHash} FOR UPDATE")
+            .SingleOrDefaultAsync(cancellationToken);
 }
