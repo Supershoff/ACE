@@ -23,15 +23,23 @@ public enum CloudBoundaryOperationType
     /// </summary>
     StackWithdrawal,
 
-    /// <summary>Opens an exclusive local Withdrawal Reservation for a Withdrawal Token (WDR-001).</summary>
+    /// <summary>
+    /// Opens an exclusive local Withdrawal Reservation for a Withdrawal Token (WDR-001), one event
+    /// per locked target -- whole Cloud Item or Cloud Stack Lot quantity, in any mix (issue #122).
+    /// </summary>
     WithdrawalReservationOpened,
 
-    /// <summary>Cancels a local Withdrawal Reservation before redemption (WDR-003).</summary>
+    /// <summary>
+    /// Cancels a local Withdrawal Reservation before redemption (WDR-003), one event per target it
+    /// had locked.
+    /// </summary>
     WithdrawalReservationCancelled,
 
     /// <summary>
-    /// Redeems a local Withdrawal Reservation, atomically performing the same custody-to-world
-    /// transition as <see cref="Withdrawal"/> and releasing the reservation as fulfilled.
+    /// Marks a local Withdrawal Reservation's redemption idempotency record (issue #122); the actual
+    /// per-target custody-to-world transitions it performs are recorded as ordinary
+    /// <see cref="Withdrawal"/> or <see cref="StackWithdrawal"/> ledger/outbox events, one per target,
+    /// sharing this redemption's correlation ID.
     /// </summary>
     WithdrawalReservationRedeemed,
 
@@ -46,19 +54,6 @@ public enum CloudBoundaryOperationType
 
     /// <summary>Withdraws all or part of an account's Pyreal Remainder as raw Pyreal coin stacks (DEP-006).</summary>
     PyrealRemainderWithdrawal,
-
-    /// <summary>Opens an exclusive local Withdrawal Reservation over a Cloud Stack Lot quantity for a Withdrawal Token (WDR-001, INV-002).</summary>
-    StackLotReservationOpened,
-
-    /// <summary>Cancels a local Cloud Stack Lot Withdrawal Reservation before redemption (WDR-003).</summary>
-    StackLotReservationCancelled,
-
-    /// <summary>
-    /// Redeems a local Cloud Stack Lot Withdrawal Reservation, atomically performing the same
-    /// custody-to-world transition as <see cref="StackWithdrawal"/> and releasing the reservation as
-    /// fulfilled.
-    /// </summary>
-    StackLotReservationRedeemed,
 
     /// <summary>
     /// Moves one whole-item Cloud Custody Record or Cloud Stack Lot from a former monarch's

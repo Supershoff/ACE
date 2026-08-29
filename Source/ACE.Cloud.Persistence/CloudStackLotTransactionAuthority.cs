@@ -241,14 +241,18 @@ public sealed class CloudStackLotTransactionAuthority
 
     /// <summary>
     /// True when <paramref name="lotId"/> is the exclusive target of an active Withdrawal
-    /// Reservation (WDR-001/INV-001): a reservation is only exclusive if every lot mutator actually
-    /// checks it, not just a second reservation attempt (<see cref="CloudReservationPolicy.Open"/>).
-    /// Callers must already hold the lot's row lock so this check and the mutation it guards happen
-    /// atomically under the same transaction.
+    /// Reservation (WDR-001/INV-001, issue #122): a reservation is only exclusive if every lot
+    /// mutator actually checks it, not just a second reservation attempt
+    /// (<see cref="CloudReservationPolicy.Open"/>). Callers must already hold the lot's row lock so
+    /// this check and the mutation it guards happen atomically under the same transaction.
     /// </summary>
     private async Task<bool> HasActiveWithdrawalReservationAsync(Guid lotId, CancellationToken cancellationToken) =>
-        await _context.CloudStackLotWithdrawalReservations
-            .AnyAsync(r => r.LotId == lotId && r.Status == CloudReservationStatus.Active, cancellationToken);
+        await (
+            from t in _context.CloudWithdrawalReservationTargets
+            join r in _context.CloudWithdrawalReservations on t.ReservationId equals r.Id
+            where t.StackLotId == lotId && r.Status == CloudReservationStatus.Active
+            select t.Id)
+            .AnyAsync(cancellationToken);
 
     private async Task<CloudCustodyRecord?> LockCustodyRecordAsync(Guid custodyRecordId, CancellationToken cancellationToken) =>
         await _context.CloudCustodyRecords

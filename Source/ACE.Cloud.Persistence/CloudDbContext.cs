@@ -32,6 +32,10 @@ public sealed class CloudDbContext : DbContext
 
     public DbSet<CloudWithdrawalReservation> CloudWithdrawalReservations => Set<CloudWithdrawalReservation>();
 
+    public DbSet<CloudWithdrawalReservationTarget> CloudWithdrawalReservationTargets => Set<CloudWithdrawalReservationTarget>();
+
+    public DbSet<CloudWithdrawalRedemptionDeliveryItem> CloudWithdrawalRedemptionDeliveryItems => Set<CloudWithdrawalRedemptionDeliveryItem>();
+
     public DbSet<CloudCustodianConfigurationRecord> CloudCustodianConfigurations => Set<CloudCustodianConfigurationRecord>();
 
     public DbSet<CloudCustodianCustomPositionRecord> CloudCustodianCustomPositions => Set<CloudCustodianCustomPositionRecord>();
@@ -47,8 +51,6 @@ public sealed class CloudDbContext : DbContext
     public DbSet<CloudPyrealRemainderWithdrawalRecord> CloudPyrealRemainderWithdrawalRecords => Set<CloudPyrealRemainderWithdrawalRecord>();
 
     public DbSet<CloudPyrealRemainderWithdrawalBiota> CloudPyrealRemainderWithdrawalBiotas => Set<CloudPyrealRemainderWithdrawalBiota>();
-
-    public DbSet<CloudStackLotWithdrawalReservation> CloudStackLotWithdrawalReservations => Set<CloudStackLotWithdrawalReservation>();
 
     public DbSet<CloudWithdrawalLocationConfigurationRecord> CloudWithdrawalLocationConfigurations => Set<CloudWithdrawalLocationConfigurationRecord>();
 
@@ -286,19 +288,11 @@ public sealed class CloudDbContext : DbContext
                 .HasPrincipalKey(binding => binding.ShardId)
                 .OnDelete(DeleteBehavior.Restrict);
 
-            // WDR-001/INV-001: at most one active reservation may target the same biota at a time.
-            // The Cloud Custody Record row for BiotaId is locked (FOR UPDATE) for the whole opening
-            // transaction (CloudCustodyBoundary.ReserveForWithdrawalAsync), so concurrent opens for
-            // the same biota already serialize on that lock; this index exists for lookup, not as
-            // the sole enforcement mechanism.
-            entity.Property(reservation => reservation.BiotaId).IsRequired();
-            entity.HasIndex(reservation => reservation.BiotaId);
-
             entity.Property(reservation => reservation.OwnerId).IsRequired();
 
-            // Not a foreign key: CustodyRecordId is intentionally not stored here (looked up by
-            // BiotaId at redemption time instead), matching CloudIdempotencyRecord's precedent that
-            // a withdrawal can legitimately delete the row a reservation once referenced.
+            // Issue #122: exactly one shared unique index across every target kind, closing the gap
+            // where two independent per-target-type tables previously let the same token secret
+            // address two different, independently consumable reservations at once.
             entity.Property(reservation => reservation.TokenHash).IsRequired().HasMaxLength(64);
             entity.HasIndex(reservation => reservation.TokenHash).IsUnique();
 
@@ -317,6 +311,54 @@ public sealed class CloudDbContext : DbContext
 
             entity.Property(reservation => reservation.ExpiresAtUtc).IsRequired();
             entity.Property(reservation => reservation.ReleasedAtUtc);
+        });
+
+        modelBuilder.Entity<CloudWithdrawalReservationTarget>(entity =>
+        {
+            entity.ToTable("CloudWithdrawalReservationTarget");
+
+            entity.HasKey(target => target.Id);
+            entity.Property(target => target.Id).ValueGeneratedNever();
+
+            // WDR-001/INV-001: at most one active target may claim the same biota/lot at a time. The
+            // relevant Cloud Custody Record and/or Cloud Stack Lot row is locked (FOR UPDATE) for the
+            // whole opening transaction (CloudCustodyBoundary.ReserveForWithdrawalAsync), so
+            // concurrent opens for the same target already serialize on that lock; these indexes
+            // exist for lookup, not as the sole enforcement mechanism.
+            entity.Property(target => target.ReservationId).IsRequired();
+            entity.HasIndex(target => target.ReservationId);
+            entity.HasOne<CloudWithdrawalReservation>()
+                .WithMany()
+                .HasForeignKey(target => target.ReservationId)
+                .HasPrincipalKey(reservation => reservation.Id)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.Property(target => target.Kind).IsRequired().HasConversion<string>().HasMaxLength(16);
+            entity.Property(target => target.ItemBiotaId);
+            entity.HasIndex(target => target.ItemBiotaId);
+            entity.Property(target => target.StackLotId);
+            entity.HasIndex(target => target.StackLotId);
+            entity.Property(target => target.Quantity);
+        });
+
+        modelBuilder.Entity<CloudWithdrawalRedemptionDeliveryItem>(entity =>
+        {
+            entity.ToTable("CloudWithdrawalRedemptionDeliveryItem");
+
+            entity.HasKey(item => item.Id);
+            entity.Property(item => item.Id).ValueGeneratedNever();
+
+            entity.Property(item => item.RedemptionIdempotencyKey).IsRequired();
+            entity.HasIndex(item => item.RedemptionIdempotencyKey);
+            entity.HasOne<CloudIdempotencyRecord>()
+                .WithMany()
+                .HasForeignKey(item => item.RedemptionIdempotencyKey)
+                .HasPrincipalKey(record => record.IdempotencyKey)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(item => item.OrdinalPosition).IsRequired();
+            entity.Property(item => item.DeliveredBiotaId).IsRequired();
+            entity.Property(item => item.Quantity);
         });
 
         modelBuilder.Entity<CloudStackLot>(entity =>
@@ -588,51 +630,6 @@ public sealed class CloudDbContext : DbContext
                 .OnDelete(DeleteBehavior.Restrict);
 
             entity.Property(biota => biota.BiotaId).IsRequired();
-        });
-
-        modelBuilder.Entity<CloudStackLotWithdrawalReservation>(entity =>
-        {
-            entity.ToTable("CloudStackLotWithdrawalReservation");
-
-            entity.HasKey(reservation => reservation.Id);
-            entity.Property(reservation => reservation.Id).ValueGeneratedNever();
-
-            entity.Property(reservation => reservation.ShardId).IsRequired().HasMaxLength(64);
-            entity.HasOne<CloudShardBinding>()
-                .WithMany()
-                .HasForeignKey(reservation => reservation.ShardId)
-                .HasPrincipalKey(binding => binding.ShardId)
-                .OnDelete(DeleteBehavior.Restrict);
-
-            // WDR-001/INV-001: at most one active reservation may target the same lot at a time. The
-            // CloudStackLot row for LotId is locked (FOR UPDATE) for the whole opening transaction
-            // (CloudCustodyBoundary.ReserveStackLotForWithdrawalAsync), so concurrent opens for the
-            // same lot already serialize on that lock; this index exists for lookup, not as the sole
-            // enforcement mechanism.
-            entity.Property(reservation => reservation.LotId).IsRequired();
-            entity.HasIndex(reservation => reservation.LotId);
-
-            entity.Property(reservation => reservation.Quantity).IsRequired();
-            entity.Property(reservation => reservation.OwnerId).IsRequired();
-
-            entity.Property(reservation => reservation.TokenHash).IsRequired().HasMaxLength(64);
-            entity.HasIndex(reservation => reservation.TokenHash).IsUnique();
-
-            entity.Property(reservation => reservation.OpenIdempotencyKey).IsRequired();
-            entity.HasIndex(reservation => reservation.OpenIdempotencyKey).IsUnique();
-
-            entity.Property(reservation => reservation.Status).IsRequired().HasConversion<string>().HasMaxLength(16);
-            entity.Property(reservation => reservation.ReleaseReason).HasConversion<string>().HasMaxLength(32);
-
-            entity.Property(reservation => reservation.Version).IsRequired();
-
-            entity.Property(reservation => reservation.CreatedAtUtc)
-                .IsRequired()
-                .ValueGeneratedOnAdd()
-                .HasDefaultValueSql("CURRENT_TIMESTAMP");
-
-            entity.Property(reservation => reservation.ExpiresAtUtc).IsRequired();
-            entity.Property(reservation => reservation.ReleasedAtUtc);
         });
 
         modelBuilder.Entity<CloudWithdrawalLocationConfigurationRecord>(entity =>
