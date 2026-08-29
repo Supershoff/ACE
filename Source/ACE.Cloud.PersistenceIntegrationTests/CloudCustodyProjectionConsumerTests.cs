@@ -290,6 +290,76 @@ public sealed class CloudCustodyProjectionConsumerTests
     }
 
     [TestMethod]
+    public async Task RebuildAsync_AfterIncrementalConsumptionAlreadyPublished_DoesNotDuplicateLiveStreamEvents()
+    {
+        var options = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
+        var biotaIds = new[] { NextId(), NextId(), NextId() };
+        var owners = biotaIds.Select(_ => Guid.NewGuid()).ToArray();
+
+        foreach (var biotaId in biotaIds)
+        {
+            await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, biotaId);
+        }
+
+        await using (var context = new CloudDbContext(options))
+        {
+            var boundary = new CloudCustodyBoundary(context);
+            for (var i = 0; i < biotaIds.Length; i++)
+            {
+                await boundary.DepositAsync(biotaIds[i], ShardId, owners[i], Guid.NewGuid());
+            }
+        }
+
+        // The stream already has entries from ordinary incremental consumption, before any rebuild
+        // is ever requested -- this is the normal, expected state of a live production shard.
+        await using (var context = new CloudDbContext(options))
+        {
+            var consumer = new CloudCustodyProjectionConsumer(context);
+            CloudProjectionRunSummary summary;
+            do
+            {
+                var batchOutcome = await consumer.RunBatchAsync(ShardId, maxCount: 1);
+                summary = batchOutcome.Value!;
+            }
+            while (!summary.CaughtUp);
+        }
+
+        IReadOnlyList<(string EventKind, Guid? ScopeOwnerId, long SourceSequenceNumber)> beforeRebuild;
+        await using (var snapshotContext = new CloudDbContext(options))
+        {
+            beforeRebuild = await snapshotContext.CloudLiveStreamEvents
+                .OrderBy(e => e.SequenceNumber)
+                .Select(e => new ValueTuple<string, Guid?, long>(e.EventKind, e.ScopeOwnerId, e.SourceSequenceNumber))
+                .ToListAsync();
+        }
+
+        // An operator now runs a full rebuild (issue #22's Green "full rebuild commands") to recover
+        // a corrupted/out-of-date search projection. Rebuilding must reproduce the same state, not
+        // republish the shard's entire history to every already-connected Live State Stream client.
+        await using (var rebuildContext = new CloudDbContext(options))
+        {
+            var rebuildConsumer = new CloudCustodyProjectionConsumer(rebuildContext);
+            var rebuildOutcome = await rebuildConsumer.RebuildAsync(ShardId, batchSize: 2);
+            Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, rebuildOutcome.Kind);
+            Assert.AreEqual(3, rebuildOutcome.Value!.EventsApplied);
+        }
+
+        IReadOnlyList<(string EventKind, Guid? ScopeOwnerId, long SourceSequenceNumber)> afterRebuild;
+        await using (var snapshotContext = new CloudDbContext(options))
+        {
+            afterRebuild = await snapshotContext.CloudLiveStreamEvents
+                .OrderBy(e => e.SequenceNumber)
+                .Select(e => new ValueTuple<string, Guid?, long>(e.EventKind, e.ScopeOwnerId, e.SourceSequenceNumber))
+                .ToListAsync();
+        }
+
+        CollectionAssert.AreEqual(
+            beforeRebuild.ToList(),
+            afterRebuild.ToList(),
+            "A rebuild must not republish a duplicate Live State Stream entry for events already streamed once.");
+    }
+
+    [TestMethod]
     public async Task RunBatchAsync_AgainstAnUnreachableDatabase_ReturnsUnavailable_InsteadOfThrowing()
     {
         var options = CloudDbContextOptionsFactory.Create(UnreachableConnectionString(), await RealServerVersionAsync());

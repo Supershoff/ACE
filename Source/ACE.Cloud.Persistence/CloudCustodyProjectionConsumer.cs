@@ -99,11 +99,14 @@ public sealed class CloudCustodyProjectionConsumer
     }
 
     /// <summary>
-    /// Wipes this consumer's projection rows, dead letters, and checkpoint for <paramref name="shardId"/>,
-    /// then drains the Custody Outbox from the very beginning in batches of <paramref name="batchSize"/>
-    /// until caught up (issue #22's Green "full rebuild commands"). Because incremental consumption and
-    /// this rebuild both apply the exact same per-event logic, the resulting projection state is
-    /// identical to what incremental consumption alone would have produced.
+    /// Wipes this consumer's projection rows, dead letters, Live State Stream events, and checkpoint
+    /// for <paramref name="shardId"/>, then drains the Custody Outbox from the very beginning in
+    /// batches of <paramref name="batchSize"/> until caught up (issue #22's Green "full rebuild
+    /// commands"). Because incremental consumption and this rebuild both apply the exact same
+    /// per-event logic, the resulting projection state is identical to what incremental consumption
+    /// alone would have produced -- and re-deriving the stream from scratch (rather than leaving old
+    /// entries in place) means a rebuild never republishes a duplicate entry for an event that was
+    /// already streamed once.
     /// </summary>
     public async Task<CloudBoundaryOutcome<CloudProjectionRunSummary>> RebuildAsync(
         string shardId, int batchSize = 500, CancellationToken cancellationToken = default)
@@ -170,6 +173,11 @@ public sealed class CloudCustodyProjectionConsumer
             .Where(entry => entry.ConsumerName == ConsumerName && entry.ShardId == shardId)
             .ToListAsync(cancellationToken);
         _context.CloudProjectionDeadLetters.RemoveRange(staleDeadLetters);
+
+        var staleLiveStreamEvents = await _context.CloudLiveStreamEvents
+            .Where(evt => evt.ShardId == shardId)
+            .ToListAsync(cancellationToken);
+        _context.CloudLiveStreamEvents.RemoveRange(staleLiveStreamEvents);
 
         var checkpoint = await _context.CloudProjectionCheckpoints
             .SingleOrDefaultAsync(c => c.ConsumerName == ConsumerName, cancellationToken);
