@@ -109,7 +109,24 @@ public sealed class CloudAssetImportStagingWorker : BackgroundService
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogError(ex, "Asset Import session {SessionId} failed extraction.", queued.Id);
-            await boundary.FailStagingAsync(queued.Id, ex.Message, stoppingToken);
+            await boundary.FailStagingAsync(queued.Id, DescribeExtractionFailure(ex), stoppingToken);
         }
     }
+
+    /// <summary>
+    /// Maps an extraction exception to a bounded, path-free reason safe to commit to the Activity
+    /// Ledger. <c>ex.Message</c> must never be persisted directly here: <c>ACE.DatLoader</c>'s
+    /// <see cref="FileNotFoundException"/>(string) constructor (and similar I/O exceptions) puts the
+    /// absolute operator storage path verbatim into <c>.Message</c>, which would otherwise violate
+    /// issue #25's "no absolute operator path is committed" acceptance criterion. The full exception,
+    /// including its message, is still logged server-side via <see cref="ILogger.LogError"/> above --
+    /// that structured log is an operator-only surface distinct from the Activity Ledger.
+    /// </summary>
+    internal static string DescribeExtractionFailure(Exception ex) => ex switch
+    {
+        FileNotFoundException => "Source DAT is missing or unreadable.",
+        IOException => "Source DAT could not be read due to an I/O error.",
+        InvalidDataException => "Source DAT is malformed.",
+        _ => "Extraction failed; see worker logs for details.",
+    };
 }
