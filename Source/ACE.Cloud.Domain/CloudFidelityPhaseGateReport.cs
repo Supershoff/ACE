@@ -10,12 +10,23 @@ namespace ACE.Cloud.Domain;
 /// </summary>
 public sealed record CloudFidelityPhaseGateReport
 {
+    /// <summary>
+    /// The fixture categories this phase gate always requires (issue #28: "The protected phase gate
+    /// must require non-empty Icon and Appraisal corpora... A missing required category is blocking,
+    /// not a non-blocking gap."). A run that only ever exercised one of these -- an Icon-only or
+    /// Appraisal-only corpus -- can never satisfy <see cref="AllPassed"/>, regardless of how many
+    /// fixtures it included or how cleanly they all matched.
+    /// </summary>
+    public static readonly IReadOnlyList<string> RequiredCategories = ["Icon", "Appraisal"];
+
     public required IReadOnlyList<CloudFidelityPhaseGateFixtureResult> Results { get; init; }
 
     /// <summary>
     /// Explicit, named coverage gaps that do not block this phase gate (e.g. a curated corpus category
     /// an operator has not yet captured). Never silently omitted -- an empty list here is itself the
-    /// claim "no known gaps," so callers must populate it deliberately.
+    /// claim "no known gaps," so callers must populate it deliberately. A missing <see cref="RequiredCategories"/>
+    /// entry is never appropriate here -- it always belongs in <see cref="MissingRequiredCategories"/> instead,
+    /// which blocks the gate rather than merely noting it.
     /// </summary>
     public IReadOnlyList<string> NonBlockingGaps { get; init; } = Array.Empty<string>();
 
@@ -23,7 +34,15 @@ public sealed record CloudFidelityPhaseGateReport
     public IReadOnlyDictionary<string, int> FixtureCountByCategory =>
         Results.GroupBy(r => r.Category).ToDictionary(g => g.Key, g => g.Count());
 
-    public bool AllPassed => Results.Count > 0 && Results.All(r => r.Matched);
+    /// <summary>
+    /// Which of <see cref="RequiredCategories"/> have zero fixtures in this run. Always blocking: a
+    /// non-empty list here forces <see cref="AllPassed"/> false even if every included fixture matched.
+    /// </summary>
+    public IReadOnlyList<string> MissingRequiredCategories =>
+        RequiredCategories.Where(category => !FixtureCountByCategory.ContainsKey(category)).ToList();
+
+    public bool AllPassed =>
+        Results.Count > 0 && Results.All(r => r.Matched) && MissingRequiredCategories.Count == 0;
 
     public static CloudFidelityPhaseGateReport Combine(
         IEnumerable<CloudFidelityPhaseGateFixtureResult> results, IEnumerable<string>? nonBlockingGaps = null)

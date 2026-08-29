@@ -72,10 +72,10 @@ public sealed class CloudFidelityPhaseGateHarnessTests
                     iconFixtures, manifestVersion: 1, new PortalDatIconClothingEffectResolver(blobReader), new PortalDatIconLayerSource(blobReader));
                 results.AddRange(iconResults);
             }
-            else
-            {
-                nonBlockingGaps.Add("No icon fixture corpus configured on this run.");
-            }
+            // A missing Icon corpus is never recorded to nonBlockingGaps: issue #28 requires it to be
+            // blocking ("A missing required category is blocking, not a non-blocking gap"). Leaving it
+            // out of Results is enough -- CloudFidelityPhaseGateReport.MissingRequiredCategories/AllPassed
+            // already treat an absent required category as a hard failure below.
 
             if (haveAppraisalCorpus)
             {
@@ -89,10 +89,8 @@ public sealed class CloudFidelityPhaseGateHarnessTests
                     Differences = r.Differences,
                 }));
             }
-            else
-            {
-                nonBlockingGaps.Add("No appraisal capture corpus configured on this run.");
-            }
+            // Likewise, a missing Appraisal corpus is blocking, not a non-blocking gap -- see the
+            // matching comment above the Icon branch.
 
             var report = CloudFidelityPhaseGateReport.Combine(results, nonBlockingGaps);
 
@@ -106,7 +104,15 @@ public sealed class CloudFidelityPhaseGateHarnessTests
                 .Select(r => $"[{r.Category}] {r.FixtureName}: {string.Join("; ", r.Differences)}")
                 .ToList();
 
-            Assert.IsTrue(report.AllPassed, "One or more fidelity fixtures mismatched:" + Environment.NewLine + string.Join(Environment.NewLine, failures));
+            if (report.MissingRequiredCategories.Count > 0)
+            {
+                failures.Add(
+                    "Missing required categor" + (report.MissingRequiredCategories.Count == 1 ? "y" : "ies") + ": "
+                    + string.Join(", ", report.MissingRequiredCategories)
+                    + " -- issue #28 requires a non-empty Icon and Appraisal corpus in the same run; configure both directories and re-run.");
+            }
+
+            Assert.IsTrue(report.AllPassed, "The fidelity phase gate did not pass:" + Environment.NewLine + string.Join(Environment.NewLine, failures));
         }
         finally
         {

@@ -7,6 +7,15 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
+// Issue #28's local-only fixture-generation tooling: `dotnet run --project Source/ACE.Cloud.Worker --
+// generate-icon-fixture ...` (see docs/agents/fidelity-phase-gate.md). Dispatches and exits before any
+// of the hosted worker's database/configuration requirements below are ever touched; ordinary worker
+// startup (no arguments) is unaffected.
+if (args.Length > 0 && CloudFixtureGeneratorCli.KnownCommands.Contains(args[0]))
+{
+    return await CloudFixtureGeneratorCli.RunAsync(args, Console.Out, Console.Error);
+}
+
 var builder = Host.CreateApplicationBuilder(args);
 
 builder.Services.Configure<CloudWorkerOptions>(builder.Configuration.GetSection(CloudWorkerOptions.SectionName));

@@ -47,6 +47,60 @@ public sealed class CloudFidelityPhaseGateReportTests
     }
 
     [TestMethod]
+    public void AllPassed_OnlyIconCategory_IsFalse()
+    {
+        // Issue #28 acceptance criterion: "A partial run containing only Icon or only Appraisal
+        // evidence cannot pass the gate," even when every included Icon fixture matched.
+        var report = CloudFidelityPhaseGateReport.Combine(
+        [
+            new CloudFidelityPhaseGateFixtureResult { Category = "Icon", FixtureName = "a", Matched = true },
+            new CloudFidelityPhaseGateFixtureResult { Category = "Icon", FixtureName = "b", Matched = true },
+        ]);
+
+        Assert.IsFalse(report.AllPassed);
+        CollectionAssert.Contains(report.MissingRequiredCategories.ToList(), "Appraisal");
+    }
+
+    [TestMethod]
+    public void AllPassed_OnlyAppraisalCategory_IsFalse()
+    {
+        var report = CloudFidelityPhaseGateReport.Combine(
+        [
+            new CloudFidelityPhaseGateFixtureResult { Category = "Appraisal", FixtureName = "a", Matched = true },
+        ]);
+
+        Assert.IsFalse(report.AllPassed);
+        CollectionAssert.Contains(report.MissingRequiredCategories.ToList(), "Icon");
+    }
+
+    [TestMethod]
+    public void MissingRequiredCategories_IsBlockingRatherThanANonBlockingGap()
+    {
+        // "A missing required category is blocking, not a non-blocking gap": a caller-supplied
+        // non-blocking gap describing an unrelated coverage hole must never make the missing required
+        // Appraisal category disappear from AllPassed's verdict or get confused with NonBlockingGaps.
+        var report = CloudFidelityPhaseGateReport.Combine(
+            [new CloudFidelityPhaseGateFixtureResult { Category = "Icon", FixtureName = "a", Matched = true }],
+            nonBlockingGaps: ["No high-resolution client_highres.dat corpus captured yet."]);
+
+        Assert.IsFalse(report.AllPassed);
+        CollectionAssert.Contains(report.MissingRequiredCategories.ToList(), "Appraisal");
+        CollectionAssert.DoesNotContain(report.NonBlockingGaps.ToList(), "Appraisal");
+    }
+
+    [TestMethod]
+    public void MissingRequiredCategories_BothCategoriesPresent_IsEmpty()
+    {
+        var report = CloudFidelityPhaseGateReport.Combine(
+        [
+            new CloudFidelityPhaseGateFixtureResult { Category = "Icon", FixtureName = "a", Matched = true },
+            new CloudFidelityPhaseGateFixtureResult { Category = "Appraisal", FixtureName = "b", Matched = true },
+        ]);
+
+        Assert.HasCount(0, report.MissingRequiredCategories);
+    }
+
+    [TestMethod]
     public void FixtureCountByCategory_CountsEachCategoryIndependently()
     {
         var report = CloudFidelityPhaseGateReport.Combine(
@@ -104,6 +158,7 @@ public sealed class CloudFidelityPhaseGateReportTests
         var report = CloudFidelityPhaseGateReport.Combine(
         [
             new CloudFidelityPhaseGateFixtureResult { Category = "Icon", FixtureName = "a", Matched = true },
+            new CloudFidelityPhaseGateFixtureResult { Category = "Appraisal", FixtureName = "b", Matched = true },
         ],
         nonBlockingGaps: ["gap"]);
 

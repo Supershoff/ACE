@@ -117,15 +117,21 @@ public sealed class CloudFidelityPhaseGateAcceptanceTests
         Assert.AreEqual(2, afterUpgrade.LastSeenManifestVersion);
 
         // The phase-gate report itself: redacted, machine-readable, and identifies this run's coverage.
+        // Both required categories (issue #28: "The protected phase gate must require non-empty Icon
+        // and Appraisal corpora") must be represented, so the Appraisal panel this same flow already
+        // built above is included as its own fixture result rather than leaving Appraisal uncovered.
         var report = CloudFidelityPhaseGateReport.Combine(
         [
             new CloudFidelityPhaseGateFixtureResult { Category = "Icon", FixtureName = "synthetic-resolvable", Matched = true },
             new CloudFidelityPhaseGateFixtureResult { Category = "Icon", FixtureName = "synthetic-missing-reference", Matched = true },
+            new CloudFidelityPhaseGateFixtureResult { Category = "Appraisal", FixtureName = "synthetic-buckler", Matched = panel.ItemName == "Test Buckler" },
         ],
         nonBlockingGaps: ["This synthetic empty-environment run covers pipeline composition only; the curated real-DAT/real-capture corpus runs separately via the protected CloudFidelityPhaseGateHarnessTests."]);
 
         Assert.IsTrue(report.AllPassed);
+        Assert.HasCount(0, report.MissingRequiredCategories);
         Assert.AreEqual(2, report.FixtureCountByCategory["Icon"]);
+        Assert.AreEqual(1, report.FixtureCountByCategory["Appraisal"]);
     }
 
     private async Task<CloudAssetManifestSnapshot> UploadAndActivateAsync(CloudAssetImportBoundary boundary, int entryCount, uint adminAccountId)

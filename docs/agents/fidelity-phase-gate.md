@@ -19,6 +19,45 @@ dotnet test Source/ACE.Cloud.Worker.Tests/ACE.Cloud.Worker.Tests.csproj --filter
 
 The individual icon and appraisal harnesses (`CloudIconCompositionGoldenTests`, `CloudAppraisalGoldenCaptureComparisonTests`) can also be run independently against just their own corpus directory.
 
+## Generating fixtures without hand-authoring JSON
+
+Neither fixture contract needs to be hand-authored. `ACE.Cloud.Worker` ships a local-only CLI that
+derives the correctly-shaped JSON from only the values an operator actually has to supply -- it never
+touches a network, and the fixture files it writes stay wherever `--output-dir` points, which must never
+be a path inside this repository:
+
+```
+# Icon: selected composition inputs (public DIDs/palette parameters, not private art) + a trusted
+# reference PNG you have independently confirmed is correct. The tool hashes the PNG and discards its
+# bytes and path -- only the hash is ever written to the fixture.
+dotnet run --project Source/ACE.Cloud.Worker -- generate-icon-fixture \
+  --fixture-name clothing-palette-variant-01 \
+  --inputs '{"BaseIconDid":100690954,"ClothingBaseDid":33685520,"PaletteTemplate":12,"Shade":0.5}' \
+  --reference-png /path/to/your/confirmed-reference.png \
+  --output-dir /path/to/your/local/icon-fixtures
+
+# Already have the hash instead of the PNG file itself? Pass --reference-hash <64 hex chars> instead of
+# --reference-png.
+
+# Appraisal: only the raw item property capture from your own successful ACE appraisal (a
+# CloudAppraisalRawItemSnapshot). The tool derives the entire panel -- sections, lines, wording -- by
+# running the same deterministic CloudAppraisalProjector the harness later verifies against, so you never
+# write panel/section/line JSON by hand.
+dotnet run --project Source/ACE.Cloud.Worker -- generate-appraisal-fixture \
+  --fixture-name test-buckler \
+  --capture /path/to/your/local/captured-snapshot.json \
+  --output-dir /path/to/your/local/appraisal-fixtures
+
+# Validate any existing fixture (generated or hand-edited) against the same rules the generators enforce,
+# including -- for an appraisal fixture -- re-deriving ExpectedPanel and confirming it still matches:
+dotnet run --project Source/ACE.Cloud.Worker -- validate-fixture /path/to/some-fixture.icon.json
+```
+
+`--inputs`/`--capture` accept either a path to a local JSON file or a literal JSON string. Every
+generated fixture is checked before it is written: a fixture name containing a path separator or `..`,
+a malformed reference hash, an invalid reference PNG, or any generated contract that would embed an
+absolute filesystem path is rejected outright rather than written to disk.
+
 ## Icon fixture contract (`*.icon.json`)
 
 Each file deserializes to `ACE.Cloud.Domain.CloudIconGoldenFixture`:
@@ -61,5 +100,7 @@ Each file deserializes to `ACE.Cloud.Domain.CloudAppraisalGoldenFixture` — see
 ## Phase-gate report
 
 `CloudFidelityPhaseGateReport` (`ACE.Cloud.Domain`) is the redacted evidence this issue's acceptance criteria ask for: one `CloudFidelityPhaseGateFixtureResult` per fixture (category, fixture name, matched, human-readable diffs — never raw bytes or filesystem paths), a `FixtureCountByCategory` coverage summary, and an explicit `NonBlockingGaps` list. A gap that is not yet covered (for example, no `client_highres.dat` corpus captured) must be named there rather than silently omitted; the phase gate only requires that every fixture that *is* included matches, not that coverage is exhaustive on the first run.
+
+`AllPassed` additionally requires both `Icon` and `Appraisal` to be represented by at least one fixture each (`RequiredCategories`) — a run built from only an Icon corpus or only an Appraisal corpus can never pass, no matter how many fixtures it includes or how cleanly they all match. `MissingRequiredCategories` names whichever of those two categories has zero fixtures in a given run; unlike `NonBlockingGaps`, a missing required category is always blocking and is never appropriate to report as a non-blocking gap. `CloudFidelityPhaseGateHarnessTests` only reports `Inconclusive` when *neither* corpus is configured (the ordinary-CI case); an operator who configures only one corpus gets a failing test naming the missing category, not a false pass.
 
 Only this JSON report — never the source DAT, extracted art, capture corpus, or any absolute operator path — may be attached to the GitHub issue as evidence.
