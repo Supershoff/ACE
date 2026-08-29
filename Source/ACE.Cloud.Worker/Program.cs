@@ -65,3 +65,4 @@ builder.Services.AddHostedService<CloudAssetImportStagingWorker>();
 
 var host = builder.Build();
 host.Run();
+return 0;
