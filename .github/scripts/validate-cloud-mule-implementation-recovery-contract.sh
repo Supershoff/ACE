@@ -23,4 +23,12 @@ grep -Fq 'refresh-cloud-mule-implementation-branch.sh' "${workflow}"
 grep -Fq 'elif [ "${POLICY_RESULT}" = failure ]' "${ci_workflow}"
 grep -Fq 'leaving recovery to the reconciler' "${ci_workflow}"
 
+for claude_workflow in \
+  .github/workflows/claude.yml \
+  .github/workflows/claude-ci-repair.yml \
+  .github/workflows/claude-review.yml; do
+  grep -Fq 'Bash(node:*)' "${claude_workflow}"
+  grep -Fq 'Bash(npm:*)' "${claude_workflow}"
+done
+
 echo "Claude implementation recovery contract is valid."
