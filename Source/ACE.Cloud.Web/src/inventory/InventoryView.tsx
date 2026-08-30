@@ -13,6 +13,7 @@ import { Button } from "../design-system/primitives/Button";
 import { EmptyState } from "../design-system/primitives/EmptyState";
 import { ErrorState } from "../design-system/primitives/ErrorState";
 import { LoadingState } from "../design-system/primitives/LoadingState";
+import { useSession } from "../session/SessionContext";
 import { useIsNarrowViewport } from "../shell/useIsNarrowViewport";
 import { iconGridTokens } from "../design-system/inventoryFidelityTokens";
 import { FullCloudAppraisalDialog } from "./FullCloudAppraisalDialog";
@@ -93,6 +94,8 @@ function appraisalErrorMessage(status: number): string {
  * complete, character-independent Full Cloud Appraisal on click/right-click/keyboard/touch (UI-004).
  */
 export function InventoryView({ inventoryApi }: InventoryViewProps) {
+  const { status, subscribeLiveStream } = useSession();
+
   const defaultApiRef = useRef<InventoryApi | null>(null);
   if (!defaultApiRef.current) {
     defaultApiRef.current = createInventoryApi(createHttpClient({ baseUrl: "", getCsrfToken: () => null }));
@@ -138,6 +141,13 @@ export function InventoryView({ inventoryApi }: InventoryViewProps) {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    if (status !== "authenticated") {
+      return;
+    }
+    return subscribeLiveStream("custody", load);
+  }, [status, subscribeLiveStream, load]);
 
   const items = useMemo(() => response?.page.items ?? [], [response]);
 

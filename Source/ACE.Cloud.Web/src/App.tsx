@@ -1,5 +1,6 @@
 import { Route, Routes } from "react-router-dom";
 import { ActivityLedgerPage } from "./activity/ActivityLedgerPage";
+import { LiveStreamStaleBanner } from "./design-system/primitives/LiveStreamStaleBanner";
 import { ReadOnlyBanner } from "./design-system/primitives/ReadOnlyBanner";
 import { NotificationCenter } from "./notifications/NotificationCenter";
 import { AccountOverviewPage } from "./pages/AccountOverviewPage";
@@ -22,8 +23,15 @@ const NAV_ITEMS = [
 ];
 
 export function App() {
-  const { serviceAvailability } = useSession();
-  const banner = serviceAvailability === "unknown" ? null : <ReadOnlyBanner mode={serviceAvailability} />;
+  const { status, serviceAvailability, liveStream } = useSession();
+  const readOnlyBanner = serviceAvailability === "unknown" ? null : <ReadOnlyBanner mode={serviceAvailability} />;
+  const staleBanner = status === "authenticated" && liveStream.stale ? <LiveStreamStaleBanner /> : null;
+  const banner = readOnlyBanner || staleBanner ? (
+    <>
+      {readOnlyBanner}
+      {staleBanner}
+    </>
+  ) : null;
 
   return (
     <AppShell navItems={NAV_ITEMS} banner={banner} headerActions={<NotificationCenter />}>

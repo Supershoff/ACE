@@ -20,7 +20,7 @@ export interface ActivityLedgerPageProps {
  * dropdown here).
  */
 export function ActivityLedgerPage({ activityApi }: ActivityLedgerPageProps) {
-  const { csrfToken } = useSession();
+  const { csrfToken, status, subscribeLiveStream } = useSession();
   const csrfTokenRef = useRef<string | null>(null);
   csrfTokenRef.current = csrfToken;
 
@@ -55,6 +55,13 @@ export function ActivityLedgerPage({ activityApi }: ActivityLedgerPageProps) {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    if (status !== "authenticated") {
+      return;
+    }
+    return subscribeLiveStream("custody", load);
+  }, [status, subscribeLiveStream, load]);
 
   return (
     <section>

@@ -24,7 +24,7 @@ export interface NotificationCenterProps {
  * matching Progressive Interface's "no unnecessary... permanently visible advanced controls."
  */
 export function NotificationCenter({ notificationApi }: NotificationCenterProps) {
-  const { status, csrfToken } = useSession();
+  const { status, csrfToken, subscribeLiveStream } = useSession();
   const csrfTokenRef = useRef<string | null>(null);
   csrfTokenRef.current = csrfToken;
 
@@ -56,6 +56,13 @@ export function NotificationCenter({ notificationApi }: NotificationCenterProps)
     }
     refresh();
   }, [status, refresh]);
+
+  useEffect(() => {
+    if (status !== "authenticated") {
+      return;
+    }
+    return subscribeLiveStream("notification", refresh);
+  }, [status, subscribeLiveStream, refresh]);
 
   async function handleVisit(notification: CloudNotification) {
     setIsOpen(false);

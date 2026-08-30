@@ -11,9 +11,11 @@ function baseSessionValue(overrides: Partial<SessionContextValue> = {}): Session
     accountKind: "Unknown",
     accountName: null,
     serviceAvailability: "Operational",
+    liveStream: { status: "idle", stale: false },
     login: vi.fn(async () => ({ ok: true })),
     logout: vi.fn(async () => {}),
     checkAdminAccess: vi.fn(async () => ({ checked: true, isAdmin: false, accessLevel: null })),
+    subscribeLiveStream: vi.fn(() => vi.fn()),
     ...overrides,
   };
 }

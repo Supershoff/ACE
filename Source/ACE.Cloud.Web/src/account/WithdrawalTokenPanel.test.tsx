@@ -15,9 +15,11 @@ function baseSession(): SessionContextValue {
     accountKind: "Main",
     accountName: "MainPlayer",
     serviceAvailability: "Operational",
+    liveStream: { status: "idle", stale: false },
     login: vi.fn(),
     logout: vi.fn(),
     checkAdminAccess: vi.fn(async () => ({ checked: true, isAdmin: false, accessLevel: null })),
+    subscribeLiveStream: vi.fn(() => vi.fn()),
   };
 }
 

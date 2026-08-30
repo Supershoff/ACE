@@ -1,0 +1,25 @@
+# Disposable, local-only MariaDB for the Cloud `ace_cloud` schema (issue #34's acceptance launcher).
+# A distinct project name, container name, host port, and named volume keep this fully separate from
+# any existing ACE installation's own `docker-compose.yml`/`ace-db` -- `Stop-LocalAcceptance.ps1 -Purge`
+# only ever tears down resources under this compose project.
+services:
+  ace-cloud-acceptance-db:
+    image: mariadb:11.4
+    container_name: ace-cloud-acceptance-db
+    environment:
+      MARIADB_ROOT_PASSWORD: ${ACE_CLOUD_ACCEPTANCE_DB_ROOT_PASSWORD:?set in acceptance.local.vars, copied from acceptance.settings.example.json}
+      MARIADB_DATABASE: ace_cloud
+      MARIADB_USER: ${ACE_CLOUD_ACCEPTANCE_DB_USER:-cloud_acceptance}
+      MARIADB_PASSWORD: ${ACE_CLOUD_ACCEPTANCE_DB_PASSWORD:?set in acceptance.local.vars, copied from acceptance.settings.example.json}
+    ports:
+      - "${ACE_CLOUD_ACCEPTANCE_DB_PORT:-3307}:3306/tcp"
+    volumes:
+      - ace-cloud-acceptance-db-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  ace-cloud-acceptance-db-data:
