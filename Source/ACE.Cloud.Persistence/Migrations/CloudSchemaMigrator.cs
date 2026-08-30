@@ -42,6 +42,7 @@ public static class CloudSchemaMigrator
         new AddQuotasMaintenanceAndMarketplaceState(),
         new AddCloudStorageQuotaOwnerLock(),
         new AddCloudInventoryItemPropertiesProjection(),
+        new AddCloudSearchConfiguration(),
     ];
 
     /// <summary>

@@ -122,6 +122,8 @@ public sealed class CloudDbContext : DbContext
 
     public DbSet<CloudMarketplaceConfigurationRecord> CloudMarketplaceConfigurations => Set<CloudMarketplaceConfigurationRecord>();
 
+    public DbSet<CloudSearchConfigurationRecord> CloudSearchConfigurations => Set<CloudSearchConfigurationRecord>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<CloudShardBinding>(entity =>
@@ -1645,6 +1647,31 @@ public sealed class CloudDbContext : DbContext
                 .OnDelete(DeleteBehavior.Restrict);
 
             entity.Property(config => config.State).IsRequired().HasConversion<string>().HasMaxLength(24);
+            entity.Property(config => config.Version).IsRequired().IsConcurrencyToken();
+
+            entity.Property(config => config.UpdatedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAddOrUpdate()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudSearchConfigurationRecord>(entity =>
+        {
+            // ARCH-001: exactly one Safe Regex Search configuration row per deployment (SRCH-001).
+            entity.ToTable("CloudSearchConfiguration", table =>
+                table.HasCheckConstraint("CK_CloudSearchConfiguration_Singleton", "`Id` = 1"));
+
+            entity.HasKey(config => config.Id);
+            entity.Property(config => config.Id).ValueGeneratedNever();
+
+            entity.Property(config => config.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(config => config.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(config => config.RegexSearchEnabled).IsRequired();
             entity.Property(config => config.Version).IsRequired().IsConcurrencyToken();
 
             entity.Property(config => config.UpdatedAtUtc)
