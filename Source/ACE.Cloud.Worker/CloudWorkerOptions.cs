@@ -33,4 +33,10 @@ public sealed class CloudWorkerOptions
     public int AssetStorageMaxChunkSizeBytes { get; init; } = 32 * 1024 * 1024;
 
     public TimeSpan AssetImportPollInterval { get; init; } = TimeSpan.FromSeconds(10);
+
+    /// <summary>How often the Custody/Identity Outbox projection consumers poll for new events (ARCH-007).</summary>
+    public TimeSpan ProjectionConsumerPollInterval { get; init; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>The maximum number of outbox events a projection consumer applies per poll tick.</summary>
+    public int ProjectionConsumerBatchSize { get; init; } = 200;
 }

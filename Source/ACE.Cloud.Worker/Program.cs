@@ -63,6 +63,9 @@ builder.Services.AddScoped(serviceProvider => new CloudAssetImportBoundary(
     serviceProvider.GetRequiredService<CloudAssetStorageOptions>()));
 builder.Services.AddHostedService<CloudAssetImportStagingWorker>();
 
+builder.Services.AddHostedService<CloudCustodyProjectionConsumerWorker>();
+builder.Services.AddHostedService<CloudIdentityProjectionConsumerWorker>();
+
 var host = builder.Build();
 host.Run();
 return 0;

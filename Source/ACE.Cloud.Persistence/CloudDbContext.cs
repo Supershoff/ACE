@@ -100,6 +100,18 @@ public sealed class CloudDbContext : DbContext
 
     public DbSet<CloudIconDiagnostic> CloudIconDiagnostics => Set<CloudIconDiagnostic>();
 
+    public DbSet<CloudProjectionCheckpoint> CloudProjectionCheckpoints => Set<CloudProjectionCheckpoint>();
+
+    public DbSet<CloudProjectionDeadLetter> CloudProjectionDeadLetters => Set<CloudProjectionDeadLetter>();
+
+    public DbSet<CloudInventoryReadProjection> CloudInventoryReadProjections => Set<CloudInventoryReadProjection>();
+
+    public DbSet<CloudCharacterIdentityReadProjection> CloudCharacterIdentityReadProjections => Set<CloudCharacterIdentityReadProjection>();
+
+    public DbSet<CloudLiveStreamEvent> CloudLiveStreamEvents => Set<CloudLiveStreamEvent>();
+
+    public DbSet<CloudLiveStreamSequence> CloudLiveStreamSequences => Set<CloudLiveStreamSequence>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<CloudShardBinding>(entity =>
@@ -1347,6 +1359,152 @@ public sealed class CloudDbContext : DbContext
                 .HasDefaultValueSql("CURRENT_TIMESTAMP");
 
             entity.Property(diagnostic => diagnostic.LastSeenManifestVersion).IsRequired(false);
+        });
+
+        modelBuilder.Entity<CloudProjectionCheckpoint>(entity =>
+        {
+            entity.ToTable("CloudProjectionCheckpoint");
+
+            entity.HasKey(checkpoint => checkpoint.ConsumerName);
+            entity.Property(checkpoint => checkpoint.ConsumerName).HasMaxLength(64).ValueGeneratedNever();
+
+            entity.Property(checkpoint => checkpoint.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(checkpoint => checkpoint.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(checkpoint => checkpoint.LastAppliedSequenceNumber).IsRequired();
+
+            entity.Property(checkpoint => checkpoint.UpdatedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAddOrUpdate()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudProjectionDeadLetter>(entity =>
+        {
+            entity.ToTable("CloudProjectionDeadLetter");
+
+            entity.HasKey(entry => entry.Id);
+            entity.Property(entry => entry.Id).ValueGeneratedNever();
+
+            entity.Property(entry => entry.ConsumerName).IsRequired().HasMaxLength(64);
+            entity.Property(entry => entry.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(entry => entry.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(entry => entry.SourceEventId).IsRequired();
+            entity.Property(entry => entry.SourceSequenceNumber).IsRequired();
+            entity.HasIndex(entry => new { entry.ConsumerName, entry.ShardId });
+
+            entity.Property(entry => entry.Reason).IsRequired().HasMaxLength(512);
+
+            entity.Property(entry => entry.CreatedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAdd()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudInventoryReadProjection>(entity =>
+        {
+            entity.ToTable("CloudInventoryReadProjection");
+
+            entity.HasKey(row => row.BiotaId);
+            entity.Property(row => row.BiotaId).ValueGeneratedNever();
+
+            entity.Property(row => row.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(row => row.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(row => row.OwnerId).IsRequired();
+            entity.HasIndex(row => new { row.ShardId, row.OwnerId });
+
+            entity.Property(row => row.LastEventType).IsRequired().HasConversion<string>().HasMaxLength(32);
+            entity.Property(row => row.LastAppliedSequenceNumber).IsRequired();
+
+            entity.Property(row => row.UpdatedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAddOrUpdate()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudCharacterIdentityReadProjection>(entity =>
+        {
+            entity.ToTable("CloudCharacterIdentityReadProjection");
+
+            entity.HasKey(row => row.CharacterId);
+            entity.Property(row => row.CharacterId).ValueGeneratedNever();
+
+            entity.Property(row => row.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(row => row.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(row => row.AccountId);
+            entity.Property(row => row.CharacterName).HasMaxLength(64);
+            entity.Property(row => row.TotalLogins);
+            entity.Property(row => row.MonarchId);
+            entity.Property(row => row.LastAppliedSequenceNumber).IsRequired();
+
+            entity.Property(row => row.UpdatedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAddOrUpdate()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudLiveStreamEvent>(entity =>
+        {
+            entity.ToTable("CloudLiveStreamEvent");
+
+            entity.HasKey(evt => evt.Id);
+            entity.Property(evt => evt.Id).ValueGeneratedNever();
+
+            entity.Property(evt => evt.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(evt => evt.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // Application-assigned within the same transaction via CloudLiveStreamSequence, not
+            // database-generated (mirrors CloudCustodyOutboxEvent.SequenceNumber).
+            entity.Property(evt => evt.SequenceNumber).IsRequired().ValueGeneratedNever();
+            entity.HasIndex(evt => evt.SequenceNumber).IsUnique();
+
+            entity.Property(evt => evt.IsPublic).IsRequired();
+            entity.Property(evt => evt.ScopeOwnerId);
+            entity.HasIndex(evt => evt.ScopeOwnerId);
+
+            entity.Property(evt => evt.EventKind).IsRequired().HasMaxLength(32);
+            entity.Property(evt => evt.SourceEventId).IsRequired();
+            entity.Property(evt => evt.SourceSequenceNumber).IsRequired();
+
+            entity.Property(evt => evt.CreatedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAdd()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudLiveStreamSequence>(entity =>
+        {
+            // One counter row per deployment (ARCH-001), the same singleton shape as
+            // CloudCustodyOutboxSequence.
+            entity.ToTable("CloudLiveStreamSequence", table =>
+                table.HasCheckConstraint("CK_CloudLiveStreamSequence_Singleton", "`Id` = 1"));
+
+            entity.HasKey(seq => seq.Id);
+            entity.Property(seq => seq.Id).ValueGeneratedNever();
+            entity.Property(seq => seq.NextValue).IsRequired();
         });
     }
 }
