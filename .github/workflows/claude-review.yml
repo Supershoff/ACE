@@ -151,7 +151,7 @@ jobs:
           claude_args: |
             --max-turns 200
             --append-system-prompt "Act as an independent reviewer. The requested code-review skill is authoritative. Never approve code merely because CI is green."
-            --allowedTools "Read,Glob,Grep,Write,Bash(git status:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(dotnet restore:*),Bash(dotnet build:*),Bash(dotnet test:*),Bash(node:*),Bash(npm:*),Bash(pnpm:*),Bash(gh issue view:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh run view:*),Bash(gh run list:*)"
+            --allowedTools "Read,Glob,Grep,Write,Bash(git status:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(dotnet restore:*),Bash(dotnet build:*),Bash(dotnet test:*),Bash(node:*),Bash(npm:*),Bash(npx:*),Bash(pnpm:*),Bash(gh issue view:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh run view:*),Bash(gh run list:*)"
             --disallowedTools "Edit,NotebookEdit,Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(git merge:*),Bash(gh pr merge:*),Bash(gh repo delete:*),Bash(sudo:*),Bash(ssh:*),Bash(scp:*)"
 
       - name: Publish and classify Claude's exact-SHA review
@@ -224,7 +224,7 @@ jobs:
           claude_args: |
             --max-turns 200
             --append-system-prompt "Preserve custody and authority invariants and report exact verification results."
-            --allowedTools "Read,Write,Edit,Glob,Grep,Bash(git fetch:*),Bash(git status:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(git branch:*),Bash(git switch:*),Bash(git checkout:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(dotnet restore:*),Bash(dotnet build:*),Bash(dotnet test:*),Bash(node:*),Bash(npm:*),Bash(pnpm:*),Bash(gh issue view:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*)"
+            --allowedTools "Read,Write,Edit,Glob,Grep,Bash(git fetch:*),Bash(git status:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(git branch:*),Bash(git switch:*),Bash(git checkout:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(dotnet restore:*),Bash(dotnet build:*),Bash(dotnet test:*),Bash(node:*),Bash(npm:*),Bash(npx:*),Bash(pnpm:*),Bash(gh issue view:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*)"
             --disallowedTools "Bash(git push --force:*),Bash(git push --force-with-lease:*),Bash(git reset --hard:*),Bash(git clean:*),Bash(git merge:*),Bash(gh pr merge:*),Bash(gh repo delete:*),Bash(sudo:*),Bash(ssh:*),Bash(scp:*)"
 
       - name: Promote a Claude-created repair branch

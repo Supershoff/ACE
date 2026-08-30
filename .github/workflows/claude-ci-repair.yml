@@ -105,7 +105,7 @@ jobs:
           claude_args: |
             --max-turns 160
             --append-system-prompt "Fix only the observed CI failure on the existing PR. Preserve issue scope and all safety invariants."
-            --allowedTools "Read,Write,Edit,Glob,Grep,Bash(git fetch:*),Bash(git status:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(git branch:*),Bash(git switch:*),Bash(git checkout:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(dotnet new:*),Bash(dotnet sln:*),Bash(dotnet add:*),Bash(dotnet restore:*),Bash(dotnet build:*),Bash(dotnet test:*),Bash(node:*),Bash(npm:*),Bash(pnpm:*),Bash(gh issue view:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh run view:*),Bash(gh run list:*)"
+            --allowedTools "Read,Write,Edit,Glob,Grep,Bash(git fetch:*),Bash(git status:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(git branch:*),Bash(git switch:*),Bash(git checkout:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(dotnet new:*),Bash(dotnet sln:*),Bash(dotnet add:*),Bash(dotnet restore:*),Bash(dotnet build:*),Bash(dotnet test:*),Bash(node:*),Bash(npm:*),Bash(npx:*),Bash(pnpm:*),Bash(gh issue view:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh run view:*),Bash(gh run list:*)"
             --disallowedTools "Bash(git push --force:*),Bash(git push --force-with-lease:*),Bash(git reset --hard:*),Bash(git clean:*),Bash(git merge:*),Bash(gh pr merge:*),Bash(gh repo delete:*),Bash(sudo:*),Bash(ssh:*),Bash(scp:*)"
 
       - name: Promote a Claude-created repair branch onto the existing PR
