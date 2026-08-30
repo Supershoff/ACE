@@ -351,6 +351,66 @@ public sealed class CloudGlobalMaintenanceBoundaryTests
         StringAssert.Contains(withdrawOutcome.Reason, "frozen");
     }
 
+    /// <summary>
+    /// Red -&gt; Green regression test for issue #23's review [P0]: proves the mutation gate survives a
+    /// Global Cloud Maintenance entry that commits <em>concurrently</em> with an in-flight lot
+    /// withdrawal, not only one that enters completely before it starts (unlike
+    /// <see cref="WhileFrozen_WithdrawLot_IsRefused_ProvingTheRealGateBlocksTheLotWithdrawalCallSite"/>,
+    /// which never exercises the timing window). Pauses the withdrawal at
+    /// <see cref="CloudBoundaryFaultPoint.AfterLocks"/> -- once its row locks are held but before its
+    /// first plain (non-locking) read -- lets a second transaction enter and commit Global Cloud
+    /// Maintenance, then resumes the withdrawal. Under MariaDB's REPEATABLE READ, a transaction whose
+    /// first query is a plain read fixes its whole consistent-read snapshot at that read; if the
+    /// withdrawal's mutation-gate check ever reused a snapshot fixed before this window, this
+    /// maintenance entry would go unobserved and the withdrawal would wrongly commit.
+    /// </summary>
+    [TestMethod]
+    public async Task WhileFrozen_WithdrawLot_ConcurrentMaintenanceEntry_IsRefused_NotJustASequentialOne()
+    {
+        var biotaId = NextId();
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, biotaId);
+
+        var custodyBoundary = new CloudCustodyBoundary(new CloudDbContext(CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString)));
+        var depositOutcome = await custodyBoundary.DepositStackAsync(biotaId, ShardId, Guid.NewGuid(), 10, Guid.NewGuid());
+        Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, depositOutcome.Kind);
+        var lot = depositOutcome.Value!.Lot;
+
+        var locksAcquired = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var maintenanceEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        Func<CloudBoundaryFaultPoint, Task> pauseAfterLocks = async point =>
+        {
+            if (point == CloudBoundaryFaultPoint.AfterLocks)
+            {
+                locksAcquired.TrySetResult();
+                await maintenanceEntered.Task;
+            }
+        };
+
+        var withdrawTask = custodyBoundary.WithdrawLotAsync(
+            lot.Id, lot.Version, 10, NextId(), materializedBiotaId: null, Guid.NewGuid(), pauseAfterLocks, CancellationToken.None);
+
+        await locksAcquired.Task;
+
+        var maintenanceBoundary = NewBoundary(out var maintenanceContext);
+        await using (maintenanceContext)
+        {
+            var initial = await maintenanceBoundary.GetCurrentAsync(ShardId);
+            var entered = await maintenanceBoundary.EnterAsync(ShardId, "downtime", confirmed: true, AdminAccessLevel, AdminAccountId, initial.Version.Value);
+            Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, entered.Kind);
+        }
+
+        maintenanceEntered.TrySetResult();
+
+        var withdrawOutcome = await withdrawTask;
+
+        Assert.AreEqual(
+            CloudBoundaryOutcomeKind.Conflict, withdrawOutcome.Kind,
+            "A Global Cloud Maintenance entry that commits after this withdrawal's row locks were acquired -- but before its mutation-gate "
+                + "check -- must still be observed, not missed because of a REPEATABLE READ snapshot fixed earlier in the transaction.");
+        StringAssert.Contains(withdrawOutcome.Reason, "frozen");
+    }
+
     [TestMethod]
     public async Task WhileFrozen_ConvertPyrealDeposit_IsRefused_ProvingTheRealGateBlocksThePyrealConversionCallSite()
     {
@@ -374,6 +434,45 @@ public sealed class CloudGlobalMaintenanceBoundaryTests
         Assert.IsTrue(
             await AceShardTestData.BiotaExistsAsync(_fixture.AceShardConnectionString, rawBiotaId),
             "A refused conversion must never consume the raw Pyreal biota.");
+    }
+
+    /// <summary>
+    /// Red -&gt; Green regression test for issue #23's review [P1]: this PR's own commit message names
+    /// the Pyreal Remainder withdrawal open path among the six call sites it wired to the real
+    /// mutation gate, but no <c>WhileFrozen_*</c> test proved it, unlike every sibling call site in
+    /// this file.
+    /// </summary>
+    [TestMethod]
+    public async Task WhileFrozen_WithdrawPyrealRemainder_IsRefused_ProvingTheRealGateBlocksTheRemainderWithdrawalCallSite()
+    {
+        var rawBiotaId = NextId();
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, rawBiotaId);
+        await AceShardTestData.SetCoinValueAsync(_fixture.AceShardConnectionString, rawBiotaId, 500);
+
+        var custodyBoundary = new CloudCustodyBoundary(new CloudDbContext(CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString)));
+        var ownerId = Guid.NewGuid();
+        var conversionOutcome = await custodyBoundary.ConvertPyrealDepositAsync(rawBiotaId, ShardId, ownerId, 500, mmdBiotaIds: [], Guid.NewGuid());
+        Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, conversionOutcome.Kind);
+
+        var deliveryBiotaId = NextId();
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, deliveryBiotaId);
+        await AceShardTestData.SetCoinValueAsync(_fixture.AceShardConnectionString, deliveryBiotaId, 500);
+
+        var maintenanceBoundary = NewBoundary(out var maintenanceContext);
+        await using var _ = maintenanceContext;
+        var initial = await maintenanceBoundary.GetCurrentAsync(ShardId);
+        Assert.AreEqual(
+            CloudBoundaryOutcomeKind.Committed,
+            (await maintenanceBoundary.EnterAsync(ShardId, "downtime", confirmed: true, AdminAccessLevel, AdminAccountId, initial.Version.Value)).Kind);
+
+        var withdrawOutcome = await custodyBoundary.WithdrawPyrealRemainderAsync(ShardId, ownerId, 500, [deliveryBiotaId], NextId(), Guid.NewGuid());
+
+        Assert.AreEqual(CloudBoundaryOutcomeKind.Conflict, withdrawOutcome.Kind);
+        StringAssert.Contains(withdrawOutcome.Reason, "frozen");
+
+        await using var verifyContext = new CloudDbContext(CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString));
+        var remainder = await verifyContext.CloudPyrealRemainders.AsNoTracking().SingleAsync(r => r.OwnerId == ownerId);
+        Assert.AreEqual(500, remainder.RemainderAmount, "A refused withdrawal must leave the remainder exactly unchanged.");
     }
 
     [TestMethod]

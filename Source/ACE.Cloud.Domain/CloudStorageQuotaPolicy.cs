@@ -63,15 +63,23 @@ public static class CloudStorageQuotaPolicy
     /// <summary>
     /// Refuses a new count-increasing obligation once <paramref name="currentProjectedCount"/> --
     /// native biotas plus projected materialized Cloud Stack Lots, excluding the one Pyreal Remainder
-    /// (INV-004) -- has already reached <paramref name="limit"/>. A null limit is always unlimited. An
-    /// owner sitting at or above a since-lowered limit is refused every further count-increasing
-    /// action (reduce-only, INV-005) until it withdraws below the limit or the limit is raised/removed.
+    /// (INV-004) -- would reach or exceed <paramref name="limit"/> once <paramref name="additionalCount"/>
+    /// more items are added (an ordinary deposit adds exactly one; a Raw Pyreal conversion that mints
+    /// several MMDs in one commit adds all of them at once, since nothing else can observe -- and
+    /// therefore separately gate -- the count in between). A null limit is always unlimited. An owner
+    /// sitting at or above a since-lowered limit is refused every further count-increasing action
+    /// (reduce-only, INV-005) until it withdraws below the limit or the limit is raised/removed.
     /// </summary>
-    public static CloudStorageQuotaCheckResult CheckNewObligation(int? limit, int currentProjectedCount)
+    public static CloudStorageQuotaCheckResult CheckNewObligation(int? limit, int currentProjectedCount, int additionalCount = 1)
     {
         if (currentProjectedCount < 0)
         {
             throw new ArgumentOutOfRangeException(nameof(currentProjectedCount), "A projected item count cannot be negative.");
+        }
+
+        if (additionalCount < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(additionalCount), "A new obligation must add at least one item.");
         }
 
         if (limit is null)
@@ -79,10 +87,10 @@ public static class CloudStorageQuotaPolicy
             return CloudStorageQuotaCheckResult.Success();
         }
 
-        return currentProjectedCount < limit.Value
+        return currentProjectedCount + additionalCount <= limit.Value
             ? CloudStorageQuotaCheckResult.Success()
             : CloudStorageQuotaCheckResult.Failure(
-                $"This owner's Storage Quota of {limit.Value} is already met ({currentProjectedCount} counted); "
-                    + "it is reduce-only until items are withdrawn or the quota is raised.");
+                $"This owner's Storage Quota of {limit.Value} does not have room for {additionalCount} more item(s) "
+                    + $"({currentProjectedCount} already counted); it is reduce-only until items are withdrawn or the quota is raised.");
     }
 }

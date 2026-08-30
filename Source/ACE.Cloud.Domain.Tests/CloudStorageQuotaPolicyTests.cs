@@ -64,6 +64,30 @@ public sealed class CloudStorageQuotaPolicyTests
     }
 
     [TestMethod]
+    public void CheckNewObligation_MultipleAtOnce_WithRoomForAll_Succeeds()
+    {
+        // A Raw Pyreal conversion can mint several MMDs in a single commit -- there is no
+        // intermediate point at which only some of them exist to be separately gated.
+        var result = CloudStorageQuotaPolicy.CheckNewObligation(limit: 10, currentProjectedCount: 7, additionalCount: 3);
+
+        Assert.IsTrue(result.IsSuccess);
+    }
+
+    [TestMethod]
+    public void CheckNewObligation_MultipleAtOnce_WithoutRoomForAll_Refuses_EvenThoughTheFirstOneWouldFit()
+    {
+        var result = CloudStorageQuotaPolicy.CheckNewObligation(limit: 10, currentProjectedCount: 8, additionalCount: 3);
+
+        Assert.IsFalse(result.IsSuccess, "Room for only 2 more must refuse a 3-item obligation, not silently admit 2 of the 3.");
+    }
+
+    [TestMethod]
+    public void CheckNewObligation_WithZeroAdditionalCount_Throws()
+    {
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => CloudStorageQuotaPolicy.CheckNewObligation(limit: 10, currentProjectedCount: 1, additionalCount: 0));
+    }
+
+    [TestMethod]
     public void SetPersonalLimit_ByAdmin_ToAPositiveValue_Succeeds_AndBumpsVersion()
     {
         var current = CloudStorageQuotaLimits.Default();

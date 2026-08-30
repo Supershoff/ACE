@@ -16,6 +16,8 @@ namespace ACE.Cloud.PersistenceIntegrationTests;
 public sealed class CloudAllegianceVaultBoundaryTests
 {
     private const string ShardId = "us1";
+    private const uint AdminAccessLevel = 5;
+    private const uint AdminAccountId = 999;
 
     private static CloudDatabaseFixture _fixture = null!;
     private static uint _nextId = 750_000;
@@ -264,6 +266,38 @@ public sealed class CloudAllegianceVaultBoundaryTests
             .CountAsync(d => d.MonarchCharacterId == monarchId);
 
         Assert.AreEqual(1, diagnosticCount, "A vault already diagnosed must never be diagnosed again.");
+    }
+
+    /// <summary>
+    /// Red -&gt; Green regression test for issue #23's review [P1]: this PR switched
+    /// <see cref="CloudAllegianceVaultGateway"/> from a hardcoded <see cref="CloudMutationGateState.Open"/>
+    /// to the real resolved gate, but no test proved Global Cloud Maintenance actually blocks
+    /// <see cref="CloudAllegianceVaultGateway.AbsorbAsync"/>, unlike every <c>CloudCustodyBoundary</c>
+    /// call site (each of which has its own <c>WhileFrozen_*</c> test).
+    /// </summary>
+    [TestMethod]
+    public async Task WhileFrozen_AbsorbAsync_IsRefused_ProvingTheRealGateBlocksTheAbsorptionCallSite()
+    {
+        var options = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
+        var oldMonarchId = NextId();
+        var newMonarchId = NextId();
+
+        await using (var maintenanceContext = new CloudDbContext(options))
+        {
+            var maintenanceBoundary = new CloudGlobalMaintenanceBoundary(maintenanceContext);
+            var initial = await maintenanceBoundary.GetCurrentAsync(ShardId);
+            Assert.AreEqual(
+                CloudBoundaryOutcomeKind.Committed,
+                (await maintenanceBoundary.EnterAsync(ShardId, "downtime", confirmed: true, AdminAccessLevel, AdminAccountId, initial.Version.Value)).Kind);
+        }
+
+        await using var context = new CloudDbContext(options);
+        var vaultGateway = new CloudAllegianceVaultGateway(context);
+
+        var outcome = await vaultGateway.AbsorbAsync(ShardId, oldMonarchId, newMonarchId);
+
+        Assert.AreEqual(CloudBoundaryOutcomeKind.Conflict, outcome.Kind);
+        StringAssert.Contains(outcome.Reason, "frozen");
     }
 
     private static uint NextId() => Interlocked.Increment(ref _nextId);

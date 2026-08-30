@@ -128,6 +128,46 @@ public sealed class CloudStorageQuotaLimitsBoundaryTests
             "A refused deposit must never delete or otherwise touch the biota still in the world.");
     }
 
+    /// <summary>
+    /// Red -&gt; Green regression test for issue #23's review [P1]: <c>TryConvertPyrealDepositOnceAsync</c>
+    /// created a new <c>CloudCustodyRecord</c> per minted MMD without ever calling
+    /// <c>CheckStorageQuotaAsync</c>, unlike <see cref="Deposit_OnceThePersonalQuotaIsMet_IsRefused_LeavingTheOwnerReduceOnly"/>'s
+    /// ordinary-deposit path -- an owner already at their Storage Quota could still convert Raw
+    /// Pyreals into a brand-new MMD Cloud Item with no quota check at all.
+    /// </summary>
+    [TestMethod]
+    public async Task ConvertPyrealDeposit_OnceThePersonalQuotaIsMet_IsRefused_LeavingTheOwnerReduceOnly()
+    {
+        var quotaBoundary = NewQuotaBoundary(out var quotaContext);
+        await using var __ = quotaContext;
+        var initialLimits = await quotaBoundary.GetCurrentAsync(ShardId);
+        Assert.AreEqual(
+            CloudBoundaryOutcomeKind.Committed,
+            (await quotaBoundary.SetPersonalLimitAsync(ShardId, 1, AdminAccessLevel, initialLimits.Version.Value)).Kind);
+
+        var ownerId = Guid.NewGuid();
+        var custodyBoundary = new CloudCustodyBoundary(new CloudDbContext(CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString)));
+
+        var firstBiotaId = NextId();
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, firstBiotaId);
+        var firstOutcome = await custodyBoundary.DepositAsync(firstBiotaId, ShardId, ownerId, Guid.NewGuid());
+        Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, firstOutcome.Kind, "The first deposit, at the limit, must still be permitted.");
+
+        var rawBiotaId = NextId();
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, rawBiotaId);
+        await AceShardTestData.SetCoinValueAsync(_fixture.AceShardConnectionString, rawBiotaId, 287_500);
+
+        var conversionOutcome = await custodyBoundary.ConvertPyrealDepositAsync(
+            rawBiotaId, ShardId, ownerId, 287_500, mmdBiotaIds: [NextId()], Guid.NewGuid());
+
+        Assert.AreEqual(
+            CloudBoundaryOutcomeKind.Conflict, conversionOutcome.Kind,
+            "INV-005: a conversion that would mint a new MMD beyond the quota must be refused (reduce-only).");
+        Assert.IsTrue(
+            await AceShardTestData.BiotaExistsAsync(_fixture.AceShardConnectionString, rawBiotaId),
+            "A refused conversion must never consume the raw Pyreal biota still in the world.");
+    }
+
     [TestMethod]
     public async Task Deposit_ForADifferentOwner_IsUnaffectedByAnotherOwnersQuotaOccupancy()
     {

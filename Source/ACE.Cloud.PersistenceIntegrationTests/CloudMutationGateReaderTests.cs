@@ -63,8 +63,16 @@ public sealed class CloudMutationGateReaderTests
         Assert.AreEqual(CloudMutationGateState.Frozen, gate);
     }
 
+    /// <summary>
+    /// Red -&gt; Green regression test for issue #23's review: <see cref="CloudMutationGateReader"/> is
+    /// used by every current, non-marketplace Cloud Transaction Authority call site (deposit,
+    /// withdraw, link, vault, Pyreal conversion, ownership transfer). Marketplace Maintenance Frozen
+    /// (MKT-204) is scoped to "all Marketplace mutations and clock progress" alone
+    /// (IMPLEMENTATION-BRIEF.md calls it "orthogonal" to Global Cloud Maintenance) and must never
+    /// widen to block these unrelated mutations.
+    /// </summary>
     [TestMethod]
-    public async Task ResolveAsync_AfterMarketplaceStateBecomesMaintenanceFrozen_ReturnsFrozen()
+    public async Task ResolveAsync_AfterMarketplaceStateBecomesMaintenanceFrozen_ReturnsOpen_MarketplaceMaintenanceAloneDoesNotFreezeNonMarketplaceMutations()
     {
         await using var context = NewContext();
         var marketplaceBoundary = new CloudMarketplaceConfigurationBoundary(context);
@@ -75,7 +83,7 @@ public sealed class CloudMutationGateReaderTests
 
         var gate = await CloudMutationGateReader.ResolveAsync(context, ShardId);
 
-        Assert.AreEqual(CloudMutationGateState.Frozen, gate);
+        Assert.AreEqual(CloudMutationGateState.Open, gate);
     }
 
     [TestMethod]

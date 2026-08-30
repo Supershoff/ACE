@@ -87,8 +87,17 @@ public sealed class CloudMarketplaceConfigurationBoundaryTests
         Assert.AreEqual(CloudBoundaryOutcomeKind.Conflict, outcome.Kind);
     }
 
+    /// <summary>
+    /// Red -&gt; Green regression test for issue #23's review [P1]: <see cref="CloudMutationGateReader"/>
+    /// used to conflate Marketplace Maintenance Frozen with Global Cloud Maintenance, so an
+    /// administrator who froze only the Marketplace also blocked every unrelated non-marketplace
+    /// mutation shard-wide. <c>IMPLEMENTATION-BRIEF.md</c> calls the two gates "orthogonal" and scopes
+    /// Marketplace Maintenance Frozen to "all Marketplace mutations and clock progress" alone --
+    /// <see cref="CloudOwnershipTransferAuthority"/> is not a marketplace-scoped call site, so it must
+    /// stay open. (This test used to assert the opposite, over-broad behavior.)
+    /// </summary>
     [TestMethod]
-    public async Task WhileMaintenanceFrozen_OwnershipTransfer_IsRefused_ProvingMarketplaceFreezeAloneAlsoBlocksTheRealGate()
+    public async Task WhileMaintenanceFrozen_OwnershipTransfer_IsNotBlocked_MarketplaceFreezeAloneNeverWidensToNonMarketplaceMutations()
     {
         var biotaId = NextId();
         await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, biotaId);
@@ -107,8 +116,7 @@ public sealed class CloudMarketplaceConfigurationBoundaryTests
         var transferAuthority = new CloudOwnershipTransferAuthority(new CloudDbContext(CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString)));
         var transferOutcome = await transferAuthority.TransferAsync(biotaId, Guid.NewGuid(), expectedVersion: 1, Guid.NewGuid());
 
-        Assert.AreEqual(CloudBoundaryOutcomeKind.Conflict, transferOutcome.Kind);
-        StringAssert.Contains(transferOutcome.Reason, "frozen");
+        Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, transferOutcome.Kind);
     }
 
     [TestMethod]
