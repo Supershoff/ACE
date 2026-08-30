@@ -411,6 +411,69 @@ public sealed class CloudGlobalMaintenanceBoundaryTests
         StringAssert.Contains(withdrawOutcome.Reason, "frozen");
     }
 
+    /// <summary>
+    /// Red -&gt; Green regression test for the independent review's [P0] on PR #135: proves the mutation
+    /// gate survives a Global Cloud Maintenance entry that commits <em>concurrently</em> with an
+    /// in-flight Withdrawal Reservation open whose only target is a Cloud Stack Lot (not a whole
+    /// item), unlike <see cref="WhileFrozen_ReserveForWithdrawal_IsRefused_ProvingTheRealGateBlocksTheReservationOpenCallSite"/>,
+    /// which only ever reserves an Item target and enters maintenance strictly before starting the
+    /// reservation. <see cref="CloudReservationTargetOrdering.LockKey"/> sorts Item targets before
+    /// StackLot targets, so a StackLot-only request makes the StackLot branch's lot lookup this
+    /// transaction's very first query; if that lookup is a plain (non-locking) read, MariaDB's
+    /// REPEATABLE READ fixes the whole transaction's consistent-read snapshot there, before any lock
+    /// is taken, and the mutation-gate read later in the same transaction would never observe a
+    /// Global Cloud Maintenance entry that commits after this snapshot but before the gate check.
+    /// </summary>
+    [TestMethod]
+    public async Task WhileFrozen_ReserveForWithdrawal_StackLotConcurrentMaintenanceEntry_IsRefused_NotJustASequentialOne()
+    {
+        var biotaId = NextId();
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, biotaId);
+
+        var custodyBoundary = new CloudCustodyBoundary(new CloudDbContext(CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString)));
+        var ownerId = Guid.NewGuid();
+        var depositOutcome = await custodyBoundary.DepositStackAsync(biotaId, ShardId, ownerId, 10, Guid.NewGuid());
+        Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, depositOutcome.Kind);
+        var lot = depositOutcome.Value!.Lot;
+
+        var locksAcquired = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var maintenanceEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        Func<CloudBoundaryFaultPoint, Task> pauseAfterLocks = async point =>
+        {
+            if (point == CloudBoundaryFaultPoint.AfterLocks)
+            {
+                locksAcquired.TrySetResult();
+                await maintenanceEntered.Task;
+            }
+        };
+
+        var reserveTask = custodyBoundary.ReserveForWithdrawalAsync(
+            [CloudWithdrawalReservationRequestTarget.ForStackLot(lot.Id)], ShardId, ownerId,
+            Convert.ToHexString(Guid.NewGuid().ToByteArray()), TimeSpan.FromMinutes(15), Guid.NewGuid(), pauseAfterLocks, CancellationToken.None);
+
+        await locksAcquired.Task;
+
+        var maintenanceBoundary = NewBoundary(out var maintenanceContext);
+        await using (maintenanceContext)
+        {
+            var initial = await maintenanceBoundary.GetCurrentAsync(ShardId);
+            var entered = await maintenanceBoundary.EnterAsync(ShardId, "downtime", confirmed: true, AdminAccessLevel, AdminAccountId, initial.Version.Value);
+            Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, entered.Kind);
+        }
+
+        maintenanceEntered.TrySetResult();
+
+        var reserveOutcome = await reserveTask;
+
+        Assert.AreEqual(
+            CloudBoundaryOutcomeKind.Conflict, reserveOutcome.Kind,
+            "A Global Cloud Maintenance entry that commits after this Cloud-Stack-Lot-only reservation's row locks were acquired -- but "
+                + "before its mutation-gate check -- must still be observed, not missed because of a REPEATABLE READ snapshot fixed by an "
+                + "earlier plain read in the same transaction.");
+        StringAssert.Contains(reserveOutcome.Reason, "frozen");
+    }
+
     [TestMethod]
     public async Task WhileFrozen_ConvertPyrealDeposit_IsRefused_ProvingTheRealGateBlocksThePyrealConversionCallSite()
     {
