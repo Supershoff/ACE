@@ -224,6 +224,20 @@ public sealed class CloudNotificationProjectionConsumer
                     row => row.ShardId == shardId && row.OwnerId == evt.OwnerId && row.Kind == kind && !row.IsRead,
                     cancellationToken);
 
+            // A lost/rewound checkpoint (issue #34 Red: "duplicate outbox delivery does not
+            // duplicate notifications") can hand this event back even though it already coalesced
+            // into existingUnread. CloudProjectionSequenceGuard.ShouldApply is the same row-level
+            // redelivery guard CloudInventoryReadProjection.TryApply uses, applied here per
+            // notification row instead of per biota.
+            if (existingUnread is not null
+                && !CloudProjectionSequenceGuard.ShouldApply(existingUnread.LatestSourceSequenceNumber, evt.SequenceNumber))
+            {
+                checkpoint.Advance(evt.SequenceNumber);
+                await _context.SaveChangesAsync(cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+                return CloudProjectionEventOutcomeKind.SkippedAsStale;
+            }
+
             if (existingUnread is not null && CloudNotificationCoalescingPolicy.ShouldCoalesce(existingUnread.Kind, existingUnread.IsRead, kind))
             {
                 existingUnread.RecordOccurrence(evt.Id, evt.SequenceNumber);
