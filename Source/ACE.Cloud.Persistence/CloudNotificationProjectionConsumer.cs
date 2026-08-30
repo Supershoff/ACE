@@ -1,46 +1,35 @@
+using ACE.Cloud.Domain;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Storage;
 
 namespace ACE.Cloud.Persistence;
 
 /// <summary>
-/// Idempotently consumes the Custody Outbox (<see cref="CloudCustodyOutboxReader"/>) into
-/// <see cref="CloudInventoryReadProjection"/> and, for every event actually applied (never for a
-/// duplicate/stale one), an authorization-scoped <see cref="CloudLiveStreamEvent"/> (ARCH-007,
-/// EVT-007). Processes one event per database transaction so a crash between events leaves
-/// <see cref="CloudProjectionCheckpoint"/> pointing exactly at the last event durably applied --
-/// resuming after a restart or after the outbox is completely empty are the same code path, which is
-/// what makes <see cref="RebuildAsync"/> (wipe the projection and checkpoint, then drain the outbox
-/// from the beginning) reproduce the exact same query state ordinary incremental consumption would
-/// have reached.
+/// Idempotently consumes the Custody Outbox (<see cref="CloudCustodyOutboxReader"/>) into the
+/// Notification Center's <see cref="CloudNotification"/> rows (EVT-003), coalescing repeats
+/// (<see cref="CloudNotificationCoalescingPolicy"/>) and publishing a private "Notification"
+/// <see cref="CloudLiveStreamEvent"/> for every row actually created or updated (EVT-007). Mirrors
+/// <see cref="CloudCustodyProjectionConsumer"/>'s exact one-event-per-transaction/checkpoint/
+/// dead-letter/rebuild shape -- including its checkpoint-advance-in-the-same-transaction discipline,
+/// which is what makes "duplicate outbox delivery does not duplicate notifications" true for free: an
+/// outbox event's sequence number is only ever read again by <see cref="RunBatchAsync"/> if it is
+/// still above the durably committed checkpoint, so no event is ever applied here twice.
 /// </summary>
-public sealed class CloudCustodyProjectionConsumer
+public sealed class CloudNotificationProjectionConsumer
 {
-    public const string ConsumerName = "CustodyProjection";
+    public const string ConsumerName = "NotificationProjection";
 
     private readonly CloudDbContext _context;
 
-    public CloudCustodyProjectionConsumer(CloudDbContext context)
+    public CloudNotificationProjectionConsumer(CloudDbContext context)
     {
         _context = context ?? throw new ArgumentNullException(nameof(context));
     }
 
-    /// <summary>
-    /// Applies up to <paramref name="maxCount"/> not-yet-applied Custody Outbox events. Returns
-    /// <see cref="CloudBoundaryOutcomeKind.Unavailable"/> rather than throwing when the database is
-    /// unreachable (ARCH-009): a poller sees this and simply retries on its next tick without ever
-    /// queuing work for later replay.
-    /// </summary>
     public Task<CloudBoundaryOutcome<CloudProjectionRunSummary>> RunBatchAsync(
         string shardId, int maxCount, CancellationToken cancellationToken = default) =>
         RunBatchAsync(shardId, maxCount, poisonInjector: null, cancellationToken);
 
-    /// <summary>
-    /// Test-only overload: <paramref name="poisonInjector"/>, when it returns a non-null exception
-    /// for a given event, simulates that event being unprocessable so Red tests can deterministically
-    /// exercise the dead-letter path without needing to construct a naturally-malformed event.
-    /// Production callers always use the public overload, which passes null.
-    /// </summary>
+    /// <summary>Test-only overload; see <see cref="CloudCustodyProjectionConsumer.RunBatchAsync(string, int, Func{CloudProjectionFaultPoint, CloudCustodyOutboxEvent, Exception?}?, CancellationToken)"/>.</summary>
     internal async Task<CloudBoundaryOutcome<CloudProjectionRunSummary>> RunBatchAsync(
         string shardId,
         int maxCount,
@@ -98,16 +87,7 @@ public sealed class CloudCustodyProjectionConsumer
         }
     }
 
-    /// <summary>
-    /// Wipes this consumer's projection rows, dead letters, Live State Stream events, and checkpoint
-    /// for <paramref name="shardId"/>, then drains the Custody Outbox from the very beginning in
-    /// batches of <paramref name="batchSize"/> until caught up (issue #22's Green "full rebuild
-    /// commands"). Because incremental consumption and this rebuild both apply the exact same
-    /// per-event logic, the resulting projection state is identical to what incremental consumption
-    /// alone would have produced -- and re-deriving the stream from scratch (rather than leaving old
-    /// entries in place) means a rebuild never republishes a duplicate entry for an event that was
-    /// already streamed once.
-    /// </summary>
+    /// <summary>See <see cref="CloudCustodyProjectionConsumer.RebuildAsync"/>.</summary>
     public async Task<CloudBoundaryOutcome<CloudProjectionRunSummary>> RebuildAsync(
         string shardId, int batchSize = 500, CancellationToken cancellationToken = default)
     {
@@ -164,20 +144,15 @@ public sealed class CloudCustodyProjectionConsumer
     {
         await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
 
-        var staleProjections = await _context.CloudInventoryReadProjections
+        var staleNotifications = await _context.CloudNotifications
             .Where(row => row.ShardId == shardId)
             .ToListAsync(cancellationToken);
-        _context.CloudInventoryReadProjections.RemoveRange(staleProjections);
+        _context.CloudNotifications.RemoveRange(staleNotifications);
 
         var staleDeadLetters = await _context.CloudProjectionDeadLetters
             .Where(entry => entry.ConsumerName == ConsumerName && entry.ShardId == shardId)
             .ToListAsync(cancellationToken);
         _context.CloudProjectionDeadLetters.RemoveRange(staleDeadLetters);
-
-        var staleLiveStreamEvents = await _context.CloudLiveStreamEvents
-            .Where(evt => evt.ShardId == shardId)
-            .ToListAsync(cancellationToken);
-        _context.CloudLiveStreamEvents.RemoveRange(staleLiveStreamEvents);
 
         var checkpoint = await _context.CloudProjectionCheckpoints
             .SingleOrDefaultAsync(c => c.ConsumerName == ConsumerName, cancellationToken);
@@ -229,36 +204,52 @@ public sealed class CloudCustodyProjectionConsumer
             var checkpoint = await _context.CloudProjectionCheckpoints
                 .SingleAsync(c => c.ConsumerName == ConsumerName, cancellationToken);
 
-            var current = await _context.CloudInventoryReadProjections
-                .SingleOrDefaultAsync(row => row.BiotaId == evt.BiotaId, cancellationToken);
-
-            var (row, applied) = CloudInventoryReadProjection.TryApply(
-                current, evt.BiotaId, evt.ShardId, evt.OwnerId, evt.EventType, evt.SequenceNumber);
-
-            if (applied)
+            // Not every outbox event is notification-worthy (CloudNotificationClassifier): a
+            // self-initiated Deposit/Withdrawal never should be, matching EVT-003's own examples,
+            // none of which are "the actor's own just-performed action." The checkpoint still
+            // advances past it -- there is nothing else to apply -- so this reuses the same
+            // "nothing to do this time" bucket a duplicate/stale delivery would (both leave every
+            // row exactly as it already was).
+            var isNotificationWorthy = CloudNotificationClassifier.TryClassify(evt.EventType.ToString(), out var kind, out var destination);
+            if (!isNotificationWorthy)
             {
-                if (current is null)
-                {
-                    _context.CloudInventoryReadProjections.Add(row);
-                }
-
-                var liveStreamSequenceNumber = await CloudLiveStreamSequenceReserver.ReserveNextAsync(_context, cancellationToken);
-                _context.CloudLiveStreamEvents.Add(new CloudLiveStreamEvent(
-                    shardId,
-                    liveStreamSequenceNumber,
-                    isPublic: false,
-                    evt.OwnerId,
-                    evt.EventType.ToString(),
-                    evt.Id,
-                    evt.SequenceNumber));
+                checkpoint.Advance(evt.SequenceNumber);
+                await _context.SaveChangesAsync(cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+                return CloudProjectionEventOutcomeKind.SkippedAsStale;
             }
+
+            var existingUnread = await _context.CloudNotifications
+                .SingleOrDefaultAsync(
+                    row => row.ShardId == shardId && row.OwnerId == evt.OwnerId && row.Kind == kind && !row.IsRead,
+                    cancellationToken);
+
+            if (existingUnread is not null && CloudNotificationCoalescingPolicy.ShouldCoalesce(existingUnread.Kind, existingUnread.IsRead, kind))
+            {
+                existingUnread.RecordOccurrence(evt.Id, evt.SequenceNumber);
+            }
+            else
+            {
+                _context.CloudNotifications.Add(
+                    CloudNotification.CreateFirst(shardId, evt.OwnerId, kind, destination, evt.Id, evt.SequenceNumber));
+            }
+
+            var liveStreamSequenceNumber = await CloudLiveStreamSequenceReserver.ReserveNextAsync(_context, cancellationToken);
+            _context.CloudLiveStreamEvents.Add(new CloudLiveStreamEvent(
+                shardId,
+                liveStreamSequenceNumber,
+                isPublic: false,
+                evt.OwnerId,
+                "Notification",
+                evt.Id,
+                evt.SequenceNumber));
 
             checkpoint.Advance(evt.SequenceNumber);
 
             await _context.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
 
-            return applied ? CloudProjectionEventOutcomeKind.Applied : CloudProjectionEventOutcomeKind.SkippedAsStale;
+            return CloudProjectionEventOutcomeKind.Applied;
         }
         catch (Exception ex) when (ex is not OperationCanceledException
             && !CloudBoundaryRetry.IsUnavailable(ex)

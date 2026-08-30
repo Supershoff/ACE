@@ -43,6 +43,7 @@ public static class CloudSchemaMigrator
         new AddCloudStorageQuotaOwnerLock(),
         new AddCloudInventoryItemPropertiesProjection(),
         new AddCloudSearchConfiguration(),
+        new AddCloudNotification(),
     ];
 
     /// <summary>
