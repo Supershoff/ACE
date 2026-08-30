@@ -4,6 +4,7 @@ set -euo pipefail
 
 reader=.github/scripts/read-claude-execution-field.sh
 finder=.github/scripts/find-cloud-mule-implementation-branch.sh
+attempt_counter=.github/scripts/count-cloud-mule-implementation-attempts.sh
 workflow=.github/workflows/claude.yml
 ci_workflow=.github/workflows/cloud-mule-ci.yml
 fixture_dir="$(mktemp -d)"
@@ -17,9 +18,22 @@ printf '%s\n' '{"type":"assistant"}' '{"result":"stream-result"}' >"${fixture_di
 [ "$(bash "${reader}" result "${fixture_dir}/array.json")" = array-result ]
 [ "$(bash "${reader}" result "${fixture_dir}/stream.json")" = stream-result ]
 
+cat >"${fixture_dir}/comments.json" <<'JSON'
+[[
+  {"body":"<!-- claude-implementation-substantive-failure:29:old-1 -->"},
+  {"body":"<!-- claude-implementation-substantive-failure:29:old-2 -->"},
+  {"body":"<!-- claude-implementation-reset:29:node-enabled -->"},
+  {"body":"<!-- claude-implementation-substantive-failure:29:new-1 -->"},
+  {"body":"<!-- claude-implementation-transient:29:new-transient -->"}
+]]
+JSON
+[ "$(bash "${attempt_counter}" 29 substantive-failure <"${fixture_dir}/comments.json")" = 1 ]
+[ "$(bash "${attempt_counter}" 29 transient <"${fixture_dir}/comments.json")" = 1 ]
+
 grep -Fq '[ "${status}" = diverged ]' "${finder}"
 [ "$(grep -Fc 'read-claude-execution-field.sh' "${workflow}")" -ge 4 ]
 grep -Fq 'refresh-cloud-mule-implementation-branch.sh' "${workflow}"
+grep -Fq 'count-cloud-mule-implementation-attempts.sh' "${workflow}"
 grep -Fq 'elif [ "${POLICY_RESULT}" = failure ]' "${ci_workflow}"
 grep -Fq 'leaving recovery to the reconciler' "${ci_workflow}"
 

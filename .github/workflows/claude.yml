@@ -229,8 +229,8 @@ jobs:
           fi
 
           comments="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}/comments?per_page=100")"
-          attempts="$(jq -r "[.[][] | select(.body | contains(\"<!-- claude-implementation-substantive-failure:${ISSUE_NUMBER}:\"))] | length" <<<"${comments}")"
-          transient_attempts="$(jq -r "[.[][] | select(.body | contains(\"<!-- claude-implementation-transient:${ISSUE_NUMBER}:\"))] | length" <<<"${comments}")"
+          attempts="$(bash .github/scripts/count-cloud-mule-implementation-attempts.sh "${ISSUE_NUMBER}" substantive-failure <<<"${comments}")"
+          transient_attempts="$(bash .github/scripts/count-cloud-mule-implementation-attempts.sh "${ISSUE_NUMBER}" transient <<<"${comments}")"
 
           if [ "${transient}" = true ]; then
             transient_attempts=$((transient_attempts + 1))
@@ -331,8 +331,8 @@ jobs:
           fi
 
           comments="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}/comments?per_page=100" 2>/dev/null || echo '[]')"
-          attempts="$(jq -r "[.[][] | select(.body | contains(\"<!-- claude-implementation-substantive-failure:${ISSUE_NUMBER}:\"))] | length" <<<"${comments}" 2>/dev/null || echo 0)"
-          transient_attempts="$(jq -r "[.[][] | select(.body | contains(\"<!-- claude-implementation-transient:${ISSUE_NUMBER}:\"))] | length" <<<"${comments}" 2>/dev/null || echo 0)"
+          attempts="$(bash .github/scripts/count-cloud-mule-implementation-attempts.sh "${ISSUE_NUMBER}" substantive-failure <<<"${comments}" 2>/dev/null || echo 0)"
+          transient_attempts="$(bash .github/scripts/count-cloud-mule-implementation-attempts.sh "${ISSUE_NUMBER}" transient <<<"${comments}" 2>/dev/null || echo 0)"
           if [ "${transient}" = true ]; then
             transient_attempts=$((transient_attempts + 1))
             gh issue edit "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
