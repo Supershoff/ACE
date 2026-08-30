@@ -496,6 +496,12 @@ public sealed partial class CloudCustodyBoundary
             return await ReplayDepositAsync(existing, cancellationToken);
         }
 
+        var overQuota = await CheckStorageQuotaAsync<CloudCustodyRecord>(shardId, ownerId, cancellationToken);
+        if (overQuota is not null)
+        {
+            return overQuota;
+        }
+
         await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
 
         await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterValidation);
@@ -674,6 +680,12 @@ public sealed partial class CloudCustodyBoundary
         if (existing is not null)
         {
             return await ReplayStackDepositAsync(existing, cancellationToken);
+        }
+
+        var overQuota = await CheckStorageQuotaAsync<CloudStackDepositResult>(shardId, ownerId, cancellationToken);
+        if (overQuota is not null)
+        {
+            return overQuota;
         }
 
         await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
@@ -1036,10 +1048,9 @@ public sealed partial class CloudCustodyBoundary
         var remainderBefore = remainder.RemainderAmount;
 
         // ADM-004 / transaction rule 9: the maintenance gate is revalidated at the exact instant the
-        // remainder row is locked, not only earlier in the request pipeline. This boundary has no
-        // live Global Cloud Maintenance aggregate to read yet (a later administration issue adds
-        // one), so it is always Open today -- the same scope boundary WithdrawAsync already accepts.
-        var decision = PyrealRemainderWithdrawalPolicy.Decide(remainderBefore, amount, CloudMutationGateState.Open);
+        // remainder row is locked, not only earlier in the request pipeline.
+        var gateState = await CloudMutationGateReader.ResolveAsync(_context, shardId, cancellationToken);
+        var decision = PyrealRemainderWithdrawalPolicy.Decide(remainderBefore, amount, gateState);
 
         if (decision.Kind != PyrealRemainderWithdrawalDecisionKind.Approved)
         {
@@ -1280,6 +1291,27 @@ public sealed partial class CloudCustodyBoundary
         return compatibility.IsCompatible
             ? null
             : CloudBoundaryOutcome<T>.Unavailable($"Cloud component version mismatch: {compatibility.Reason}");
+    }
+
+    /// <summary>
+    /// INV-004/INV-005/INV-006: refuses a deposit -- the only count-increasing "new obligation" the
+    /// World Boundary Authority itself creates -- once <paramref name="ownerId"/>'s personal Storage
+    /// Quota is already met, leaving that owner reduce-only until it withdraws below the limit or an
+    /// administrator raises it. A deposit never targets an Allegiance Vault (VAULT-003: a vault cannot
+    /// receive a direct deposit), so only the personal-scope limit ever applies here.
+    /// </summary>
+    private async Task<CloudBoundaryOutcome<T>?> CheckStorageQuotaAsync<T>(string shardId, Guid ownerId, CancellationToken cancellationToken)
+    {
+        var personalLimit = await CloudStorageQuotaReader.GetPersonalLimitAsync(_context, shardId, cancellationToken);
+        if (personalLimit is null)
+        {
+            return null;
+        }
+
+        var projectedCount = await CloudStackQuotaProjection.CountProjectedItemsAsync(_context, shardId, ownerId, cancellationToken);
+        var check = CloudStorageQuotaPolicy.CheckNewObligation(personalLimit, projectedCount);
+
+        return check.IsSuccess ? null : CloudBoundaryOutcome<T>.Conflict(check.Reason!);
     }
 
     private async Task<CloudBoundaryOutcome<CloudCustodyRecord>> ReplayDepositAsync(

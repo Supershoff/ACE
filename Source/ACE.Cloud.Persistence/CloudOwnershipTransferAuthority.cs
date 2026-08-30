@@ -30,11 +30,13 @@ namespace ACE.Cloud.Persistence;
 /// exclusivity, and the Global/Marketplace freeze precondition) is reusable outside ACE's own
 /// ace_shard-privileged gateway.
 ///
-/// Global Cloud Maintenance and Marketplace State are full administrative aggregates out of scope
-/// for this issue (see <see cref="CloudMutationGateState"/>'s own doc comment); this authority
-/// therefore always evaluates <see cref="CloudOwnershipTransferPolicy.Transfer"/> against
-/// <see cref="CloudMutationGateState.Open"/>, matching every other Cloud Transaction Authority call
-/// site established so far (for example <see cref="CloudAccountLinkGateway.LinkAsync"/>).
+/// Global Cloud Maintenance and Marketplace State are real administrative aggregates as of issue #23:
+/// <see cref="CloudOwnershipTransferPolicy.Transfer"/> revalidates the resolved
+/// <see cref="CloudMutationGateReader"/> gate under this same row lock (transaction rule 9), so a
+/// freeze entered concurrently with this transfer is never missed. This never checks a Storage Quota
+/// (INV-006): a transfer represents settlement of an already-binding obligation, which must complete
+/// even over a since-lowered quota, leaving the recipient reduce-only afterward (INV-005) rather than
+/// failing outright.
 /// </summary>
 public sealed class CloudOwnershipTransferAuthority
 {
@@ -153,6 +155,7 @@ public sealed class CloudOwnershipTransferAuthority
 
         var target = CloudReservationTarget.ForItem(new CloudItemId(biotaId));
         var activeAllocation = await FindActiveReservationAllocationAsync(target, cancellationToken);
+        var gateState = await CloudMutationGateReader.ResolveAsync(_context, record.ShardId, cancellationToken);
 
         var policyResult = CloudOwnershipTransferPolicy.Transfer(
             target,
@@ -161,7 +164,7 @@ public sealed class CloudOwnershipTransferAuthority
             new CloudAggregateVersion(record.Version),
             new CloudAggregateVersion(expectedVersion),
             activeAllocation,
-            CloudMutationGateState.Open);
+            gateState);
 
         if (!policyResult.IsSuccess)
         {

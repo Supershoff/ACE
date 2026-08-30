@@ -412,6 +412,7 @@ public sealed partial class CloudCustodyBoundary
         }
 
         var nowUtc = await GetDatabaseUtcNowAsync(cancellationToken);
+        var gateState = await CloudMutationGateReader.ResolveAsync(_context, shardId, cancellationToken);
         var policyResult = CloudReservationPolicy.Open(
             new CloudReservationId(Guid.NewGuid()),
             CloudReservationKind.Withdrawal,
@@ -419,7 +420,7 @@ public sealed partial class CloudCustodyBoundary
             orderedPolicyTargets,
             existingAllocationsByTarget,
             new DateTimeOffset(nowUtc, TimeSpan.Zero),
-            CloudMutationGateState.Open,
+            gateState,
             timeToLive);
 
         if (!policyResult.IsSuccess)

@@ -63,8 +63,9 @@ public sealed class CloudAllegianceVaultGateway
         var sourceVaultOwnerId = CloudOwnerIdentity.ForAllegianceVault(shardId, oldMonarchCharacterId);
         var destinationVaultOwnerId = CloudOwnerIdentity.ForAllegianceVault(shardId, newMonarchCharacterId);
 
+        var gateState = await CloudMutationGateReader.ResolveAsync(_context, shardId, cancellationToken);
         var policyResult = CloudAllegianceVaultAbsorptionPolicy.Absorb(
-            new CloudAccountId(sourceVaultOwnerId), new CloudAccountId(destinationVaultOwnerId), CloudMutationGateState.Open);
+            new CloudAccountId(sourceVaultOwnerId), new CloudAccountId(destinationVaultOwnerId), gateState);
         if (!policyResult.IsSuccess)
         {
             await RecordAbsorptionFailureDiagnosticAsync(

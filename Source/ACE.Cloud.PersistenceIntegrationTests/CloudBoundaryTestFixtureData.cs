@@ -56,6 +56,10 @@ internal static class CloudBoundaryTestFixtureData
         "CloudAssetImportChunkRecord",
         "CloudAssetImportSession",
         "CloudIconDiagnostic",
+        "CloudMarketplaceConfiguration",
+        "CloudGlobalMaintenanceLedgerEvent",
+        "CloudGlobalMaintenance",
+        "CloudStorageQuotaLimits",
         "CloudShardBinding",
     ];
 

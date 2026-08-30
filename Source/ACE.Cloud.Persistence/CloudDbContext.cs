@@ -112,6 +112,14 @@ public sealed class CloudDbContext : DbContext
 
     public DbSet<CloudLiveStreamSequence> CloudLiveStreamSequences => Set<CloudLiveStreamSequence>();
 
+    public DbSet<CloudStorageQuotaLimitsRecord> CloudStorageQuotaLimits => Set<CloudStorageQuotaLimitsRecord>();
+
+    public DbSet<CloudGlobalMaintenanceRecord> CloudGlobalMaintenances => Set<CloudGlobalMaintenanceRecord>();
+
+    public DbSet<CloudGlobalMaintenanceLedgerEvent> CloudGlobalMaintenanceLedgerEvents => Set<CloudGlobalMaintenanceLedgerEvent>();
+
+    public DbSet<CloudMarketplaceConfigurationRecord> CloudMarketplaceConfigurations => Set<CloudMarketplaceConfigurationRecord>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<CloudShardBinding>(entity =>
@@ -1505,6 +1513,113 @@ public sealed class CloudDbContext : DbContext
             entity.HasKey(seq => seq.Id);
             entity.Property(seq => seq.Id).ValueGeneratedNever();
             entity.Property(seq => seq.NextValue).IsRequired();
+        });
+
+        modelBuilder.Entity<CloudStorageQuotaLimitsRecord>(entity =>
+        {
+            // ARCH-001: exactly one Storage Quota limits row per deployment (INV-004).
+            entity.ToTable("CloudStorageQuotaLimits", table =>
+                table.HasCheckConstraint("CK_CloudStorageQuotaLimits_Singleton", "`Id` = 1"));
+
+            entity.HasKey(limits => limits.Id);
+            entity.Property(limits => limits.Id).ValueGeneratedNever();
+
+            entity.Property(limits => limits.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(limits => limits.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(limits => limits.PersonalLimit);
+            entity.Property(limits => limits.VaultLimit);
+            entity.Property(limits => limits.Version).IsRequired().IsConcurrencyToken();
+
+            entity.Property(limits => limits.UpdatedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAddOrUpdate()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudGlobalMaintenanceRecord>(entity =>
+        {
+            // ARCH-001: exactly one Global Cloud Maintenance state row per deployment (ADM-004).
+            entity.ToTable("CloudGlobalMaintenance", table =>
+                table.HasCheckConstraint("CK_CloudGlobalMaintenance_Singleton", "`Id` = 1"));
+
+            entity.HasKey(state => state.Id);
+            entity.Property(state => state.Id).ValueGeneratedNever();
+
+            entity.Property(state => state.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(state => state.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(state => state.IsFrozen).IsRequired();
+            entity.Property(state => state.Reason).HasMaxLength(512);
+            entity.Property(state => state.EnteredAtUtc);
+            entity.Property(state => state.EnteredByAccountId);
+            entity.Property(state => state.Version).IsRequired().IsConcurrencyToken();
+
+            entity.Property(state => state.UpdatedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAddOrUpdate()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudGlobalMaintenanceLedgerEvent>(entity =>
+        {
+            entity.ToTable("CloudGlobalMaintenanceLedgerEvent");
+
+            entity.HasKey(evt => evt.Id);
+            entity.Property(evt => evt.Id).ValueGeneratedNever();
+
+            entity.Property(evt => evt.CorrelationId).IsRequired();
+
+            entity.Property(evt => evt.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasIndex(evt => evt.ShardId);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(evt => evt.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(evt => evt.EventType).IsRequired().HasConversion<string>().HasMaxLength(16);
+            entity.Property(evt => evt.Reason).HasMaxLength(512);
+            entity.Property(evt => evt.ActorAccountId);
+            entity.Property(evt => evt.FrozenDurationSeconds);
+
+            entity.Property(evt => evt.OccurredAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAdd()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudMarketplaceConfigurationRecord>(entity =>
+        {
+            // ARCH-001: exactly one Marketplace State row per deployment (MKT-203, MKT-204).
+            entity.ToTable("CloudMarketplaceConfiguration", table =>
+                table.HasCheckConstraint("CK_CloudMarketplaceConfiguration_Singleton", "`Id` = 1"));
+
+            entity.HasKey(config => config.Id);
+            entity.Property(config => config.Id).ValueGeneratedNever();
+
+            entity.Property(config => config.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(config => config.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(config => config.State).IsRequired().HasConversion<string>().HasMaxLength(24);
+            entity.Property(config => config.Version).IsRequired().IsConcurrencyToken();
+
+            entity.Property(config => config.UpdatedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAddOrUpdate()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
         });
     }
 }
