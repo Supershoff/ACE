@@ -498,6 +498,32 @@ public sealed partial class CloudCustodyBoundary
 
         await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
 
+        // INV-004, transaction rule 9: lock this owner's quota row *before* any plain (non-locking)
+        // read in this transaction. Under MariaDB's default REPEATABLE READ, a plain SELECT
+        // establishes this transaction's whole consistent-read snapshot at its *first* such read; if
+        // that happened before this lock wait, the count below would still see the pre-lock snapshot
+        // even after a concurrent depositor for this owner committed and released the lock, and the
+        // race this lock exists to close would silently reopen. Locking first, with no snapshot yet
+        // established, means the snapshot taken by the mutation-gate check right after is guaranteed
+        // to be no older than the moment this owner was serialized.
+        await LockOwnerQuotaRowAsync(shardId, ownerId, cancellationToken);
+
+        // ADM-004/MKT-204, transaction rule 9: revalidated at the exact instant this deposit is about
+        // to commit, not only earlier in the request pipeline.
+        var frozen = await CheckMutationGateAsync<CloudCustodyRecord>(shardId, cancellationToken);
+        if (frozen is not null)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return frozen;
+        }
+
+        var overQuota = await CheckStorageQuotaAsync<CloudCustodyRecord>(shardId, ownerId, cancellationToken);
+        if (overQuota is not null)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return overQuota;
+        }
+
         await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterValidation);
 
         // Deposit removes world possession itself, on this same transaction/connection
@@ -616,6 +642,13 @@ public sealed partial class CloudCustodyBoundary
                 $"Cloud Custody Record {custodyRecordId} is at version {record.Version}, not the expected version {expectedVersion}.");
         }
 
+        var frozen = await CheckMutationGateAsync<CloudWithdrawalResult>(record.ShardId, cancellationToken);
+        if (frozen is not null)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return frozen;
+        }
+
         await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterValidation);
 
         var biotaId = record.BiotaId;
@@ -677,6 +710,27 @@ public sealed partial class CloudCustodyBoundary
         }
 
         await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+
+        // INV-004, transaction rule 9: lock this owner's quota row before any plain (non-locking)
+        // read in this transaction -- see TryDepositOnceAsync's matching comment for why the order
+        // matters under MariaDB's REPEATABLE READ snapshot semantics.
+        await LockOwnerQuotaRowAsync(shardId, ownerId, cancellationToken);
+
+        // ADM-004/MKT-204, transaction rule 9: revalidated at the exact instant this deposit is about
+        // to commit, not only earlier in the request pipeline.
+        var frozen = await CheckMutationGateAsync<CloudStackDepositResult>(shardId, cancellationToken);
+        if (frozen is not null)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return frozen;
+        }
+
+        var overQuota = await CheckStorageQuotaAsync<CloudStackDepositResult>(shardId, ownerId, cancellationToken);
+        if (overQuota is not null)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return overQuota;
+        }
 
         await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterValidation);
 
@@ -767,12 +821,15 @@ public sealed partial class CloudCustodyBoundary
 
         await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
 
-        var custodyRecordId = await _context.CloudStackLots.AsNoTracking()
-            .Where(l => l.Id == lotId)
-            .Select(l => (Guid?)l.CustodyRecordId)
-            .SingleOrDefaultAsync(cancellationToken);
-
-        if (custodyRecordId is null)
+        // ADM-004/MKT-204, transaction rule 9: this transaction's first query must itself be a
+        // locking read, not a plain one -- see TryDepositOnceAsync's matching comment for why a plain
+        // first read lets MariaDB's REPEATABLE READ fix this transaction's whole consistent-read
+        // snapshot before any lock is taken, which would let the mutation-gate check below observe a
+        // snapshot from before a concurrent Global Cloud Maintenance entry committed. Locking the lot
+        // first (rather than looking up its custody record with a plain read, as before) closes that
+        // window; the backing record is then locked from the now-known CustodyRecordId.
+        var lot = await LockStackLotAsync(lotId, cancellationToken);
+        if (lot is null)
         {
             await transaction.RollbackAsync(cancellationToken);
 
@@ -785,11 +842,9 @@ public sealed partial class CloudCustodyBoundary
             return CloudBoundaryOutcome<CloudStackWithdrawalResult>.Conflict($"Cloud Stack Lot {lotId} does not exist.");
         }
 
-        // Deterministic lock order (transaction rule 2): the backing stack record before the lot.
-        var record = await LockCustodyRecordAsync(custodyRecordId.Value, cancellationToken);
-        var lot = await LockStackLotAsync(lotId, cancellationToken);
+        var record = await LockCustodyRecordAsync(lot.CustodyRecordId, cancellationToken);
 
-        if (record is null || lot is null || lot.CustodyRecordId != record.Id)
+        if (record is null)
         {
             await transaction.RollbackAsync(cancellationToken);
 
@@ -801,6 +856,8 @@ public sealed partial class CloudCustodyBoundary
 
             return CloudBoundaryOutcome<CloudStackWithdrawalResult>.Conflict($"Cloud Stack Lot {lotId} does not exist or was already withdrawn.");
         }
+
+        await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterLocks);
 
         if (lot.Version != expectedLotVersion)
         {
@@ -825,6 +882,13 @@ public sealed partial class CloudCustodyBoundary
             await transaction.RollbackAsync(cancellationToken);
             return CloudBoundaryOutcome<CloudStackWithdrawalResult>.Conflict(
                 "A materialized child GUID (allocated by ACE) is required to withdraw part of a Cloud Stack Lot.");
+        }
+
+        var frozen = await CheckMutationGateAsync<CloudStackWithdrawalResult>(record.ShardId, cancellationToken);
+        if (frozen is not null)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return frozen;
         }
 
         await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterValidation);
@@ -922,6 +986,21 @@ public sealed partial class CloudCustodyBoundary
         await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
 
         var remainder = await EnsureAndLockPyrealRemainderAsync(shardId, ownerId, cancellationToken);
+
+        // INV-004, transaction rule 9: lock this owner's quota row before any plain (non-locking)
+        // read in this transaction -- see TryDepositOnceAsync's matching comment for why the order
+        // matters under MariaDB's REPEATABLE READ snapshot semantics.
+        await LockOwnerQuotaRowAsync(shardId, ownerId, cancellationToken);
+
+        // ADM-004/MKT-204, transaction rule 9: revalidated at the exact instant this account's
+        // Pyreal Remainder row is locked, not only earlier in the request pipeline.
+        var frozen = await CheckMutationGateAsync<CloudPyrealConversionResult>(shardId, cancellationToken);
+        if (frozen is not null)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return frozen;
+        }
+
         var remainderBefore = remainder.RemainderAmount;
         var conversion = PyrealConversionPolicy.Convert(remainderBefore, rawPyrealAmount);
 
@@ -936,6 +1015,22 @@ public sealed partial class CloudCustodyBoundary
             // retry with a freshly allocated MMD count.
             return CloudBoundaryOutcome<CloudPyrealConversionResult>.Conflict(
                 $"Expected {conversion.MmdCount} MMD biota(s) for this conversion (remainder {remainderBefore} + {rawPyrealAmount} raw Pyreals), but {mmdBiotaIds.Count} were supplied.");
+        }
+
+        // INV-004/INV-005: each MMD this conversion mints is a new count-increasing Cloud Item under
+        // the Storage Quota, exactly like an ordinary deposit (CONTEXT.md: a Storage Quota is checked
+        // "when a new incoming obligation is created or accepted") -- a voluntary Raw Pyreal
+        // conversion is not a pre-existing binding obligation, so INV-006's settlement exemption does
+        // not apply here. A conversion that mints zero MMDs (the deposit was fully absorbed into the
+        // remainder) creates no new item and so is never quota-gated.
+        if (conversion.MmdCount > 0)
+        {
+            var overQuota = await CheckStorageQuotaAsync<CloudPyrealConversionResult>(shardId, ownerId, cancellationToken, checked((int)conversion.MmdCount));
+            if (overQuota is not null)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return overQuota;
+            }
         }
 
         await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterValidation);
@@ -1036,10 +1131,9 @@ public sealed partial class CloudCustodyBoundary
         var remainderBefore = remainder.RemainderAmount;
 
         // ADM-004 / transaction rule 9: the maintenance gate is revalidated at the exact instant the
-        // remainder row is locked, not only earlier in the request pipeline. This boundary has no
-        // live Global Cloud Maintenance aggregate to read yet (a later administration issue adds
-        // one), so it is always Open today -- the same scope boundary WithdrawAsync already accepts.
-        var decision = PyrealRemainderWithdrawalPolicy.Decide(remainderBefore, amount, CloudMutationGateState.Open);
+        // remainder row is locked, not only earlier in the request pipeline.
+        var gateState = await CloudMutationGateReader.ResolveAsync(_context, shardId, cancellationToken);
+        var decision = PyrealRemainderWithdrawalPolicy.Decide(remainderBefore, amount, gateState);
 
         if (decision.Kind != PyrealRemainderWithdrawalDecisionKind.Approved)
         {
@@ -1280,6 +1374,81 @@ public sealed partial class CloudCustodyBoundary
         return compatibility.IsCompatible
             ? null
             : CloudBoundaryOutcome<T>.Unavailable($"Cloud component version mismatch: {compatibility.Reason}");
+    }
+
+    /// <summary>
+    /// INV-004/INV-005/INV-006: refuses a deposit -- the only count-increasing "new obligation" the
+    /// World Boundary Authority itself creates -- once <paramref name="ownerId"/>'s personal Storage
+    /// Quota is already met, leaving that owner reduce-only until it withdraws below the limit or an
+    /// administrator raises it. A deposit never targets an Allegiance Vault (VAULT-003: a vault cannot
+    /// receive a direct deposit), so only the personal-scope limit ever applies here. Callers must
+    /// already hold this owner's <see cref="LockOwnerQuotaRowAsync"/> lock so this count and the
+    /// insert it gates are atomic (transaction rule 9).
+    /// </summary>
+    private async Task<CloudBoundaryOutcome<T>?> CheckStorageQuotaAsync<T>(
+        string shardId, Guid ownerId, CancellationToken cancellationToken, int additionalCount = 1)
+    {
+        var personalLimit = await CloudStorageQuotaReader.GetPersonalLimitAsync(_context, shardId, cancellationToken);
+        if (personalLimit is null)
+        {
+            return null;
+        }
+
+        var projectedCount = await CloudStackQuotaProjection.CountProjectedItemsAsync(_context, shardId, ownerId, cancellationToken);
+        var check = CloudStorageQuotaPolicy.CheckNewObligation(personalLimit, projectedCount, additionalCount);
+
+        return check.IsSuccess ? null : CloudBoundaryOutcome<T>.Conflict(check.Reason!);
+    }
+
+    /// <summary>
+    /// INV-004, transaction rule 9: locks this owner's row in <c>CloudStorageQuotaOwnerLock</c>
+    /// (creating it via upsert on first use, exactly like <see cref="EnsureAndLockPyrealRemainderAsync"/>
+    /// does for Pyreal Remainder) for the remainder of this transaction, so two concurrent deposits for
+    /// the same owner can never both pass <see cref="CheckStorageQuotaAsync{T}"/>'s count and both
+    /// commit. The row carries no data; its only purpose is a single serialization point per owner.
+    /// Callers must call this after <see cref="_context"/>'s transaction has begun and before counting.
+    /// </summary>
+    private async Task LockOwnerQuotaRowAsync(string shardId, Guid ownerId, CancellationToken cancellationToken)
+    {
+        var connection = _context.Database.GetDbConnection();
+        var transaction = _context.Database.CurrentTransaction?.GetDbTransaction();
+
+        await using (var upsert = connection.CreateCommand())
+        {
+            upsert.Transaction = transaction;
+            upsert.CommandText = """
+                INSERT INTO CloudStorageQuotaOwnerLock (OwnerId, ShardId)
+                VALUES (@ownerId, @shardId)
+                ON DUPLICATE KEY UPDATE OwnerId = OwnerId;
+                """;
+            AddParameter(upsert, "@ownerId", ownerId.ToString());
+            AddParameter(upsert, "@shardId", shardId);
+            await upsert.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using var @lock = connection.CreateCommand();
+        @lock.Transaction = transaction;
+        @lock.CommandText = "SELECT 1 FROM CloudStorageQuotaOwnerLock WHERE OwnerId = @ownerId AND ShardId = @shardId FOR UPDATE;";
+        AddParameter(@lock, "@ownerId", ownerId.ToString());
+        AddParameter(@lock, "@shardId", shardId);
+        await @lock.ExecuteScalarAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// ADM-004/MKT-204, transaction rule 9: refuses the in-progress mutation once Global Cloud
+    /// Maintenance or Marketplace State currently freezes mutations, revalidated inside this same
+    /// transaction rather than only earlier in the request pipeline -- the same
+    /// <see cref="CloudMutationGateReader"/> gate <see cref="CloudReservationPolicy"/> and
+    /// <see cref="CloudOwnershipTransferPolicy"/> already revalidate for reservations and transfers.
+    /// Callers must call this after <see cref="_context"/>'s transaction has begun. Returns null when
+    /// the mutation may proceed.
+    /// </summary>
+    private async Task<CloudBoundaryOutcome<T>?> CheckMutationGateAsync<T>(string shardId, CancellationToken cancellationToken)
+    {
+        var gateState = await CloudMutationGateReader.ResolveAsync(_context, shardId, cancellationToken);
+        return gateState == CloudMutationGateState.Frozen
+            ? CloudBoundaryOutcome<T>.Conflict("Cloud mutations are currently frozen for maintenance.")
+            : null;
     }
 
     private async Task<CloudBoundaryOutcome<CloudCustodyRecord>> ReplayDepositAsync(

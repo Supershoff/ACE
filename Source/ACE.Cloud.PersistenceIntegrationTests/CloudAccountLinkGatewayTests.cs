@@ -19,6 +19,8 @@ public sealed class CloudAccountLinkGatewayTests
     private const string ShardId = "us1";
     private const uint MainAccountId = 100;
     private const uint SourceAccountId = 200;
+    private const uint AdminAccessLevel = 5;
+    private const uint AdminAccountId = 999;
 
     private static CloudDatabaseFixture _fixture = null!;
     private static uint _nextId = 800_000;
@@ -455,6 +457,66 @@ public sealed class CloudAccountLinkGatewayTests
 
         Assert.IsTrue(secondOutcome.IsApproved);
         Assert.AreEqual(firstOutcome.AccountLinkId, secondOutcome.AccountLinkId);
+    }
+
+    /// <summary>
+    /// Red -&gt; Green regression test for issue #23's review [P1]: this PR switched
+    /// <see cref="CloudAccountLinkGateway"/> from a hardcoded <see cref="CloudMutationGateState.Open"/>
+    /// to the real resolved gate, but no test proved Global Cloud Maintenance actually blocks
+    /// <see cref="CloudAccountLinkGateway.LinkAsync"/>, unlike every <c>CloudCustodyBoundary</c> call
+    /// site (each of which has its own <c>WhileFrozen_*</c> test).
+    /// </summary>
+    [TestMethod]
+    public async Task WhileFrozen_LinkAsync_IsRejected_ProvingTheRealGateBlocksTheLinkCallSite()
+    {
+        var options = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
+
+        await using (var maintenanceContext = new CloudDbContext(options))
+        {
+            var maintenanceBoundary = new CloudGlobalMaintenanceBoundary(maintenanceContext);
+            var initial = await maintenanceBoundary.GetCurrentAsync(ShardId);
+            Assert.AreEqual(
+                CloudBoundaryOutcomeKind.Committed,
+                (await maintenanceBoundary.EnterAsync(ShardId, "downtime", confirmed: true, AdminAccessLevel, AdminAccountId, initial.Version.Value)).Kind);
+        }
+
+        await using var context = new CloudDbContext(options);
+        var outcome = await new CloudAccountLinkGateway(context).LinkAsync(ShardId, MainAccountId, SourceAccountId, Guid.NewGuid());
+
+        Assert.IsFalse(outcome.IsApproved);
+        Assert.AreEqual(CloudAccountLinkRejectionCode.MutationsFrozen, outcome.RejectionCode);
+    }
+
+    /// <summary>
+    /// Red -&gt; Green regression test for issue #23's review [P1]: the same gap as
+    /// <see cref="WhileFrozen_LinkAsync_IsRejected_ProvingTheRealGateBlocksTheLinkCallSite"/>, for
+    /// <see cref="CloudAccountLinkGateway.UnlinkAsync"/>.
+    /// </summary>
+    [TestMethod]
+    public async Task WhileFrozen_UnlinkAsync_IsRejected_ProvingTheRealGateBlocksTheUnlinkCallSite()
+    {
+        var options = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
+
+        await using (var linkContext = new CloudDbContext(options))
+        {
+            var linkOutcome = await new CloudAccountLinkGateway(linkContext).LinkAsync(ShardId, MainAccountId, SourceAccountId, Guid.NewGuid());
+            Assert.IsTrue(linkOutcome.IsApproved);
+        }
+
+        await using (var maintenanceContext = new CloudDbContext(options))
+        {
+            var maintenanceBoundary = new CloudGlobalMaintenanceBoundary(maintenanceContext);
+            var initial = await maintenanceBoundary.GetCurrentAsync(ShardId);
+            Assert.AreEqual(
+                CloudBoundaryOutcomeKind.Committed,
+                (await maintenanceBoundary.EnterAsync(ShardId, "downtime", confirmed: true, AdminAccessLevel, AdminAccountId, initial.Version.Value)).Kind);
+        }
+
+        await using var context = new CloudDbContext(options);
+        var outcome = await new CloudAccountLinkGateway(context).UnlinkAsync(ShardId, MainAccountId, SourceAccountId, Guid.NewGuid());
+
+        Assert.IsFalse(outcome.IsApproved);
+        Assert.AreEqual(CloudAccountLinkRejectionCode.MutationsFrozen, outcome.RejectionCode);
     }
 
     [TestMethod]

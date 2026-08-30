@@ -345,25 +345,27 @@ public sealed partial class CloudCustodyBoundary
             {
                 var lotId = policyTarget.StackLotId!.Value;
 
-                var custodyRecordId = await _context.CloudStackLots.AsNoTracking()
-                    .Where(l => l.Id == lotId)
-                    .Select(l => (Guid?)l.CustodyRecordId)
-                    .SingleOrDefaultAsync(cancellationToken);
-                if (custodyRecordId is null)
+                // ADM-004/MKT-204, transaction rule 9: this transaction's first query must itself
+                // be a locking read, not a plain one -- see TryWithdrawLotOnceAsync's matching
+                // comment for why a plain first read lets MariaDB's REPEATABLE READ fix this
+                // transaction's whole consistent-read snapshot before any lock is taken, which
+                // would let the mutation-gate check below observe a snapshot from before a
+                // concurrent Global Cloud Maintenance entry committed. Locking the lot first
+                // (rather than looking up its custody record with a plain read, as before) closes
+                // that window; the backing record is then locked from the now-known
+                // CustodyRecordId, matching TryWithdrawLotOnceAsync's own lock order. Re-locking a
+                // row this same transaction already holds is a harmless no-op in InnoDB, so two lot
+                // targets that happen to share one backing stack simply lock it twice rather than
+                // needing extra bookkeeping to avoid it.
+                var lot = await LockStackLotAsync(lotId, cancellationToken);
+                if (lot is null)
                 {
                     await transaction.RollbackAsync(cancellationToken);
                     return CloudBoundaryOutcome<CloudWithdrawalReservation>.Conflict($"Cloud Stack Lot {lotId} does not exist.");
                 }
 
-                // Deterministic lock order within one lot (transaction rule 2): its backing stack
-                // record before the lot itself, matching every other stack-mutating operation.
-                // Re-locking a row this same transaction already holds is a harmless no-op in
-                // InnoDB, so two lot targets that happen to share one backing stack simply lock it
-                // twice rather than needing extra bookkeeping to avoid it.
-                var lotRecord = await LockCustodyRecordAsync(custodyRecordId.Value, cancellationToken);
-
-                var lot = await LockStackLotAsync(lotId, cancellationToken);
-                if (lot is null || lotRecord is null)
+                var lotRecord = await LockCustodyRecordAsync(lot.CustodyRecordId, cancellationToken);
+                if (lotRecord is null)
                 {
                     await transaction.RollbackAsync(cancellationToken);
                     return CloudBoundaryOutcome<CloudWithdrawalReservation>.Conflict($"Cloud Stack Lot {lotId} does not exist.");
@@ -379,6 +381,8 @@ public sealed partial class CloudCustodyBoundary
                 backingBiotaIdByLotId[lotId] = lotRecord.BiotaId;
             }
         }
+
+        await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterLocks);
 
         // Build the exclusivity map from every currently active target row (any reservation, any
         // kind) that names one of the requested biotas/lots.
@@ -412,6 +416,7 @@ public sealed partial class CloudCustodyBoundary
         }
 
         var nowUtc = await GetDatabaseUtcNowAsync(cancellationToken);
+        var gateState = await CloudMutationGateReader.ResolveAsync(_context, shardId, cancellationToken);
         var policyResult = CloudReservationPolicy.Open(
             new CloudReservationId(Guid.NewGuid()),
             CloudReservationKind.Withdrawal,
@@ -419,7 +424,7 @@ public sealed partial class CloudCustodyBoundary
             orderedPolicyTargets,
             existingAllocationsByTarget,
             new DateTimeOffset(nowUtc, TimeSpan.Zero),
-            CloudMutationGateState.Open,
+            gateState,
             timeToLive);
 
         if (!policyResult.IsSuccess)
@@ -600,6 +605,15 @@ public sealed partial class CloudCustodyBoundary
             await transaction.RollbackAsync(cancellationToken);
             return CloudBoundaryOutcome<CloudMultiWithdrawalResult>.Conflict(
                 $"Withdrawal Reservation {reservation.Id} expired at {reservation.ExpiresAtUtc:O} and cannot be redeemed.");
+        }
+
+        // ADM-004/MKT-204, transaction rule 9: revalidated at the exact instant this reservation is
+        // locked, not only earlier in the request pipeline.
+        var frozen = await CheckMutationGateAsync<CloudMultiWithdrawalResult>(reservation.ShardId, cancellationToken);
+        if (frozen is not null)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return frozen;
         }
 
         await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterValidation);

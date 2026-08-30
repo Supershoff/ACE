@@ -34,7 +34,7 @@ public static class CloudDiagnosticsEndpoints
                 }),
             };
 
-            return report.IsFullyOperational
+            return IsRoutable(report.Mode)
                 ? Results.Ok(body)
                 : Results.Json(body, statusCode: StatusCodes.Status503ServiceUnavailable);
         });
@@ -48,4 +48,17 @@ public static class CloudDiagnosticsEndpoints
 
         return endpoints;
     }
+
+    /// <summary>
+    /// ARCH-008: the ACE world process being offline must leave this service routable for login and
+    /// every off-world operation -- only Withdrawal Token creation/redemption and deposits are
+    /// unavailable. A readiness probe that returns a generic 503 for WorldBoundaryUnavailable would
+    /// pull a healthy Backend/Auth Bridge out of a load balancer's rotation entirely, silently failing
+    /// login and every other off-world request too. Operational and WorldBoundaryUnavailable
+    /// therefore both route; only ReadOnly (the database itself is unavailable, ARCH-009) and
+    /// VersionIncompatible genuinely cannot serve any request and report unready. Extracted as a pure
+    /// function so its exact routing decision is unit-testable without hosting an HTTP endpoint.
+    /// </summary>
+    public static bool IsRoutable(CloudServiceAvailabilityMode mode) =>
+        mode is CloudServiceAvailabilityMode.Operational or CloudServiceAvailabilityMode.WorldBoundaryUnavailable;
 }

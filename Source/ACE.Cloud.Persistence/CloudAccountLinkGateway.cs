@@ -12,11 +12,10 @@ namespace ACE.Cloud.Persistence;
 /// Authority gateway): account linking creates or ends a group membership and reassigns existing
 /// Cloud ownership, but it never touches a native biota's Container/Wielder/Location (ARCH-004).
 ///
-/// Global Cloud Maintenance and Marketplace State are full administrative aggregates out of scope
-/// for this issue (see <see cref="CloudMutationGateState"/>'s own doc comment); this gateway
-/// therefore always evaluates against <see cref="CloudMutationGateState.Open"/>, matching every
-/// other Cloud Transaction Authority call site established so far (for example
-/// <see cref="CloudCustodyBoundary.ReserveForWithdrawalAsync"/>).
+/// Global Cloud Maintenance and Marketplace State are real administrative aggregates as of issue #23:
+/// this gateway resolves the current <see cref="CloudMutationGateState"/> via
+/// <see cref="CloudMutationGateReader"/> under the same locked transaction that decides the link/unlink
+/// (transaction rule 9), matching every other Cloud Transaction Authority call site.
 ///
 /// Known gap, documented rather than silently omitted: AUTH-008's "Linking revokes every personal
 /// Sharing Grant associated with the source account" cannot be implemented yet because no
@@ -120,6 +119,7 @@ public sealed class CloudAccountLinkGateway
 
         var sourceHasLinkedAccounts = await SourceHasActiveChildrenAsync(shardId, sourceAccountId, cancellationToken);
         var sourceHasPendingObligations = await SourceHasPendingObligationsAsync(shardId, sourceAccountId, cancellationToken);
+        var gateState = await CloudMutationGateReader.ResolveAsync(_context, shardId, cancellationToken);
 
         var request = new CloudAccountLinkRequest(
             mainAccountId,
@@ -129,7 +129,7 @@ public sealed class CloudAccountLinkGateway
             sourceHasLinkedAccounts,
             sourceHasPendingObligations,
             wouldCreateActiveAuctionConflict,
-            CloudMutationGateState.Open);
+            gateState);
 
         var decision = CloudAccountLinkPolicy.EvaluateLink(request);
         var correlationId = Guid.NewGuid();
@@ -247,7 +247,8 @@ public sealed class CloudAccountLinkGateway
             : await _context.Set<CloudOwnershipGroup>().AsNoTracking().SingleOrDefaultAsync(g => g.Id == marker.OwnershipGroupId, cancellationToken);
 
         var linkIsActive = marker is not null && group is not null && group.MainAccountId == mainAccountId;
-        var decision = CloudAccountLinkPolicy.EvaluateUnlink(linkIsActive, CloudMutationGateState.Open);
+        var gateState = await CloudMutationGateReader.ResolveAsync(_context, shardId, cancellationToken);
+        var decision = CloudAccountLinkPolicy.EvaluateUnlink(linkIsActive, gateState);
         var correlationId = Guid.NewGuid();
 
         if (!decision.IsApproved)
