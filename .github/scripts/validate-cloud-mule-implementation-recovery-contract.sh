@@ -7,6 +7,7 @@ finder=.github/scripts/find-cloud-mule-implementation-branch.sh
 attempt_counter=.github/scripts/count-cloud-mule-implementation-attempts.sh
 workflow=.github/workflows/claude.yml
 ci_workflow=.github/workflows/cloud-mule-ci.yml
+reconcile_workflow=.github/workflows/cloud-mule-reconcile.yml
 fixture_dir="$(mktemp -d)"
 trap 'rm -rf "${fixture_dir}"' EXIT
 
@@ -36,6 +37,8 @@ grep -Fq 'refresh-cloud-mule-implementation-branch.sh' "${workflow}"
 grep -Fq 'count-cloud-mule-implementation-attempts.sh' "${workflow}"
 grep -Fq 'elif [ "${POLICY_RESULT}" = failure ]' "${ci_workflow}"
 grep -Fq 'leaving recovery to the reconciler' "${ci_workflow}"
+grep -Fq 'count-cloud-mule-implementation-attempts.sh' "${reconcile_workflow}"
+grep -Fq 'Checkout automation helpers' "${reconcile_workflow}"
 
 for claude_workflow in \
   .github/workflows/claude.yml \
