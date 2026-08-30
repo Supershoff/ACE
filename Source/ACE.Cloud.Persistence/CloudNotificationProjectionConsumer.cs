@@ -219,18 +219,22 @@ public sealed class CloudNotificationProjectionConsumer
                 return CloudProjectionEventOutcomeKind.SkippedAsStale;
             }
 
-            var existingUnread = await _context.CloudNotifications
-                .SingleOrDefaultAsync(
-                    row => row.ShardId == shardId && row.OwnerId == evt.OwnerId && row.Kind == kind && !row.IsRead,
-                    cancellationToken);
+            // Looked up regardless of IsRead: a lost/rewound checkpoint (issue #34 Red: "duplicate
+            // outbox delivery does not duplicate notifications") can redeliver an event whose
+            // notification was already coalesced into and then read. Filtering this lookup to only
+            // unread rows would hide that row from the redelivery guard below and let the same
+            // already-acknowledged event mint a brand-new spurious unread notification.
+            var mostRecentNotification = await _context.CloudNotifications
+                .Where(row => row.ShardId == shardId && row.OwnerId == evt.OwnerId && row.Kind == kind)
+                .OrderByDescending(row => row.LatestSourceSequenceNumber)
+                .FirstOrDefaultAsync(cancellationToken);
 
-            // A lost/rewound checkpoint (issue #34 Red: "duplicate outbox delivery does not
-            // duplicate notifications") can hand this event back even though it already coalesced
-            // into existingUnread. CloudProjectionSequenceGuard.ShouldApply is the same row-level
-            // redelivery guard CloudInventoryReadProjection.TryApply uses, applied here per
-            // notification row instead of per biota.
-            if (existingUnread is not null
-                && !CloudProjectionSequenceGuard.ShouldApply(existingUnread.LatestSourceSequenceNumber, evt.SequenceNumber))
+            // CloudProjectionSequenceGuard.ShouldApply is the same row-level redelivery guard
+            // CloudInventoryReadProjection.TryApply uses, applied here per notification row instead
+            // of per biota -- and, unlike the lookup above being IsRead-scoped, now actually catches
+            // a redelivery of an event that already applied to a since-read notification.
+            if (mostRecentNotification is not null
+                && !CloudProjectionSequenceGuard.ShouldApply(mostRecentNotification.LatestSourceSequenceNumber, evt.SequenceNumber))
             {
                 checkpoint.Advance(evt.SequenceNumber);
                 await _context.SaveChangesAsync(cancellationToken);
@@ -238,9 +242,10 @@ public sealed class CloudNotificationProjectionConsumer
                 return CloudProjectionEventOutcomeKind.SkippedAsStale;
             }
 
-            if (existingUnread is not null && CloudNotificationCoalescingPolicy.ShouldCoalesce(existingUnread.Kind, existingUnread.IsRead, kind))
+            if (mostRecentNotification is not null
+                && CloudNotificationCoalescingPolicy.ShouldCoalesce(mostRecentNotification.Kind, mostRecentNotification.IsRead, kind))
             {
-                existingUnread.RecordOccurrence(evt.Id, evt.SequenceNumber);
+                mostRecentNotification.RecordOccurrence(evt.Id, evt.SequenceNumber);
             }
             else
             {

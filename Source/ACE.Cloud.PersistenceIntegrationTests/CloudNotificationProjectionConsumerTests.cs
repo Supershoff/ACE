@@ -239,6 +239,68 @@ public sealed class CloudNotificationProjectionConsumerTests
     }
 
     [TestMethod]
+    public async Task RunBatchAsync_RedeliveryOfAnAlreadyReadEvent_NeverCreatesASpuriousNotification()
+    {
+        var options = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
+        var biotaId = NextId();
+        var recipient = Guid.NewGuid();
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, biotaId);
+
+        await using (var context = new CloudDbContext(options))
+        {
+            var boundary = new CloudCustodyBoundary(context);
+            var authority = new CloudOwnershipTransferAuthority(context);
+            var deposit = await boundary.DepositAsync(biotaId, ShardId, Guid.NewGuid(), Guid.NewGuid());
+            await authority.TransferAsync(biotaId, recipient, deposit.Value!.Version, Guid.NewGuid());
+        }
+
+        await using (var context = new CloudDbContext(options))
+        {
+            var consumer = new CloudNotificationProjectionConsumer(context);
+            var outcome = await consumer.RunBatchAsync(ShardId, maxCount: 100);
+            Assert.AreEqual(1, outcome.Value!.EventsApplied);
+        }
+
+        long appliedSequenceNumber;
+        await using (var context = new CloudDbContext(options))
+        {
+            var notification = await context.CloudNotifications.SingleAsync();
+            var gateway = new CloudNotificationGateway(context);
+            var marked = await gateway.TryMarkReadAsync(ShardId, CloudLiveStreamViewer.ForOwners([recipient]), notification.Id);
+            Assert.IsTrue(marked);
+            appliedSequenceNumber = notification.LatestSourceSequenceNumber;
+        }
+
+        // Simulate a lost/rewound checkpoint that redelivers this exact event *after* its
+        // notification was already read (issue #34 Red: "duplicate events do not duplicate
+        // notifications or regress unread state") -- the specific gap the checkpoint-loss test
+        // above does not cover, because that test resets the checkpoint before the notification is
+        // ever read.
+        await using (var connection = new MySqlConnection(_fixture.CloudConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var reset = connection.CreateCommand();
+            reset.CommandText =
+                "UPDATE CloudProjectionCheckpoint SET LastAppliedSequenceNumber = @lastApplied WHERE ConsumerName = 'NotificationProjection';";
+            reset.Parameters.AddWithValue("@lastApplied", appliedSequenceNumber - 1);
+            await reset.ExecuteNonQueryAsync();
+        }
+
+        await using (var context = new CloudDbContext(options))
+        {
+            var consumer = new CloudNotificationProjectionConsumer(context);
+            var redeliveryOutcome = await consumer.RunBatchAsync(ShardId, maxCount: 100);
+            Assert.AreEqual(0, redeliveryOutcome.Value!.EventsApplied, "A redelivered already-read event must never re-apply.");
+        }
+
+        await using var verifyContext = new CloudDbContext(options);
+        var notifications = await verifyContext.CloudNotifications.ToListAsync();
+        Assert.HasCount(1, notifications, "Redelivery of an already-read event's own sequence number must never mint a new notification.");
+        Assert.IsTrue(notifications[0].IsRead, "Redelivery must never regress a notification back to unread.");
+        Assert.AreEqual(1, notifications[0].OccurrenceCount);
+    }
+
+    [TestMethod]
     public async Task RunBatchAsync_AgainstAnUnreachableDatabase_ReturnsUnavailable_InsteadOfThrowing()
     {
         var options = CloudDbContextOptionsFactory.Create(UnreachableConnectionString(), await RealServerVersionAsync());
