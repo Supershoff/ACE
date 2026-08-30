@@ -115,8 +115,22 @@ public sealed class CloudStackLotTransactionAuthority : ICloudStackLotSplitServi
     /// a new lot... and reserve that new lot"), and is the only one of the two safe to route through
     /// an authenticated HTTP request.
     /// </summary>
-    public async Task<CloudBoundaryOutcome<CloudStackLotSplitResult>> SplitOwnLotAsync(
-        Guid lotId, int expectedVersion, Guid ownerId, int quantityToSplit, CancellationToken cancellationToken = default)
+    public Task<CloudBoundaryOutcome<CloudStackLotSplitResult>> SplitOwnLotAsync(
+        Guid lotId, int expectedVersion, Guid ownerId, int quantityToSplit, CancellationToken cancellationToken = default) =>
+        SplitOwnLotAsync(lotId, expectedVersion, ownerId, quantityToSplit, testOnlyLockInterleaveHook: null, cancellationToken);
+
+    /// <summary>
+    /// Test-only overload: <paramref name="testOnlyLockInterleaveHook"/> runs after the backing
+    /// <c>CloudCustodyRecord</c> lock is acquired but before the <c>CloudStackLot</c> lock is
+    /// requested, so a deterministic concurrency test can interleave a second transaction that locks
+    /// the two rows in the opposite order (as <c>TryReserveForWithdrawalOnceAsync</c> does) and force
+    /// a genuine deadlock, the same way <see cref="CloudBoundaryFaultPoint.AfterLocks"/> lets a
+    /// <see cref="CloudCustodyBoundary"/> concurrency test pause mid-transaction. Internal and
+    /// reachable only from ACE.Cloud.PersistenceIntegrationTests (AssemblyInfo.cs); production
+    /// callers always use the public overload above.
+    /// </summary>
+    internal Task<CloudBoundaryOutcome<CloudStackLotSplitResult>> SplitOwnLotAsync(
+        Guid lotId, int expectedVersion, Guid ownerId, int quantityToSplit, Func<Task>? testOnlyLockInterleaveHook, CancellationToken cancellationToken)
     {
         if (ownerId == Guid.Empty)
         {
@@ -128,6 +142,20 @@ public sealed class CloudStackLotTransactionAuthority : ICloudStackLotSplitServi
             throw new ArgumentOutOfRangeException(nameof(quantityToSplit), "A split requires a positive quantity.");
         }
 
+        // This is the first HTTP-reachable caller of a Split* method (SplitLotAsync has none
+        // outside this class and its own doc comments), so it is the first one whose lock order
+        // (record before lot) can actually collide with TryReserveForWithdrawalOnceAsync's opposite
+        // order (lot before record) under real concurrent browser use, e.g. two tabs racing a split
+        // against a withdrawal reservation on the same lot. Every other mutating boundary method
+        // already runs through this retry wrapper for exactly that reason.
+        return CloudBoundaryRetry.ExecuteAsync(
+            () => TrySplitOwnLotOnceAsync(lotId, expectedVersion, ownerId, quantityToSplit, testOnlyLockInterleaveHook, cancellationToken),
+            cancellationToken: cancellationToken);
+    }
+
+    private async Task<CloudBoundaryOutcome<CloudStackLotSplitResult>> TrySplitOwnLotOnceAsync(
+        Guid lotId, int expectedVersion, Guid ownerId, int quantityToSplit, Func<Task>? testOnlyLockInterleaveHook, CancellationToken cancellationToken)
+    {
         _context.ChangeTracker.Clear();
 
         var custodyRecordId = await LookUpCustodyRecordIdAsync(lotId, cancellationToken);
@@ -139,6 +167,12 @@ public sealed class CloudStackLotTransactionAuthority : ICloudStackLotSplitServi
         await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
 
         await LockCustodyRecordAsync(custodyRecordId.Value, cancellationToken);
+
+        if (testOnlyLockInterleaveHook is not null)
+        {
+            await testOnlyLockInterleaveHook();
+        }
+
         var lot = await LockStackLotAsync(lotId, cancellationToken);
 
         if (lot is null)
