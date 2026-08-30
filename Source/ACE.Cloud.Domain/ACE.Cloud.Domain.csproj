@@ -13,6 +13,15 @@
          unlike ACE.Database, which owns the write-capable Account repository the Auth Bridge must
          never reference (see ACE.Cloud.AuthBridge.csproj). -->
     <ProjectReference Include="..\ACE.Common\ACE.Common.csproj" />
+
+    <!-- UI-001: CloudInventoryCategoryClassifier normalizes real ACE PropertyInt.ItemType flags and
+         WeenieType values into an Inventory Category. ACE.Entity is a pure enum/value-type leaf
+         project (it references only ACE.Common, never ACE.Server or ACE.Database; see its own
+         .csproj), so taking this reference keeps ACE.Cloud.RepositoryPolicyTests'
+         CloudCompanionHostIndependenceTests guarantee intact (that test forbids reaching
+         ACE.Server/ACE.Database, not ACE.Entity) while reusing ACE's authoritative flag/enum values
+         instead of duplicating them as Cloud-owned magic numbers that could silently drift. -->
+    <ProjectReference Include="..\ACE.Entity\ACE.Entity.csproj" />
   </ItemGroup>
 
 </Project>

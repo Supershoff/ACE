@@ -19,6 +19,7 @@
     <ProjectReference Include="..\ACE.Cloud.Domain\ACE.Cloud.Domain.csproj" />
     <ProjectReference Include="..\ACE.Cloud.Contracts\ACE.Cloud.Contracts.csproj" />
     <ProjectReference Include="..\ACE.Common\ACE.Common.csproj" />
+    <ProjectReference Include="..\ACE.Entity\ACE.Entity.csproj" />
   </ItemGroup>
 
 </Project>

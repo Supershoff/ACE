@@ -106,6 +106,8 @@ public sealed class CloudDbContext : DbContext
 
     public DbSet<CloudInventoryReadProjection> CloudInventoryReadProjections => Set<CloudInventoryReadProjection>();
 
+    public DbSet<CloudInventoryItemPropertiesProjection> CloudInventoryItemPropertiesProjections => Set<CloudInventoryItemPropertiesProjection>();
+
     public DbSet<CloudCharacterIdentityReadProjection> CloudCharacterIdentityReadProjections => Set<CloudCharacterIdentityReadProjection>();
 
     public DbSet<CloudLiveStreamEvent> CloudLiveStreamEvents => Set<CloudLiveStreamEvent>();
@@ -1437,6 +1439,35 @@ public sealed class CloudDbContext : DbContext
 
             entity.Property(row => row.LastEventType).IsRequired().HasConversion<string>().HasMaxLength(32);
             entity.Property(row => row.LastAppliedSequenceNumber).IsRequired();
+
+            entity.Property(row => row.UpdatedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAddOrUpdate()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudInventoryItemPropertiesProjection>(entity =>
+        {
+            entity.ToTable("CloudInventoryItemPropertiesProjection");
+
+            entity.HasKey(row => row.BiotaId);
+            entity.Property(row => row.BiotaId).ValueGeneratedNever();
+
+            entity.Property(row => row.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(row => row.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(row => row.Name).IsRequired().HasMaxLength(256);
+            entity.Property(row => row.ItemTypeFlags).IsRequired();
+            entity.Property(row => row.WeenieType).IsRequired();
+            entity.Property(row => row.Category).IsRequired().HasConversion<string>().HasMaxLength(32);
+            entity.HasIndex(row => new { row.ShardId, row.Category });
+
+            entity.Property(row => row.IconCacheKeyHex).HasMaxLength(64);
+            entity.Property(row => row.Revision).IsRequired();
 
             entity.Property(row => row.UpdatedAtUtc)
                 .IsRequired()
