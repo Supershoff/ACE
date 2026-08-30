@@ -227,6 +227,45 @@ public sealed class CloudWithdrawalEndpointsTests
     }
 
     [TestMethod]
+    public async Task Cancel_OwnerHasAnotherMoreRecentActiveReservation_StillCancelsTheNamedOne()
+    {
+        // Nothing in the schema forbids an owner from holding several simultaneously active
+        // Withdrawal Reservations over disjoint targets (CloudWithdrawalReservationReader's own doc
+        // comment). Authorization must be keyed off the reservation actually named in the URL, not
+        // off "the caller's most recently created active reservation" -- otherwise a caller who opens
+        // a second reservation (e.g. a second browser tab, EVT-007) becomes unable to cancel the
+        // first one it still owns.
+        await using var factory = new BackendTestFactory();
+        var (client, csrfToken) = await AuthenticatedClientWithCsrfAsync(factory, MainAccountId);
+
+        using var firstCreate = await PostCreateAsync(client, csrfToken, ItemTarget(777));
+        var firstBody = await firstCreate.Content.ReadFromJsonAsync<JsonNode>();
+        var firstReservationId = firstBody!["reservationId"]!.GetValue<string>();
+        var firstVersion = firstBody["version"]!.GetValue<int>();
+
+        using var secondCreate = await PostCreateAsync(client, csrfToken, ItemTarget(888));
+        Assert.AreEqual(HttpStatusCode.OK, secondCreate.StatusCode);
+        var secondBody = await secondCreate.Content.ReadFromJsonAsync<JsonNode>();
+        var secondReservationId = secondBody!["reservationId"]!.GetValue<string>();
+
+        using var cancelRequest = new HttpRequestMessage(HttpMethod.Post, $"/withdrawals/{firstReservationId}/cancel")
+        {
+            Content = JsonContent.Create(new CloudCancelWithdrawalRequestBody(firstVersion)),
+        };
+        UseAllowedOrigin(cancelRequest);
+        cancelRequest.Headers.Add(AuthSessionEndpoints.CsrfHeaderName, csrfToken);
+        using var cancelResponse = await client.SendAsync(cancelRequest);
+
+        Assert.AreEqual(HttpStatusCode.OK, cancelResponse.StatusCode);
+
+        using var currentResponse = await client.GetAsync("/withdrawals/current");
+        var currentBody = await currentResponse.Content.ReadFromJsonAsync<JsonNode>();
+        Assert.IsTrue(currentBody!["active"]!.GetValue<bool>());
+        Assert.AreEqual(secondReservationId, currentBody["reservationId"]!.GetValue<string>());
+        client.Dispose();
+    }
+
+    [TestMethod]
     public async Task Cancel_CorrectVersion_ReleasesTheReservation_AndItNoLongerShowsAsActive()
     {
         await using var factory = new BackendTestFactory();

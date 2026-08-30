@@ -32,4 +32,15 @@ public sealed class CloudWithdrawalReservationReader : ICloudWithdrawalReservati
             .OrderByDescending(r => r.CreatedAtUtc)
             .FirstOrDefaultAsync(cancellationToken);
     }
+
+    public async Task<CloudWithdrawalReservation?> TryGetByIdAsync(Guid reservationId, CancellationToken cancellationToken = default)
+    {
+        if (reservationId == Guid.Empty)
+        {
+            throw new ArgumentException("Looking up a Withdrawal Reservation requires a real reservation ID.", nameof(reservationId));
+        }
+
+        return await _context.CloudWithdrawalReservations.AsNoTracking()
+            .FirstOrDefaultAsync(r => r.Id == reservationId, cancellationToken);
+    }
 }

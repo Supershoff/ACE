@@ -88,6 +88,9 @@ internal sealed class FakeCloudWithdrawalReservationService : ICloudWithdrawalRe
             .OrderByDescending(r => r.CreatedAtUtc)
             .FirstOrDefault());
 
+    public Task<CloudWithdrawalReservation?> TryGetByIdAsync(Guid reservationId, CancellationToken cancellationToken = default) =>
+        Task.FromResult(_reservationsById.GetValueOrDefault(reservationId));
+
     public Task<IReadOnlyList<CloudWithdrawalReservationTarget>> GetReservationTargetsAsync(
         Guid reservationId, CancellationToken cancellationToken = default) =>
         Task.FromResult<IReadOnlyList<CloudWithdrawalReservationTarget>>(

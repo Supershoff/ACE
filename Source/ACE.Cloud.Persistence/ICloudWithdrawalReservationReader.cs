@@ -11,6 +11,9 @@ namespace ACE.Cloud.Persistence;
 /// </summary>
 public interface ICloudWithdrawalReservationReader
 {
-    /// <summary>The owner's single active Withdrawal Reservation, if any -- used to reconcile the web UI's current-withdrawal view without ever needing the Withdrawal Token secret again after issuance.</summary>
+    /// <summary>The owner's most recently opened active Withdrawal Reservation, if any -- an owner may hold several simultaneously (see the implementation's doc comment) -- used to reconcile the web UI's current-withdrawal view without ever needing the Withdrawal Token secret again after issuance.</summary>
     Task<CloudWithdrawalReservation?> TryGetActiveByOwnerAsync(Guid ownerId, CancellationToken cancellationToken = default);
+
+    /// <summary>The Withdrawal Reservation with this exact ID, regardless of status, or null if none exists -- used to authorize a command against the specific reservation the caller named, never against "the caller's most recent reservation."</summary>
+    Task<CloudWithdrawalReservation?> TryGetByIdAsync(Guid reservationId, CancellationToken cancellationToken = default);
 }

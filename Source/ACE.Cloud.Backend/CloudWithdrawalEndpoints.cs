@@ -232,12 +232,15 @@ public static class CloudWithdrawalEndpoints
 
         // Authorization must be server-side on every command, not just every query: a reservation ID
         // is an opaque handle the client only ever learns for its own reservation, but the caller's
-        // session alone does not prove it names that caller's own reservation. Reuse
+        // session alone does not prove it names that caller's own reservation. Look the reservation up
+        // by the ID actually named in the URL -- an owner can hold several simultaneously active
+        // reservations over disjoint targets, so "the caller's most recently created active
+        // reservation" is not a valid proxy for "the reservation named in this request." Reuse
         // HandleGetAppraisalAsync's "one generic not_found for missing-or-foreign" discipline instead
         // of leaking whether a foreign reservation ID exists.
         var ownerId = CloudOwnerIdentity.ForAccount(options.ShardId, session!.AccountId);
-        var ownedReservation = await reservationReader.TryGetActiveByOwnerAsync(ownerId, cancellationToken);
-        if (ownedReservation is null || ownedReservation.Id != reservationId)
+        var namedReservation = await reservationReader.TryGetByIdAsync(reservationId, cancellationToken);
+        if (namedReservation is null || namedReservation.OwnerId != ownerId)
         {
             return Results.Json(new { error = "not_found" }, statusCode: StatusCodes.Status404NotFound);
         }
