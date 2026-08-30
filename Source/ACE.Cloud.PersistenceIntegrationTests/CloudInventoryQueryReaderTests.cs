@@ -243,6 +243,77 @@ public sealed class CloudInventoryQueryReaderTests
         Assert.AreEqual(0, response.AsOfCustodyOutboxSequenceNumber);
     }
 
+    [TestMethod]
+    public async Task IsItemVisibleToViewerAsync_Owner_ReturnsTrue()
+    {
+        var owner = Guid.NewGuid();
+        var biotaId = await SeedWholeItemAsync(owner, "Ivory Buckler", ItemType.Armor);
+
+        await using var context = new CloudDbContext(CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString));
+        var reader = new CloudInventoryQueryReader(context);
+
+        Assert.IsTrue(await reader.IsItemVisibleToViewerAsync(ShardId, CloudLiveStreamViewer.ForOwners([owner]), new CloudItemId(biotaId)));
+    }
+
+    [TestMethod]
+    public async Task IsItemVisibleToViewerAsync_UnrelatedViewer_ReturnsFalse()
+    {
+        var owner = Guid.NewGuid();
+        var biotaId = await SeedWholeItemAsync(owner, "Ivory Buckler", ItemType.Armor);
+
+        await using var context = new CloudDbContext(CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString));
+        var reader = new CloudInventoryQueryReader(context);
+
+        Assert.IsFalse(await reader.IsItemVisibleToViewerAsync(ShardId, CloudLiveStreamViewer.ForOwners([Guid.NewGuid()]), new CloudItemId(biotaId)));
+    }
+
+    [TestMethod]
+    public async Task IsItemVisibleToViewerAsync_Admin_ReturnsTrueForAnyExistingItem()
+    {
+        var biotaId = await SeedWholeItemAsync(Guid.NewGuid(), "Ivory Buckler", ItemType.Armor);
+
+        await using var context = new CloudDbContext(CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString));
+        var reader = new CloudInventoryQueryReader(context);
+
+        Assert.IsTrue(await reader.IsItemVisibleToViewerAsync(ShardId, CloudLiveStreamViewer.ForAdmin(), new CloudItemId(biotaId)));
+    }
+
+    [TestMethod]
+    public async Task IsItemVisibleToViewerAsync_StackLotOwner_ReturnsTrueForThatLotsOwnerOnly()
+    {
+        var firstOwner = Guid.NewGuid();
+        var secondOwner = Guid.NewGuid();
+        var biotaId = NextBiotaId();
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, biotaId);
+        await SeedItemPropertiesAsync(biotaId, "Trade Note", ItemType.Money);
+
+        await using (var setupContext = new CloudDbContext(CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString)))
+        {
+            var record = CloudCustodyRecord.CreateStack(biotaId, ShardId, totalQuantity: 8, Guid.NewGuid());
+            setupContext.CloudCustodyRecords.Add(record);
+            setupContext.CloudStackLots.Add(new CloudStackLot(record.Id, ShardId, firstOwner, quantity: 5));
+            setupContext.CloudStackLots.Add(new CloudStackLot(record.Id, ShardId, secondOwner, quantity: 3));
+            await setupContext.SaveChangesAsync();
+        }
+
+        await using var context = new CloudDbContext(CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString));
+        var reader = new CloudInventoryQueryReader(context);
+
+        Assert.IsTrue(await reader.IsItemVisibleToViewerAsync(ShardId, CloudLiveStreamViewer.ForOwners([firstOwner]), new CloudItemId(biotaId)));
+        Assert.IsFalse(await reader.IsItemVisibleToViewerAsync(ShardId, CloudLiveStreamViewer.ForOwners([Guid.NewGuid()]), new CloudItemId(biotaId)));
+    }
+
+    [TestMethod]
+    public async Task IsItemVisibleToViewerAsync_MismatchedShardId_ReturnsFalseEvenForAnAdmin()
+    {
+        var biotaId = await SeedWholeItemAsync(Guid.NewGuid(), "Ivory Buckler", ItemType.Armor);
+
+        await using var context = new CloudDbContext(CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString));
+        var reader = new CloudInventoryQueryReader(context);
+
+        Assert.IsFalse(await reader.IsItemVisibleToViewerAsync("a-different-shard", CloudLiveStreamViewer.ForAdmin(), new CloudItemId(biotaId)));
+    }
+
     private async Task<CloudInventoryQueryResponse> QueryAsync(
         CloudLiveStreamViewer viewer, CloudInventoryCategory? category = CloudInventoryCategory.Armor, int page = 1)
     {

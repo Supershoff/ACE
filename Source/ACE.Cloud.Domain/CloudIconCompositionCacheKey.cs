@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace ACE.Cloud.Domain;
 
@@ -52,6 +53,25 @@ public readonly record struct CloudIconCompositionCacheKey
 
         var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(canonical.ToString()));
         return new CloudIconCompositionCacheKey(Convert.ToHexStringLower(hashBytes));
+    }
+
+    private static readonly Regex WellFormedHexPattern = new("^[0-9a-f]{64}$", RegexOptions.Compiled);
+
+    /// <summary>
+    /// Reconstructs a key from its own previously produced <see cref="Hex"/> (issue #31: a web client
+    /// only ever holds this persisted string, never a resolved <see cref="CloudIconLayerPlan"/>).
+    /// Strictly validates the exact shape <see cref="Create"/> always produces -- 64 lowercase hex
+    /// characters, the lowercase form of a SHA-256 digest -- and rejects everything else, so this can
+    /// never become a way to turn an arbitrary caller-supplied string into a blob-store path.
+    /// </summary>
+    public static CloudIconCompositionCacheKey FromHex(string hex)
+    {
+        if (string.IsNullOrEmpty(hex) || !WellFormedHexPattern.IsMatch(hex))
+        {
+            throw new ArgumentException("An icon composition cache key must be exactly 64 lowercase hex characters.", nameof(hex));
+        }
+
+        return new CloudIconCompositionCacheKey(hex);
     }
 
     public override string ToString() => Hex;

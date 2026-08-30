@@ -56,4 +56,14 @@ public sealed class CloudBackendOptions
     public int MaxLoginAttemptsPerWindow { get; init; } = 20;
 
     public int LoginRateLimitWindowSeconds { get; init; } = 60;
+
+    /// <summary>
+    /// The same protected asset storage root the Worker's Asset Import pipeline writes composed icon
+    /// derivatives under (ASSET-002/UI-006). The backend only ever reads the fixed
+    /// <c>icon-cache/&lt;hex&gt;.png</c> namespace out of this root through
+    /// <see cref="ACE.Cloud.Persistence.CloudIconDerivativeReader"/> -- see that type's doc comment
+    /// for why this narrow read does not violate <see cref="ACE.Cloud.Persistence.IProtectedAssetBlobStore"/>'s
+    /// "never reachable from a public route" guidance for every other use of that interface.
+    /// </summary>
+    public required string ProtectedAssetStorageRootDirectory { get; init; }
 }

@@ -38,11 +38,22 @@ internal sealed class BackendTestFactory : WebApplicationFactory<Program>
         Environment.SetEnvironmentVariable("CloudBackend__AllowedOrigins__0", AllowedOrigin);
         Environment.SetEnvironmentVariable("CloudBackend__MaxLoginAttemptsPerWindow", "3");
         Environment.SetEnvironmentVariable("CloudBackend__LoginRateLimitWindowSeconds", "60");
+        Environment.SetEnvironmentVariable(
+            "CloudBackend__ProtectedAssetStorageRootDirectory",
+            Path.Combine(Path.GetTempPath(), "ace-cloud-backend-tests-assets-" + Guid.NewGuid().ToString("N")));
     }
 
     public FakeCloudAuthBridgeClient AuthBridgeClient { get; } = new();
 
     public FakeCloudWebSessionStore SessionStore { get; } = new();
+
+    public FakeCloudAccountOwnershipResolver AccountOwnershipResolver { get; } = new();
+
+    public FakeCloudInventoryQueryReader InventoryQueryReader { get; } = new();
+
+    public FakeCloudInventoryItemPropertiesGateway InventoryItemPropertiesGateway { get; } = new();
+
+    public FakeCloudIconDerivativeReader IconDerivativeReader { get; } = new();
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -53,6 +64,18 @@ internal sealed class BackendTestFactory : WebApplicationFactory<Program>
 
             services.RemoveAll<ICloudWebSessionStore>();
             services.AddSingleton<ICloudWebSessionStore>(SessionStore);
+
+            services.RemoveAll<ICloudAccountOwnershipResolver>();
+            services.AddSingleton<ICloudAccountOwnershipResolver>(AccountOwnershipResolver);
+
+            services.RemoveAll<ICloudInventoryQueryReader>();
+            services.AddSingleton<ICloudInventoryQueryReader>(InventoryQueryReader);
+
+            services.RemoveAll<ICloudInventoryItemPropertiesGateway>();
+            services.AddSingleton<ICloudInventoryItemPropertiesGateway>(InventoryItemPropertiesGateway);
+
+            services.RemoveAll<ICloudIconDerivativeReader>();
+            services.AddSingleton<ICloudIconDerivativeReader>(IconDerivativeReader);
         });
     }
 }
