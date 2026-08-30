@@ -12,7 +12,7 @@ import { describe, expect, it } from "vitest";
 
 const srcRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
-const scannedDirectories = ["design-system/primitives", "shell", "pages", "public"];
+const scannedDirectories = ["design-system/primitives", "shell", "pages", "public", "inventory"];
 
 const allowedFileSuffixes = [".tsx", ".ts"];
 const excludedSuffixes = [".test.ts", ".test.tsx", ".d.ts"];

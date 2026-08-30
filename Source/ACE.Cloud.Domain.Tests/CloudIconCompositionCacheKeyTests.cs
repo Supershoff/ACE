@@ -138,6 +138,44 @@ public sealed class CloudIconCompositionCacheKeyTests
     }
 
     /// <summary>
+    /// Issue #31 Green: the web client only ever holds the already-composed
+    /// <see cref="CloudInventoryQueryResultItem.IconCacheKeyHex"/> string, never a resolved
+    /// <see cref="CloudIconLayerPlan"/>, so serving an icon back to it requires reconstructing a
+    /// <see cref="CloudIconCompositionCacheKey"/> from that persisted hex alone. This must stay a
+    /// narrow, strictly validated parse -- never a free-form path segment -- so a caller can never
+    /// turn an arbitrary string into a blob-store path via this type.
+    /// </summary>
+    [TestMethod]
+    public void FromHex_WellFormedLowercaseSha256Hex_RoundTripsTheSameHex()
+    {
+        var hex = new string('a', 64);
+
+        var key = CloudIconCompositionCacheKey.FromHex(hex);
+
+        Assert.AreEqual(hex, key.Hex);
+    }
+
+    [TestMethod]
+    [DataRow("", DisplayName = "empty")]
+    [DataRow(null, DisplayName = "null")]
+    [DataRow("AA", DisplayName = "too short")]
+    [DataRow("../../etc/passwd", DisplayName = "path traversal attempt")]
+    [DataRow("icon-cache/foo.png", DisplayName = "embedded path separators")]
+    public void FromHex_NotSixtyFourLowercaseHexCharacters_Throws(string? hex)
+    {
+        Assert.ThrowsExactly<ArgumentException>(() => CloudIconCompositionCacheKey.FromHex(hex!));
+    }
+
+    [TestMethod]
+    public void FromHex_UppercaseHex_Throws()
+    {
+        // Convert.ToHexStringLower is the only producer of a real cache key's Hex, so an uppercase
+        // string can never be one of our own keys -- rejecting it outright avoids silently
+        // normalizing a caller-supplied value into a path.
+        Assert.ThrowsExactly<ArgumentException>(() => CloudIconCompositionCacheKey.FromHex(new string('A', 64)));
+    }
+
+    /// <summary>
     /// UI-006: "Stack counts, selection, reservation, and other web state remain separate overlays
     /// and never alter the reconstructed source icon." There is no field on
     /// <see cref="CloudIconCompositionInputs"/> that could hold such state, so it structurally cannot

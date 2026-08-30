@@ -19,6 +19,13 @@ builder.Services.AddDbContext<CloudDbContext>(dbContextOptions => dbContextOptio
     backendOptions.CloudConnectionString, new MariaDbServerVersion(backendOptions.DatabaseServerVersion)));
 builder.Services.AddScoped<CloudGatewayDiagnostics>();
 builder.Services.AddScoped<ICloudWebSessionStore>(serviceProvider => new CloudSessionGateway(serviceProvider.GetRequiredService<CloudDbContext>()));
+builder.Services.AddScoped<ICloudAccountOwnershipResolver>(serviceProvider => new CloudAccountLinkGateway(serviceProvider.GetRequiredService<CloudDbContext>()));
+builder.Services.AddScoped<ICloudInventoryQueryReader>(serviceProvider => new CloudInventoryQueryReader(serviceProvider.GetRequiredService<CloudDbContext>()));
+builder.Services.AddScoped<ICloudInventoryItemPropertiesGateway>(serviceProvider => new CloudInventoryItemPropertiesGateway(serviceProvider.GetRequiredService<CloudDbContext>()));
+
+var protectedAssetStorageOptions = new CloudAssetStorageOptions { RootDirectory = backendOptions.ProtectedAssetStorageRootDirectory };
+builder.Services.AddSingleton<IProtectedAssetBlobStore>(new LocalProtectedAssetBlobStore(protectedAssetStorageOptions));
+builder.Services.AddSingleton<ICloudIconDerivativeReader>(serviceProvider => new CloudIconDerivativeReader(serviceProvider.GetRequiredService<IProtectedAssetBlobStore>()));
 
 builder.Services.AddSingleton(_ => CloudPrivateServiceKeyRingFactory.Create(
     backendOptions.ActiveServiceKeyId, backendOptions.ActiveServiceKeySecret,
@@ -49,6 +56,7 @@ var app = builder.Build();
 
 app.MapCloudDiagnosticsEndpoints(expectedVersions);
 app.MapAuthSessionEndpoints();
+app.MapCloudInventoryEndpoints();
 
 app.Run();
 

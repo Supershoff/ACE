@@ -6,8 +6,12 @@ namespace ACE.Cloud.Persistence;
 /// relative path built by <see cref="ACE.Cloud.Domain.CloudAssetStagingPathPolicy"/> -- never a
 /// caller-supplied free-form string -- so no implementation of this interface needs its own
 /// path-traversal defense beyond the belt-and-suspenders check <see cref="LocalProtectedAssetBlobStore"/>
-/// already applies. Nothing implementing this interface is ever reachable from a public (non-admin)
-/// HTTP route (ASSET-004: "must not expose the source DAT through... raw download endpoints").
+/// already applies. Every admin-facing consumer of this interface (Asset Import sessions, retained
+/// source DATs, staged manifest entries) stays unreachable from a public (non-admin) HTTP route
+/// (ASSET-004: "must not expose the source DAT through... raw download endpoints"). The sole
+/// deliberate exception is <see cref="CloudIconDerivativeReader"/>, which a public inventory route may
+/// depend on: its method signature structurally cannot resolve anything outside the generated
+/// <c>icon-cache/</c> derivative namespace, so it can never become a path to the source DAT.
 /// </summary>
 public interface IProtectedAssetBlobStore
 {

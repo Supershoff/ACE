@@ -27,7 +27,7 @@ namespace ACE.Cloud.Persistence;
 /// today -- <paramref name="wouldCreateActiveAuctionConflict"/> on <see cref="LinkAsync"/> exists so
 /// a future marketplace-aware caller can wire in that check without changing this method's shape.
 /// </summary>
-public sealed class CloudAccountLinkGateway
+public sealed class CloudAccountLinkGateway : ICloudAccountOwnershipResolver
 {
     private readonly CloudDbContext _context;
 
