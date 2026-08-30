@@ -168,3 +168,141 @@ export interface CloudAppraisalPanel {
 export type CloudAppraisalErrorKind = "unauthenticated" | "linked_account_restricted" | "invalid_item_id" | "not_found";
 
 export type CloudIconErrorKind = "unauthenticated" | "invalid_cache_key" | "icon_unavailable";
+
+/**
+ * Typed mirrors of `ACE.Cloud.Backend.AccountIdentityEndpoints` and
+ * `ACE.Cloud.Backend.CloudWithdrawalEndpoints` (issue #33's account identity/linking and Withdrawal
+ * Token web surface, AUTH-003..009, WDR-001..008).
+ */
+export interface CloudAccountLinkedAccountSummary {
+  readonly accountId: number;
+  readonly linkedAtUtc: string;
+}
+
+export interface CloudDisplayCharacterSummary {
+  readonly characterId: number;
+  readonly characterName: string;
+}
+
+export interface CloudAccountIdentityResponse {
+  readonly accountId: number;
+  readonly accountKind: "Main" | "Linked";
+  readonly mainAccountId: number;
+  readonly linkedAccounts: readonly CloudAccountLinkedAccountSummary[];
+  readonly displayCharacter: CloudDisplayCharacterSummary | null;
+}
+
+export type CloudAccountIdentityErrorKind = "unauthenticated";
+
+/** Mirrors `ACE.Cloud.Domain.CloudAccountLinkRejectionCode` exactly, member for member. */
+export type CloudAccountLinkRejectionCode =
+  | "None"
+  | "MutationsFrozen"
+  | "SameAccount"
+  | "MainAccountIsLinkedElsewhere"
+  | "SourceAlreadyLinked"
+  | "SourceHasLinkedAccounts"
+  | "SourceHasPendingObligations"
+  | "WouldCreateAuctionConflict"
+  | "LinkNotActive";
+
+export interface CloudAccountLinkOutcomeResponse {
+  readonly approved: boolean;
+  readonly rejectionCode: CloudAccountLinkRejectionCode;
+}
+
+export type CloudAccountLinkErrorKind =
+  | "unauthenticated"
+  | "linked_account_restricted"
+  | "origin_denied"
+  | "csrf_denied"
+  | "invalid_request"
+  | "invalid_source_credentials"
+  | "authentication_unavailable"
+  | "invalid_grant";
+
+export type CloudAccountUnlinkErrorKind =
+  | "unauthenticated"
+  | "linked_account_restricted"
+  | "origin_denied"
+  | "csrf_denied"
+  | "invalid_request";
+
+export interface CloudWithdrawalNamedLandblockSummary {
+  readonly id: string;
+  /** `0x`-prefixed 16-bit landblock, matching CONTEXT.md's `0x123E` format -- never a coordinate radius. */
+  readonly landblock: string;
+  readonly name: string;
+}
+
+export interface CloudWithdrawalLocationsResponse {
+  readonly withdrawAnywhereEnabled: boolean;
+  readonly namedLandblocks: readonly CloudWithdrawalNamedLandblockSummary[];
+}
+
+export type CloudWithdrawalTargetKind = "Item" | "StackLot";
+
+export interface CloudWithdrawalTargetRequest {
+  readonly kind: CloudWithdrawalTargetKind;
+  readonly itemBiotaId?: number;
+  readonly stackLotId?: string;
+}
+
+export interface CloudWithdrawalReservationTargetSummary {
+  readonly kind: CloudWithdrawalTargetKind;
+  readonly itemBiotaId: number | null;
+  readonly stackLotId: string | null;
+  readonly quantity: number | null;
+}
+
+/** `active: false` means no Withdrawal Reservation is currently open; every other field is then absent. */
+export type CloudCurrentWithdrawalResponse =
+  | { readonly active: false }
+  | {
+      readonly active: true;
+      readonly reservationId: string;
+      readonly version: number;
+      readonly expiresAtUtc: string;
+      readonly targets: readonly CloudWithdrawalReservationTargetSummary[];
+    };
+
+/**
+ * The one and only response that ever carries the raw Withdrawal Token secret (security baseline:
+ * never in a URL, log, or subsequent status read) -- WDR-001's single-reveal rule.
+ */
+export interface CloudCreateWithdrawalResponse {
+  readonly secret: string;
+  readonly reservationId: string;
+  readonly version: number;
+  readonly expiresAtUtc: string;
+}
+
+export type CloudCreateWithdrawalErrorKind =
+  | "unauthenticated"
+  | "linked_account_restricted"
+  | "origin_denied"
+  | "csrf_denied"
+  | "invalid_request"
+  | "world_boundary_unavailable"
+  | "conflict"
+  | "unavailable";
+
+export interface CloudCancelWithdrawalResponse {
+  readonly reservationId: string;
+  readonly version: number;
+  readonly status: "Active" | "Released";
+}
+
+export type CloudCancelWithdrawalErrorKind =
+  | "unauthenticated"
+  | "linked_account_restricted"
+  | "origin_denied"
+  | "csrf_denied"
+  | "invalid_request"
+  | "conflict"
+  | "unavailable";
+
+export interface CloudSplitStackLotResponse {
+  readonly remainingLot: { readonly id: string; readonly quantity: number; readonly version: number };
+  readonly newLot: { readonly id: string; readonly quantity: number; readonly version: number };
+}

@@ -9,6 +9,7 @@ function baseSessionValue(overrides: Partial<SessionContextValue> = {}): Session
     status: "unknown",
     csrfToken: null,
     accountKind: "Unknown",
+    accountName: null,
     serviceAvailability: "Operational",
     login: vi.fn(async () => ({ ok: true })),
     logout: vi.fn(async () => {}),

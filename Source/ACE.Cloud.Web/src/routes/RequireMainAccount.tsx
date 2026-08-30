@@ -8,8 +8,8 @@ export interface RequireMainAccountProps {
 
 /**
  * AUTH-004: Linked Account credentials cannot view or mutate the Main Account's unified Cloud
- * Inventory. The server does not expose account-kind over HTTP yet (see `SessionContext`'s
- * `AccountKind` doc comment), so `"Unknown"` also fails closed rather than defaulting to "Main".
+ * Inventory. `"Unknown"` (before `/account/identity` resolves, or if it fails) also fails closed
+ * rather than defaulting to "Main" -- see `SessionContext`'s `AccountKind` doc comment.
  */
 export function RequireMainAccount({ children }: RequireMainAccountProps) {
   const { accountKind } = useSession();

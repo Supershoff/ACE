@@ -21,7 +21,7 @@ namespace ACE.Cloud.Persistence;
 /// enough to make concurrent callers safe (issue #5's Green section: "do not broaden behavior
 /// beyond the listed requirements").
 /// </summary>
-public sealed class CloudStackLotTransactionAuthority
+public sealed class CloudStackLotTransactionAuthority : ICloudStackLotSplitService
 {
     private readonly CloudDbContext _context;
 
@@ -92,6 +92,90 @@ public sealed class CloudStackLotTransactionAuthority
 
         lot.ReduceQuantity(quantityToSplit);
         var newLot = new CloudStackLot(lot.CustodyRecordId, lot.ShardId, newOwnerId, quantityToSplit);
+
+        _context.CloudStackLots.Update(lot);
+        _context.CloudStackLots.Add(newLot);
+        await _context.SaveChangesAsync(cancellationToken);
+
+        await transaction.CommitAsync(cancellationToken);
+
+        return CloudBoundaryOutcome<CloudStackLotSplitResult>.Committed(new CloudStackLotSplitResult(lot, newLot));
+    }
+
+    /// <summary>
+    /// Carves <paramref name="quantityToSplit"/> off <paramref name="ownerId"/>'s own lot into a new
+    /// lot for that same owner, refusing unless <paramref name="ownerId"/> is the lot's current
+    /// owner. <see cref="SplitLotAsync"/> takes an arbitrary <c>newOwnerId</c> without checking the
+    /// caller's authority over the lot at all -- correct for an already-authorized higher-level
+    /// caller (a future marketplace/escrow flow that has independently verified the transfer), but
+    /// unsafe to expose directly to a browser-facing endpoint: any caller who could guess a lot's ID
+    /// and current version could split part of someone else's stack into a lot they own. This
+    /// narrower entry point is what issue #33's Withdrawal Token creation flow uses for a
+    /// partial-quantity selection (CONTEXT.md: "a caller who wants a smaller amount must first split
+    /// a new lot... and reserve that new lot"), and is the only one of the two safe to route through
+    /// an authenticated HTTP request.
+    /// </summary>
+    public async Task<CloudBoundaryOutcome<CloudStackLotSplitResult>> SplitOwnLotAsync(
+        Guid lotId, int expectedVersion, Guid ownerId, int quantityToSplit, CancellationToken cancellationToken = default)
+    {
+        if (ownerId == Guid.Empty)
+        {
+            throw new ArgumentException("A split requires an owner.", nameof(ownerId));
+        }
+
+        if (quantityToSplit <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(quantityToSplit), "A split requires a positive quantity.");
+        }
+
+        _context.ChangeTracker.Clear();
+
+        var custodyRecordId = await LookUpCustodyRecordIdAsync(lotId, cancellationToken);
+        if (custodyRecordId is null)
+        {
+            return CloudBoundaryOutcome<CloudStackLotSplitResult>.Conflict($"Cloud Stack Lot {lotId} does not exist.");
+        }
+
+        await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+
+        await LockCustodyRecordAsync(custodyRecordId.Value, cancellationToken);
+        var lot = await LockStackLotAsync(lotId, cancellationToken);
+
+        if (lot is null)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return CloudBoundaryOutcome<CloudStackLotSplitResult>.Conflict($"Cloud Stack Lot {lotId} does not exist.");
+        }
+
+        if (lot.OwnerId != ownerId)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return CloudBoundaryOutcome<CloudStackLotSplitResult>.Conflict($"Cloud Stack Lot {lotId} is not owned by {ownerId}.");
+        }
+
+        if (lot.Version != expectedVersion)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return CloudBoundaryOutcome<CloudStackLotSplitResult>.Conflict(
+                $"Cloud Stack Lot {lotId} is at version {lot.Version}, not the expected version {expectedVersion}.");
+        }
+
+        if (await HasActiveWithdrawalReservationAsync(lotId, cancellationToken))
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return CloudBoundaryOutcome<CloudStackLotSplitResult>.Conflict(
+                $"Cloud Stack Lot {lotId} has an active Withdrawal Reservation and cannot be split until it is redeemed or cancelled.");
+        }
+
+        if (quantityToSplit >= lot.Quantity)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return CloudBoundaryOutcome<CloudStackLotSplitResult>.Conflict(
+                $"Cannot split {quantityToSplit} from a lot that only has {lot.Quantity}: a split must leave a positive remainder.");
+        }
+
+        lot.ReduceQuantity(quantityToSplit);
+        var newLot = new CloudStackLot(lot.CustodyRecordId, lot.ShardId, ownerId, quantityToSplit);
 
         _context.CloudStackLots.Update(lot);
         _context.CloudStackLots.Add(newLot);
