@@ -29,6 +29,12 @@ builder.Services.AddScoped<ICloudWithdrawalReservationReader>(serviceProvider =>
 builder.Services.AddScoped<ICloudWithdrawalLocationReader>(serviceProvider => new CloudWithdrawalLocationConfigurationBoundary(serviceProvider.GetRequiredService<CloudDbContext>()));
 builder.Services.AddScoped<ICloudStackLotSplitService>(serviceProvider => new CloudStackLotTransactionAuthority(serviceProvider.GetRequiredService<CloudDbContext>()));
 builder.Services.AddScoped<ICloudServiceAvailabilityReader>(serviceProvider => new CloudServiceAvailabilityReader(serviceProvider.GetRequiredService<CloudStartupDiagnosticsService>()));
+builder.Services.AddScoped<ICloudActivityLedgerQueryReader>(serviceProvider => new CloudActivityLedgerQueryReader(serviceProvider.GetRequiredService<CloudDbContext>()));
+builder.Services.AddScoped<ICloudCharacterAllegianceVaultReader>(serviceProvider => new CloudCharacterAllegianceVaultReader(serviceProvider.GetRequiredService<CloudDbContext>()));
+builder.Services.AddScoped(serviceProvider => new CloudNotificationGateway(serviceProvider.GetRequiredService<CloudDbContext>()));
+builder.Services.AddScoped<ICloudNotificationReader>(serviceProvider => serviceProvider.GetRequiredService<CloudNotificationGateway>());
+builder.Services.AddScoped<ICloudNotificationWriter>(serviceProvider => serviceProvider.GetRequiredService<CloudNotificationGateway>());
+builder.Services.AddScoped<ICloudLiveStreamReader>(serviceProvider => new CloudLiveStreamReader(serviceProvider.GetRequiredService<CloudDbContext>()));
 
 var protectedAssetStorageOptions = new CloudAssetStorageOptions { RootDirectory = backendOptions.ProtectedAssetStorageRootDirectory };
 builder.Services.AddSingleton<IProtectedAssetBlobStore>(new LocalProtectedAssetBlobStore(protectedAssetStorageOptions));
@@ -66,6 +72,9 @@ app.MapAuthSessionEndpoints();
 app.MapCloudInventoryEndpoints();
 app.MapAccountIdentityEndpoints();
 app.MapCloudWithdrawalEndpoints();
+app.MapCloudActivityLedgerEndpoints();
+app.MapCloudNotificationEndpoints();
+app.MapCloudLiveStreamEndpoints();
 
 app.Run();
 

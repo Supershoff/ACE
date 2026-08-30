@@ -306,3 +306,61 @@ export interface CloudSplitStackLotResponse {
   readonly remainingLot: { readonly id: string; readonly quantity: number; readonly version: number };
   readonly newLot: { readonly id: string; readonly quantity: number; readonly version: number };
 }
+
+/**
+ * Typed mirrors of `ACE.Cloud.Backend.CloudActivityLedgerEndpoints`,
+ * `ACE.Cloud.Backend.CloudNotificationEndpoints`, and `ACE.Cloud.Backend.CloudLiveStreamEndpoints`
+ * (issue #34, EVT-001/EVT-002/EVT-003/EVT-007).
+ */
+export type CloudActivityLedgerCategory = "CustodyBoundary" | "AccountLink" | "GlobalMaintenance" | "AssetImport";
+
+export interface CloudActivityLedgerEntry {
+  readonly id: string;
+  readonly correlationId: string;
+  readonly category: CloudActivityLedgerCategory;
+  readonly eventType: string;
+  readonly ownerId: string | null;
+  readonly itemBiotaId: number | null;
+  readonly outcome: string | null;
+  readonly reason: string | null;
+  readonly occurredAtUtc: string;
+}
+
+export interface CloudActivityLedgerPageResponse {
+  readonly entries: readonly CloudActivityLedgerEntry[];
+  readonly pageNumber: number;
+  readonly pageSize: number;
+  readonly totalCount: number;
+  readonly totalPages: number;
+}
+
+export type CloudActivityLedgerErrorKind = "unauthenticated" | "linked_account_restricted" | "invalid_page";
+
+/** Mirrors `ACE.Cloud.Domain.CloudNotificationKind` exactly, member for member. */
+export type CloudNotificationKind = "OwnershipReceived";
+
+export interface CloudNotification {
+  readonly id: string;
+  readonly kind: CloudNotificationKind;
+  /** A same-origin app route to navigate to (Progressive Interface's "contextual destination"). */
+  readonly destination: string;
+  readonly count: number;
+  readonly isRead: boolean;
+  readonly firstOccurredAtUtc: string;
+  readonly lastOccurredAtUtc: string;
+}
+
+export interface CloudNotificationListResponse {
+  readonly notifications: readonly CloudNotification[];
+}
+
+export interface CloudNotificationUnreadCountResponse {
+  readonly unreadCount: number;
+}
+
+export type CloudNotificationErrorKind = "unauthenticated" | "linked_account_restricted" | "csrf_mismatch" | "not_found";
+
+/** One parsed Live State Stream SSE message payload (`CloudLiveStreamEndpoints.WriteStateMessageAsync`/`WriteEventMessageAsync`). */
+export type CloudLiveStreamMessage =
+  | { readonly kind: "state"; readonly mode: CloudServiceAvailabilityMode }
+  | { readonly kind: "event"; readonly eventKind: string; readonly sequenceNumber: number; readonly sourceEventId: string };

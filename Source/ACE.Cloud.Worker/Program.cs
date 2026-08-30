@@ -65,6 +65,7 @@ builder.Services.AddHostedService<CloudAssetImportStagingWorker>();
 
 builder.Services.AddHostedService<CloudCustodyProjectionConsumerWorker>();
 builder.Services.AddHostedService<CloudIdentityProjectionConsumerWorker>();
+builder.Services.AddHostedService<CloudNotificationProjectionConsumerWorker>();
 
 var host = builder.Build();
 host.Run();

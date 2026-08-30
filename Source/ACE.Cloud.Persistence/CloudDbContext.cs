@@ -124,6 +124,8 @@ public sealed class CloudDbContext : DbContext
 
     public DbSet<CloudSearchConfigurationRecord> CloudSearchConfigurations => Set<CloudSearchConfigurationRecord>();
 
+    public DbSet<CloudNotification> CloudNotifications => Set<CloudNotification>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<CloudShardBinding>(entity =>
@@ -1678,6 +1680,44 @@ public sealed class CloudDbContext : DbContext
                 .IsRequired()
                 .ValueGeneratedOnAddOrUpdate()
                 .HasDefaultValueSql("CURRENT_TIMESTAMP");
+        });
+
+        modelBuilder.Entity<CloudNotification>(entity =>
+        {
+            entity.ToTable("CloudNotification");
+
+            entity.HasKey(notification => notification.Id);
+            entity.Property(notification => notification.Id).ValueGeneratedNever();
+
+            entity.Property(notification => notification.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(notification => notification.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(notification => notification.OwnerId).IsRequired();
+            entity.HasIndex(notification => new { notification.ShardId, notification.OwnerId, notification.IsRead });
+            entity.HasIndex(notification => new { notification.ShardId, notification.OwnerId, notification.Kind, notification.IsRead });
+
+            entity.Property(notification => notification.Kind).IsRequired().HasConversion<string>().HasMaxLength(32);
+            entity.Property(notification => notification.Destination).IsRequired().HasMaxLength(128);
+            entity.Property(notification => notification.OccurrenceCount).IsRequired();
+            entity.Property(notification => notification.LatestSourceEventId).IsRequired();
+            entity.Property(notification => notification.LatestSourceSequenceNumber).IsRequired();
+            entity.Property(notification => notification.IsRead).IsRequired();
+
+            entity.Property(notification => notification.FirstOccurredAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAdd()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+            entity.Property(notification => notification.LastOccurredAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAddOrUpdate()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+            entity.Property(notification => notification.ReadAtUtc);
         });
     }
 }

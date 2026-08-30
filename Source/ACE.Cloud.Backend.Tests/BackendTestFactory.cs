@@ -67,6 +67,14 @@ internal sealed class BackendTestFactory : WebApplicationFactory<Program>
 
     public FakeCloudServiceAvailabilityReader ServiceAvailabilityReader { get; } = new();
 
+    public FakeCloudActivityLedgerQueryReader ActivityLedgerQueryReader { get; } = new();
+
+    public FakeCloudCharacterAllegianceVaultReader CharacterAllegianceVaultReader { get; } = new();
+
+    public FakeCloudNotificationGateway NotificationGateway { get; } = new();
+
+    public FakeCloudLiveStreamReader LiveStreamReader { get; } = new();
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.ConfigureServices(services =>
@@ -109,6 +117,21 @@ internal sealed class BackendTestFactory : WebApplicationFactory<Program>
 
             services.RemoveAll<ICloudServiceAvailabilityReader>();
             services.AddSingleton<ICloudServiceAvailabilityReader>(ServiceAvailabilityReader);
+
+            services.RemoveAll<ICloudActivityLedgerQueryReader>();
+            services.AddSingleton<ICloudActivityLedgerQueryReader>(ActivityLedgerQueryReader);
+
+            services.RemoveAll<ICloudCharacterAllegianceVaultReader>();
+            services.AddSingleton<ICloudCharacterAllegianceVaultReader>(CharacterAllegianceVaultReader);
+
+            services.RemoveAll<ICloudNotificationReader>();
+            services.AddSingleton<ICloudNotificationReader>(NotificationGateway);
+
+            services.RemoveAll<ICloudNotificationWriter>();
+            services.AddSingleton<ICloudNotificationWriter>(NotificationGateway);
+
+            services.RemoveAll<ICloudLiveStreamReader>();
+            services.AddSingleton<ICloudLiveStreamReader>(LiveStreamReader);
         });
     }
 }
