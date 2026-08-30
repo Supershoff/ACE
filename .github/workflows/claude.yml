@@ -151,7 +151,7 @@ jobs:
           claude_args: |
             --max-turns 300
             --append-system-prompt "Work on exactly one issue. The wrapper, not Claude, creates the pull request. If a required prerequisite is unavailable or an acceptance criterion cannot be verified, stop and report it instead of claiming completion."
-            --allowedTools "Read,Write,Edit,Glob,Grep,Bash(pwd:*),Bash(ls:*),Bash(find:*),Bash(cat:*),Bash(head:*),Bash(tail:*),Bash(grep:*),Bash(rg:*),Bash(sed:*),Bash(sort:*),Bash(wc:*),Bash(which:*),Bash(git fetch:*),Bash(git status:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(git branch:*),Bash(git switch:*),Bash(git checkout:*),Bash(git rev-parse:*),Bash(git ls-files:*),Bash(git grep:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(dotnet:*),Bash(npm ci:*),Bash(npm test:*),Bash(npm run:*),Bash(pnpm:*),Bash(gh issue view:*),Bash(gh issue comment:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh run view:*),Bash(gh run list:*)"
+            --allowedTools "Read,Write,Edit,Glob,Grep,Bash(pwd:*),Bash(ls:*),Bash(find:*),Bash(cat:*),Bash(head:*),Bash(tail:*),Bash(grep:*),Bash(rg:*),Bash(sed:*),Bash(sort:*),Bash(wc:*),Bash(which:*),Bash(git fetch:*),Bash(git status:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(git branch:*),Bash(git switch:*),Bash(git checkout:*),Bash(git rev-parse:*),Bash(git ls-files:*),Bash(git grep:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(dotnet:*),Bash(node:*),Bash(npm:*),Bash(pnpm:*),Bash(gh issue view:*),Bash(gh issue comment:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh run view:*),Bash(gh run list:*)"
             --disallowedTools "Bash(git push --force:*),Bash(git push --force-with-lease:*),Bash(git reset --hard:*),Bash(git clean:*),Bash(git merge:*),Bash(gh pr merge:*),Bash(gh repo delete:*),Bash(sudo:*),Bash(ssh:*),Bash(scp:*)"
 
       - name: Resolve Claude's implementation branch
@@ -229,8 +229,8 @@ jobs:
           fi
 
           comments="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}/comments?per_page=100")"
-          attempts="$(jq -r "[.[][] | select(.body | contains(\"<!-- claude-implementation-substantive-failure:${ISSUE_NUMBER}:\"))] | length" <<<"${comments}")"
-          transient_attempts="$(jq -r "[.[][] | select(.body | contains(\"<!-- claude-implementation-transient:${ISSUE_NUMBER}:\"))] | length" <<<"${comments}")"
+          attempts="$(bash .github/scripts/count-cloud-mule-implementation-attempts.sh "${ISSUE_NUMBER}" substantive-failure <<<"${comments}")"
+          transient_attempts="$(bash .github/scripts/count-cloud-mule-implementation-attempts.sh "${ISSUE_NUMBER}" transient <<<"${comments}")"
 
           if [ "${transient}" = true ]; then
             transient_attempts=$((transient_attempts + 1))
@@ -331,8 +331,8 @@ jobs:
           fi
 
           comments="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}/comments?per_page=100" 2>/dev/null || echo '[]')"
-          attempts="$(jq -r "[.[][] | select(.body | contains(\"<!-- claude-implementation-substantive-failure:${ISSUE_NUMBER}:\"))] | length" <<<"${comments}" 2>/dev/null || echo 0)"
-          transient_attempts="$(jq -r "[.[][] | select(.body | contains(\"<!-- claude-implementation-transient:${ISSUE_NUMBER}:\"))] | length" <<<"${comments}" 2>/dev/null || echo 0)"
+          attempts="$(bash .github/scripts/count-cloud-mule-implementation-attempts.sh "${ISSUE_NUMBER}" substantive-failure <<<"${comments}" 2>/dev/null || echo 0)"
+          transient_attempts="$(bash .github/scripts/count-cloud-mule-implementation-attempts.sh "${ISSUE_NUMBER}" transient <<<"${comments}" 2>/dev/null || echo 0)"
           if [ "${transient}" = true ]; then
             transient_attempts=$((transient_attempts + 1))
             gh issue edit "${ISSUE_NUMBER}" --repo "${GITHUB_REPOSITORY}" \
