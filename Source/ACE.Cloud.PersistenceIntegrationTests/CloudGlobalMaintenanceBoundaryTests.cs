@@ -261,6 +261,150 @@ public sealed class CloudGlobalMaintenanceBoundaryTests
     }
 
     [TestMethod]
+    public async Task WhileFrozen_Deposit_IsRefused_ProvingTheRealGateBlocksTheDepositCallSite()
+    {
+        var biotaId = NextId();
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, biotaId);
+
+        var maintenanceBoundary = NewBoundary(out var maintenanceContext);
+        await using var _ = maintenanceContext;
+        var initial = await maintenanceBoundary.GetCurrentAsync(ShardId);
+        Assert.AreEqual(
+            CloudBoundaryOutcomeKind.Committed,
+            (await maintenanceBoundary.EnterAsync(ShardId, "downtime", confirmed: true, AdminAccessLevel, AdminAccountId, initial.Version.Value)).Kind);
+
+        var custodyBoundary = new CloudCustodyBoundary(new CloudDbContext(CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString)));
+        var depositOutcome = await custodyBoundary.DepositAsync(biotaId, ShardId, Guid.NewGuid(), Guid.NewGuid());
+
+        Assert.AreEqual(CloudBoundaryOutcomeKind.Conflict, depositOutcome.Kind);
+        StringAssert.Contains(depositOutcome.Reason, "frozen");
+        Assert.IsTrue(
+            await AceShardTestData.BiotaExistsAsync(_fixture.AceShardConnectionString, biotaId),
+            "A refused deposit must never remove the biota from the world.");
+    }
+
+    [TestMethod]
+    public async Task WhileFrozen_Withdraw_IsRefused_ProvingTheRealGateBlocksTheWithdrawCallSite()
+    {
+        var biotaId = NextId();
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, biotaId);
+
+        var custodyBoundary = new CloudCustodyBoundary(new CloudDbContext(CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString)));
+        var ownerId = Guid.NewGuid();
+        var depositOutcome = await custodyBoundary.DepositAsync(biotaId, ShardId, ownerId, Guid.NewGuid());
+        Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, depositOutcome.Kind);
+
+        var maintenanceBoundary = NewBoundary(out var maintenanceContext);
+        await using var _ = maintenanceContext;
+        var initial = await maintenanceBoundary.GetCurrentAsync(ShardId);
+        Assert.AreEqual(
+            CloudBoundaryOutcomeKind.Committed,
+            (await maintenanceBoundary.EnterAsync(ShardId, "downtime", confirmed: true, AdminAccessLevel, AdminAccountId, initial.Version.Value)).Kind);
+
+        var withdrawOutcome = await custodyBoundary.WithdrawAsync(depositOutcome.Value!.Id, expectedVersion: 1, NextId(), Guid.NewGuid());
+
+        Assert.AreEqual(CloudBoundaryOutcomeKind.Conflict, withdrawOutcome.Kind);
+        StringAssert.Contains(withdrawOutcome.Reason, "frozen");
+    }
+
+    [TestMethod]
+    public async Task WhileFrozen_DepositStack_IsRefused_ProvingTheRealGateBlocksTheStackDepositCallSite()
+    {
+        var biotaId = NextId();
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, biotaId);
+
+        var maintenanceBoundary = NewBoundary(out var maintenanceContext);
+        await using var _ = maintenanceContext;
+        var initial = await maintenanceBoundary.GetCurrentAsync(ShardId);
+        Assert.AreEqual(
+            CloudBoundaryOutcomeKind.Committed,
+            (await maintenanceBoundary.EnterAsync(ShardId, "downtime", confirmed: true, AdminAccessLevel, AdminAccountId, initial.Version.Value)).Kind);
+
+        var custodyBoundary = new CloudCustodyBoundary(new CloudDbContext(CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString)));
+        var depositOutcome = await custodyBoundary.DepositStackAsync(biotaId, ShardId, Guid.NewGuid(), 10, Guid.NewGuid());
+
+        Assert.AreEqual(CloudBoundaryOutcomeKind.Conflict, depositOutcome.Kind);
+        StringAssert.Contains(depositOutcome.Reason, "frozen");
+    }
+
+    [TestMethod]
+    public async Task WhileFrozen_WithdrawLot_IsRefused_ProvingTheRealGateBlocksTheLotWithdrawalCallSite()
+    {
+        var biotaId = NextId();
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, biotaId);
+
+        var custodyBoundary = new CloudCustodyBoundary(new CloudDbContext(CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString)));
+        var depositOutcome = await custodyBoundary.DepositStackAsync(biotaId, ShardId, Guid.NewGuid(), 10, Guid.NewGuid());
+        Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, depositOutcome.Kind);
+        var lot = depositOutcome.Value!.Lot;
+
+        var maintenanceBoundary = NewBoundary(out var maintenanceContext);
+        await using var _ = maintenanceContext;
+        var initial = await maintenanceBoundary.GetCurrentAsync(ShardId);
+        Assert.AreEqual(
+            CloudBoundaryOutcomeKind.Committed,
+            (await maintenanceBoundary.EnterAsync(ShardId, "downtime", confirmed: true, AdminAccessLevel, AdminAccountId, initial.Version.Value)).Kind);
+
+        var withdrawOutcome = await custodyBoundary.WithdrawLotAsync(lot.Id, lot.Version, 10, NextId(), materializedBiotaId: null, Guid.NewGuid());
+
+        Assert.AreEqual(CloudBoundaryOutcomeKind.Conflict, withdrawOutcome.Kind);
+        StringAssert.Contains(withdrawOutcome.Reason, "frozen");
+    }
+
+    [TestMethod]
+    public async Task WhileFrozen_ConvertPyrealDeposit_IsRefused_ProvingTheRealGateBlocksThePyrealConversionCallSite()
+    {
+        var rawBiotaId = NextId();
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, rawBiotaId);
+        await AceShardTestData.SetCoinValueAsync(_fixture.AceShardConnectionString, rawBiotaId, 100_000);
+
+        var maintenanceBoundary = NewBoundary(out var maintenanceContext);
+        await using var _ = maintenanceContext;
+        var initial = await maintenanceBoundary.GetCurrentAsync(ShardId);
+        Assert.AreEqual(
+            CloudBoundaryOutcomeKind.Committed,
+            (await maintenanceBoundary.EnterAsync(ShardId, "downtime", confirmed: true, AdminAccessLevel, AdminAccountId, initial.Version.Value)).Kind);
+
+        var custodyBoundary = new CloudCustodyBoundary(new CloudDbContext(CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString)));
+        var conversionOutcome = await custodyBoundary.ConvertPyrealDepositAsync(
+            rawBiotaId, ShardId, Guid.NewGuid(), 100_000, mmdBiotaIds: [], Guid.NewGuid());
+
+        Assert.AreEqual(CloudBoundaryOutcomeKind.Conflict, conversionOutcome.Kind);
+        StringAssert.Contains(conversionOutcome.Reason, "frozen");
+        Assert.IsTrue(
+            await AceShardTestData.BiotaExistsAsync(_fixture.AceShardConnectionString, rawBiotaId),
+            "A refused conversion must never consume the raw Pyreal biota.");
+    }
+
+    [TestMethod]
+    public async Task WhileFrozen_RedeemWithdrawalReservation_IsRefused_ProvingTheRealGateBlocksTheRedemptionCallSite()
+    {
+        var biotaId = NextId();
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, biotaId);
+
+        var custodyBoundary = new CloudCustodyBoundary(new CloudDbContext(CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString)));
+        var ownerId = Guid.NewGuid();
+        Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, (await custodyBoundary.DepositAsync(biotaId, ShardId, ownerId, Guid.NewGuid())).Kind);
+
+        var tokenHash = Convert.ToHexString(Guid.NewGuid().ToByteArray());
+        var reserveOutcome = await custodyBoundary.ReserveForWithdrawalAsync(
+            [CloudWithdrawalReservationRequestTarget.ForItem(biotaId)], ShardId, ownerId, tokenHash, TimeSpan.FromMinutes(15), Guid.NewGuid());
+        Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, reserveOutcome.Kind);
+
+        var maintenanceBoundary = NewBoundary(out var maintenanceContext);
+        await using var _ = maintenanceContext;
+        var initial = await maintenanceBoundary.GetCurrentAsync(ShardId);
+        Assert.AreEqual(
+            CloudBoundaryOutcomeKind.Committed,
+            (await maintenanceBoundary.EnterAsync(ShardId, "downtime", confirmed: true, AdminAccessLevel, AdminAccountId, initial.Version.Value)).Kind);
+
+        var redeemOutcome = await custodyBoundary.RedeemWithdrawalReservationAsync(tokenHash, NextId(), Guid.NewGuid());
+
+        Assert.AreEqual(CloudBoundaryOutcomeKind.Conflict, redeemOutcome.Kind);
+        StringAssert.Contains(redeemOutcome.Reason, "frozen");
+    }
+
+    [TestMethod]
     public async Task Enter_PersistsAcrossASimulatedRestart()
     {
         await using (var context = new CloudDbContext(CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString)))

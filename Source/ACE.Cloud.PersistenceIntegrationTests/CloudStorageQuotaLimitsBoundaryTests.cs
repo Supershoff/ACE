@@ -187,6 +187,48 @@ public sealed class CloudStorageQuotaLimitsBoundaryTests
     }
 
     [TestMethod]
+    public async Task Deposit_TwoConcurrentDepositsOneBelowTheLimit_NeverBothCommit()
+    {
+        var quotaBoundary = NewQuotaBoundary(out var quotaContext);
+        await using var __ = quotaContext;
+        var initialLimits = await quotaBoundary.GetCurrentAsync(ShardId);
+        Assert.AreEqual(
+            CloudBoundaryOutcomeKind.Committed,
+            (await quotaBoundary.SetPersonalLimitAsync(ShardId, 10, AdminAccessLevel, initialLimits.Version.Value)).Kind);
+
+        var ownerId = Guid.NewGuid();
+        var seedBoundary = new CloudCustodyBoundary(new CloudDbContext(CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString)));
+        for (var i = 0; i < 9; i++)
+        {
+            var seedBiotaId = NextId();
+            await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, seedBiotaId);
+            Assert.AreEqual(
+                CloudBoundaryOutcomeKind.Committed,
+                (await seedBoundary.DepositAsync(seedBiotaId, ShardId, ownerId, Guid.NewGuid())).Kind);
+        }
+
+        var raceBiotaIdA = NextId();
+        var raceBiotaIdB = NextId();
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, raceBiotaIdA);
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, raceBiotaIdB);
+
+        var boundaryA = new CloudCustodyBoundary(new CloudDbContext(CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString)));
+        var boundaryB = new CloudCustodyBoundary(new CloudDbContext(CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString)));
+
+        var results = await Task.WhenAll(
+            boundaryA.DepositAsync(raceBiotaIdA, ShardId, ownerId, Guid.NewGuid()),
+            boundaryB.DepositAsync(raceBiotaIdB, ShardId, ownerId, Guid.NewGuid()));
+
+        Assert.AreEqual(
+            1, results.Count(r => r.Kind == CloudBoundaryOutcomeKind.Committed),
+            "INV-004: only one of two concurrent deposits sitting one below the limit may commit.");
+
+        await using var verifyContext = new CloudDbContext(CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString));
+        var finalCount = await CloudStackQuotaProjection.CountProjectedItemsAsync(verifyContext, ShardId, ownerId);
+        Assert.AreEqual(10, finalCount, "The owner's final projected count must never exceed the configured limit of 10.");
+    }
+
+    [TestMethod]
     public async Task SettlementViaOwnershipTransfer_AboveALoweredQuota_StillSucceeds_INV006Exemption()
     {
         // INV-006: quota is checked only when a new obligation is created/accepted; it must never

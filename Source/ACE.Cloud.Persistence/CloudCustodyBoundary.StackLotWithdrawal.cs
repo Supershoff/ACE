@@ -603,6 +603,15 @@ public sealed partial class CloudCustodyBoundary
                 $"Withdrawal Reservation {reservation.Id} expired at {reservation.ExpiresAtUtc:O} and cannot be redeemed.");
         }
 
+        // ADM-004/MKT-204, transaction rule 9: revalidated at the exact instant this reservation is
+        // locked, not only earlier in the request pipeline.
+        var frozen = await CheckMutationGateAsync<CloudMultiWithdrawalResult>(reservation.ShardId, cancellationToken);
+        if (frozen is not null)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return frozen;
+        }
+
         await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterValidation);
 
         var targets = await _context.CloudWithdrawalReservationTargets.AsNoTracking()

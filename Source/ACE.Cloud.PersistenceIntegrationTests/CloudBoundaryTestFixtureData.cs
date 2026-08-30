@@ -60,6 +60,7 @@ internal static class CloudBoundaryTestFixtureData
         "CloudGlobalMaintenanceLedgerEvent",
         "CloudGlobalMaintenance",
         "CloudStorageQuotaLimits",
+        "CloudStorageQuotaOwnerLock",
         "CloudShardBinding",
     ];
 
