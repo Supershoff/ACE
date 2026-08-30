@@ -9,7 +9,7 @@ export interface HttpResult<T> {
 
 export interface HttpClient {
   get<T>(path: string): Promise<HttpResult<T>>;
-  post<T>(path: string, body?: unknown): Promise<HttpResult<T>>;
+  post<T>(path: string, body?: unknown, extraHeaders?: Readonly<Record<string, string>>): Promise<HttpResult<T>>;
 }
 
 export interface HttpClientOptions {
@@ -33,6 +33,7 @@ async function performRequest<T>(
   method: HttpMethod,
   path: string,
   body: unknown,
+  extraHeaders?: Readonly<Record<string, string>>,
 ): Promise<HttpResult<T>> {
   const headers = new Headers();
   if (body !== undefined) {
@@ -42,6 +43,11 @@ async function performRequest<T>(
     const csrfToken = options.getCsrfToken();
     if (csrfToken) {
       headers.set(AuthSessionCsrfHeaderName, csrfToken);
+    }
+  }
+  if (extraHeaders) {
+    for (const [name, value] of Object.entries(extraHeaders)) {
+      headers.set(name, value);
     }
   }
 
@@ -68,6 +74,7 @@ async function performRequest<T>(
 export function createHttpClient(options: HttpClientOptions): HttpClient {
   return {
     get: <T>(path: string) => performRequest<T>(options, "GET", path, undefined),
-    post: <T>(path: string, body?: unknown) => performRequest<T>(options, "POST", path, body),
+    post: <T>(path: string, body?: unknown, extraHeaders?: Readonly<Record<string, string>>) =>
+      performRequest<T>(options, "POST", path, body, extraHeaders),
   };
 }

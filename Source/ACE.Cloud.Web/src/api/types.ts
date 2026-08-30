@@ -168,3 +168,86 @@ export interface CloudAppraisalPanel {
 export type CloudAppraisalErrorKind = "unauthenticated" | "linked_account_restricted" | "invalid_item_id" | "not_found";
 
 export type CloudIconErrorKind = "unauthenticated" | "invalid_cache_key" | "icon_unavailable";
+
+/** `GET /account/overview`'s response (AUTH-003, AUTH-004). */
+export interface AccountOverviewResponse {
+  readonly isLinkedAccount: boolean;
+  /** Present only when `isLinkedAccount` is false (AUTH-004: a linked login learns nothing else). */
+  readonly mainAccountId?: number;
+  readonly linkedAccountIds?: readonly number[];
+  readonly displayCharacter?: { readonly characterId: number; readonly characterName: string; readonly totalLogins: number } | null;
+}
+
+export type AccountOverviewErrorKind = "unauthenticated";
+
+/** Mirrors `ACE.Cloud.Domain.CloudAccountLinkRejectionCode` exactly, member for member. */
+export type CloudAccountLinkRejectionCode =
+  | "None"
+  | "MutationsFrozen"
+  | "SameAccount"
+  | "MainAccountIsLinkedElsewhere"
+  | "SourceAlreadyLinked"
+  | "SourceHasLinkedAccounts"
+  | "SourceHasPendingObligations"
+  | "WouldCreateAuctionConflict"
+  | "LinkNotActive";
+
+export interface AccountLinkResponse {
+  readonly approved: boolean;
+}
+
+export type AccountLinkErrorKind =
+  | "origin_denied"
+  | "invalid_request"
+  | "unauthenticated"
+  | "linked_account_restricted"
+  | "invalid_source_credentials"
+  | "rate_limited"
+  | "link_rejected";
+
+export interface AccountUnlinkResponse {
+  readonly approved: boolean;
+}
+
+export type AccountUnlinkErrorKind =
+  | "origin_denied"
+  | "invalid_request"
+  | "unauthenticated"
+  | "linked_account_restricted"
+  | "unlink_rejected";
+
+/** One requested Withdrawal Reservation target (WDR-001, INV-002). */
+export type WithdrawalReservationTargetRequest =
+  | { readonly kind: "Item"; readonly itemId: number }
+  | { readonly kind: "StackLot"; readonly stackLotId: string; readonly quantity?: number; readonly expectedVersion?: number };
+
+export interface OpenWithdrawalReservationResponse {
+  readonly reservationId: string;
+  /** WDR-001's high-entropy secret: present exactly once, in this response only. */
+  readonly tokenSecret: string;
+  readonly version: number;
+  readonly expiresAtUtc: string;
+}
+
+export type OpenWithdrawalReservationErrorKind =
+  | "origin_denied"
+  | "invalid_request"
+  | "unauthenticated"
+  | "linked_account_restricted"
+  | "world_boundary_unavailable"
+  | "not_found"
+  | "split_rejected"
+  | "reservation_rejected"
+  | "unavailable";
+
+export interface CancelWithdrawalReservationResponse {
+  readonly cancelled: boolean;
+}
+
+export type CancelWithdrawalReservationErrorKind =
+  | "origin_denied"
+  | "unauthenticated"
+  | "linked_account_restricted"
+  | "not_found"
+  | "cancel_rejected"
+  | "unavailable";

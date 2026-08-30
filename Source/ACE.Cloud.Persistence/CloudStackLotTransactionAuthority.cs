@@ -21,7 +21,7 @@ namespace ACE.Cloud.Persistence;
 /// enough to make concurrent callers safe (issue #5's Green section: "do not broaden behavior
 /// beyond the listed requirements").
 /// </summary>
-public sealed class CloudStackLotTransactionAuthority
+public sealed class CloudStackLotTransactionAuthority : ICloudStackLotSplitGateway
 {
     private readonly CloudDbContext _context;
 
@@ -231,6 +231,13 @@ public sealed class CloudStackLotTransactionAuthority
         await transaction.CommitAsync(cancellationToken);
 
         return CloudBoundaryOutcome<CloudStackLot>.Committed(keepLot);
+    }
+
+    /// <summary>See <see cref="ICloudStackLotSplitGateway.TryGetLotSnapshotAsync"/>.</summary>
+    public async Task<CloudStackLotSnapshot?> TryGetLotSnapshotAsync(Guid lotId, CancellationToken cancellationToken = default)
+    {
+        var lot = await _context.CloudStackLots.AsNoTracking().SingleOrDefaultAsync(l => l.Id == lotId, cancellationToken);
+        return lot is null ? null : new CloudStackLotSnapshot(lot.OwnerId, lot.Quantity, lot.Version);
     }
 
     private async Task<Guid?> LookUpCustodyRecordIdAsync(Guid lotId, CancellationToken cancellationToken) =>

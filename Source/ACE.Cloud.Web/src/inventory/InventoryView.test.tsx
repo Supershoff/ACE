@@ -3,6 +3,23 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { InventoryView } from "./InventoryView";
 import { fakeInventoryApi, makeInventoryItem, makeQueryResponse } from "./testFakes";
+import type { WithdrawalApi } from "../api/withdrawalApi";
+import type { HttpResult } from "../api/httpClient";
+
+function fakeWithdrawalApi(overrides: Partial<WithdrawalApi> = {}): WithdrawalApi {
+  return {
+    openReservation: vi.fn(
+      async () =>
+        ({
+          ok: true,
+          status: 200,
+          data: { reservationId: "r1", tokenSecret: "secret", version: 1, expiresAtUtc: new Date(Date.now() + 900_000).toISOString() },
+        }) as HttpResult<unknown>,
+    ),
+    cancelReservation: vi.fn(async () => ({ ok: true, status: 200, data: { cancelled: true } }) as HttpResult<unknown>),
+    ...overrides,
+  } as WithdrawalApi;
+}
 
 describe("InventoryView", () => {
   it("shows a loading state and then the fetched Mule Page", async () => {
@@ -90,6 +107,38 @@ describe("InventoryView", () => {
     await waitFor(() =>
       expect(api.queryPages).toHaveBeenLastCalledWith(expect.objectContaining({ category: "Currency", page: 1 })),
     );
+  });
+
+  it("opens the Withdrawal Token dialog for a withdrawable selection and creates a token", async () => {
+    const api = fakeInventoryApi();
+    const withdrawalApi = fakeWithdrawalApi();
+    const user = userEvent.setup();
+    render(<InventoryView inventoryApi={api} withdrawalApi={withdrawalApi} />);
+
+    await waitFor(() => screen.getByRole("option", { name: "Ivory Buckler" }));
+    await user.click(screen.getByRole("option", { name: "Ivory Buckler" }));
+    await user.click(screen.getByRole("button", { name: /withdraw selected/i }));
+    await user.click(screen.getByRole("button", { name: /create withdrawal token/i }));
+
+    expect(withdrawalApi.openReservation).toHaveBeenCalledWith([{ kind: "Item", itemId: 1 }]);
+    expect(await screen.findByTestId("withdrawal-token-secret")).toHaveTextContent("secret");
+  });
+
+  it("disables the Withdraw button when the selection includes a non-withdrawable item", async () => {
+    const api = fakeInventoryApi({
+      queryPages: vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        data: makeQueryResponse([makeInventoryItem({ permittedActions: { canWithdraw: false, canList: false, canTransfer: false, canShare: false } })]),
+      })),
+    });
+    const user = userEvent.setup();
+    render(<InventoryView inventoryApi={api} withdrawalApi={fakeWithdrawalApi()} />);
+
+    await waitFor(() => screen.getByRole("option", { name: "Ivory Buckler" }));
+    await user.click(screen.getByRole("option", { name: "Ivory Buckler" }));
+
+    expect(screen.getByRole("button", { name: /withdraw selected/i })).toBeDisabled();
   });
 
   it("disables Previous page on the first page and Next page on the last page", async () => {

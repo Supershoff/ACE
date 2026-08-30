@@ -19,7 +19,13 @@ builder.Services.AddDbContext<CloudDbContext>(dbContextOptions => dbContextOptio
     backendOptions.CloudConnectionString, new MariaDbServerVersion(backendOptions.DatabaseServerVersion)));
 builder.Services.AddScoped<CloudGatewayDiagnostics>();
 builder.Services.AddScoped<ICloudWebSessionStore>(serviceProvider => new CloudSessionGateway(serviceProvider.GetRequiredService<CloudDbContext>()));
-builder.Services.AddScoped<ICloudAccountOwnershipResolver>(serviceProvider => new CloudAccountLinkGateway(serviceProvider.GetRequiredService<CloudDbContext>()));
+builder.Services.AddScoped<CloudAccountLinkGateway>(serviceProvider => new CloudAccountLinkGateway(serviceProvider.GetRequiredService<CloudDbContext>()));
+builder.Services.AddScoped<ICloudAccountOwnershipResolver>(serviceProvider => serviceProvider.GetRequiredService<CloudAccountLinkGateway>());
+builder.Services.AddScoped<ICloudAccountLinkGateway>(serviceProvider => serviceProvider.GetRequiredService<CloudAccountLinkGateway>());
+builder.Services.AddScoped<ICloudDisplayCharacterGateway>(serviceProvider => new CloudDisplayCharacterGateway(serviceProvider.GetRequiredService<CloudDbContext>()));
+builder.Services.AddScoped<ICloudCharacterIdentityReader>(serviceProvider => new CloudCharacterIdentityReader(serviceProvider.GetRequiredService<CloudDbContext>()));
+builder.Services.AddScoped<ICloudWithdrawalReservationGateway>(serviceProvider => new CloudWithdrawalReservationGateway(serviceProvider.GetRequiredService<CloudDbContext>()));
+builder.Services.AddScoped<ICloudStackLotSplitGateway>(serviceProvider => new CloudStackLotTransactionAuthority(serviceProvider.GetRequiredService<CloudDbContext>()));
 builder.Services.AddScoped<ICloudInventoryQueryReader>(serviceProvider => new CloudInventoryQueryReader(serviceProvider.GetRequiredService<CloudDbContext>()));
 builder.Services.AddScoped<ICloudInventoryItemPropertiesGateway>(serviceProvider => new CloudInventoryItemPropertiesGateway(serviceProvider.GetRequiredService<CloudDbContext>()));
 
@@ -31,6 +37,8 @@ builder.Services.AddSingleton(_ => CloudPrivateServiceKeyRingFactory.Create(
     backendOptions.ActiveServiceKeyId, backendOptions.ActiveServiceKeySecret,
     backendOptions.PreviousServiceKeyId, backendOptions.PreviousServiceKeySecret));
 builder.Services.AddSingleton(_ => new CloudLoginAttemptRateLimiter(
+    backendOptions.MaxLoginAttemptsPerWindow, TimeSpan.FromSeconds(backendOptions.LoginRateLimitWindowSeconds)));
+builder.Services.AddSingleton(_ => new CloudAccountLinkAttemptRateLimiter(
     backendOptions.MaxLoginAttemptsPerWindow, TimeSpan.FromSeconds(backendOptions.LoginRateLimitWindowSeconds)));
 
 builder.Services.AddHttpClient<ICloudAuthBridgeClient, HttpCloudAuthBridgeClient>(
@@ -57,6 +65,8 @@ var app = builder.Build();
 app.MapCloudDiagnosticsEndpoints(expectedVersions);
 app.MapAuthSessionEndpoints();
 app.MapCloudInventoryEndpoints();
+app.MapAccountEndpoints();
+app.MapWithdrawalEndpoints();
 
 app.Run();
 

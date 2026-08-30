@@ -565,6 +565,38 @@ public sealed class CloudAccountLinkGatewayTests
         CollectionAssert.AreEquivalent(new[] { MainAccountId, SourceAccountId }, groupFromLinked.ToArray());
     }
 
+    [TestMethod]
+    public async Task TryGetOwnershipGroupIdAsync_NeverLinked_ReturnsNull()
+    {
+        var options = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
+        await using var context = new CloudDbContext(options);
+
+        var groupId = await new CloudAccountLinkGateway(context).TryGetOwnershipGroupIdAsync(ShardId, MainAccountId);
+
+        Assert.IsNull(groupId);
+    }
+
+    [TestMethod]
+    public async Task TryGetOwnershipGroupIdAsync_AfterALink_ReturnsTheSameGroupIdTheLinkApproved()
+    {
+        // Issue #33: the account overview endpoint and Display Character reselection after a
+        // link/unlink both need this ID to reach CloudDisplayCharacterGateway.
+        var options = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
+
+        Guid approvedGroupId;
+        await using (var linkContext = new CloudDbContext(options))
+        {
+            var linkOutcome = await new CloudAccountLinkGateway(linkContext).LinkAsync(ShardId, MainAccountId, SourceAccountId, Guid.NewGuid());
+            Assert.IsTrue(linkOutcome.IsApproved);
+            approvedGroupId = linkOutcome.OwnershipGroupId!.Value;
+        }
+
+        await using var queryContext = new CloudDbContext(options);
+        var groupId = await new CloudAccountLinkGateway(queryContext).TryGetOwnershipGroupIdAsync(ShardId, MainAccountId);
+
+        Assert.AreEqual(approvedGroupId, groupId);
+    }
+
     private static uint NextId() => Interlocked.Increment(ref _nextId);
 
     private static async Task LockCustodyRecordRowAsync(MySqlConnection connection, MySqlTransaction transaction, uint biotaId)

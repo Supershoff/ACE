@@ -27,7 +27,7 @@ namespace ACE.Cloud.Persistence;
 /// today -- <paramref name="wouldCreateActiveAuctionConflict"/> on <see cref="LinkAsync"/> exists so
 /// a future marketplace-aware caller can wire in that check without changing this method's shape.
 /// </summary>
-public sealed class CloudAccountLinkGateway : ICloudAccountOwnershipResolver
+public sealed class CloudAccountLinkGateway : ICloudAccountLinkGateway
 {
     private readonly CloudDbContext _context;
 
@@ -386,6 +386,29 @@ public sealed class CloudAccountLinkGateway : ICloudAccountOwnershipResolver
 
         linkedAccountIds.Add(mainAccountId);
         return linkedAccountIds;
+    }
+
+    /// <summary>
+    /// Plain (unlocked) read of the Main Account's own <see cref="CloudOwnershipGroup"/> ID, or null
+    /// if <paramref name="mainAccountId"/> has never linked another account into a group. Used by
+    /// read-only callers (issue #33's account overview endpoint, and Display Character reselection
+    /// after a link/unlink commits) that do not need this row locked for a transaction of their own.
+    /// </summary>
+    public async Task<Guid?> TryGetOwnershipGroupIdAsync(string shardId, uint mainAccountId, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(shardId))
+        {
+            throw new ArgumentException("Resolving an ownership group requires a Cloud Shard ID.", nameof(shardId));
+        }
+
+        if (mainAccountId == 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(mainAccountId), "Resolving an ownership group requires a real account ID.");
+        }
+
+        var group = await _context.Set<CloudOwnershipGroup>().AsNoTracking()
+            .SingleOrDefaultAsync(g => g.ShardId == shardId && g.MainAccountId == mainAccountId, cancellationToken);
+        return group?.Id;
     }
 
     private async Task<CloudActiveAccountLinkMarker?> LockActiveLinkMarkerAsync(string shardId, uint accountId, CancellationToken cancellationToken) =>

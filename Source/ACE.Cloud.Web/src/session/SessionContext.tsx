@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createAccountApi, type AccountApi } from "../api/accountApi";
 import { createAuthApi, type AuthApi } from "../api/authApi";
 import { createHttpClient } from "../api/httpClient";
 import type { CloudServiceAvailabilityMode } from "../api/types";
@@ -12,9 +13,10 @@ import type { CloudServiceAvailabilityMode } from "../api/types";
 export type SessionStatus = "unknown" | "authenticating" | "authenticated" | "unauthenticated";
 
 /**
- * The server does not yet expose Main/Linked account status over HTTP (AUTH-004's identity
- * endpoints land with issue #33). `"Unknown"` is the only honest default until then, and
- * Main-only route guards must treat it as a denial, never as an implicit "Main".
+ * `"Unknown"` is the honest default before the post-login `/account/overview` read resolves (or on
+ * a fresh page load, since the session cookie is HttpOnly and there is no `/auth/session` probe
+ * endpoint to re-derive it from). Main-only route guards must treat it as a denial, never as an
+ * implicit "Main".
  */
 export type AccountKind = "Main" | "Linked" | "Unknown";
 
@@ -28,6 +30,12 @@ export interface SessionContextValue {
   readonly status: SessionStatus;
   readonly csrfToken: string | null;
   readonly accountKind: AccountKind;
+  /**
+   * The ACE account name typed at login, held in memory only (never persisted) for AUTH-007's
+   * exact-name-typing destructive-confirmation UX; null for a Linked Account session, since AUTH-004
+   * restricts a linked login from managing anything that confirmation would gate.
+   */
+  readonly mainAccountName: string | null;
   readonly serviceAvailability: CloudServiceAvailabilityMode | "unknown";
   login(accountName: string, password: string): Promise<{ ok: boolean }>;
   logout(): Promise<void>;
@@ -49,12 +57,15 @@ export interface SessionProviderProps {
   readonly children: ReactNode;
   /** Overridable for tests; production code lets this default to the real Cloud backend client. */
   readonly authApi?: AuthApi;
+  /** Overridable for tests; production code lets this default to the real Cloud backend client. */
+  readonly accountApi?: AccountApi;
 }
 
-export function SessionProvider({ children, authApi }: SessionProviderProps) {
+export function SessionProvider({ children, authApi, accountApi }: SessionProviderProps) {
   const [status, setStatus] = useState<SessionStatus>("unknown");
   const [csrfToken, setCsrfToken] = useState<string | null>(null);
   const [accountKind, setAccountKind] = useState<AccountKind>("Unknown");
+  const [mainAccountName, setMainAccountName] = useState<string | null>(null);
   const [serviceAvailability, setServiceAvailability] = useState<CloudServiceAvailabilityMode | "unknown">("unknown");
 
   const csrfTokenRef = useRef<string | null>(null);
@@ -67,6 +78,14 @@ export function SessionProvider({ children, authApi }: SessionProviderProps) {
     );
   }
   const resolvedAuthApi = authApi ?? defaultAuthApiRef.current;
+
+  const defaultAccountApiRef = useRef<AccountApi | null>(null);
+  if (!defaultAccountApiRef.current) {
+    defaultAccountApiRef.current = createAccountApi(
+      createHttpClient({ baseUrl: "", getCsrfToken: () => csrfTokenRef.current }),
+    );
+  }
+  const resolvedAccountApi = accountApi ?? defaultAccountApiRef.current;
 
   useEffect(() => {
     let cancelled = false;
@@ -87,22 +106,41 @@ export function SessionProvider({ children, authApi }: SessionProviderProps) {
     async (accountName: string, password: string): Promise<{ ok: boolean }> => {
       setStatus("authenticating");
       const result = await resolvedAuthApi.login(accountName, password);
-      if (result.ok && result.data) {
-        setCsrfToken(result.data.csrfToken);
-        setStatus("authenticated");
-        return { ok: true };
+      if (!result.ok || !result.data) {
+        setCsrfToken(null);
+        setAccountKind("Unknown");
+        setMainAccountName(null);
+        setStatus("unauthenticated");
+        return { ok: false };
       }
-      setCsrfToken(null);
-      setStatus("unauthenticated");
-      return { ok: false };
+
+      setCsrfToken(result.data.csrfToken);
+      setStatus("authenticated");
+
+      // AUTH-004/AUTH-003: resolve Main/Linked status and this session's known account name (for
+      // AUTH-007's confirmation typing) once, right after login -- there is no `/auth/session` probe
+      // to re-derive this on a later page load, so `accountKind` stays "Unknown" until then.
+      const overviewResult = await resolvedAccountApi.fetchOverview();
+      if (overviewResult.ok && overviewResult.data) {
+        if (overviewResult.data.isLinkedAccount) {
+          setAccountKind("Linked");
+          setMainAccountName(null);
+        } else {
+          setAccountKind("Main");
+          setMainAccountName(accountName);
+        }
+      }
+
+      return { ok: true };
     },
-    [resolvedAuthApi],
+    [resolvedAuthApi, resolvedAccountApi],
   );
 
   const logout = useCallback(async (): Promise<void> => {
     await resolvedAuthApi.logout();
     setCsrfToken(null);
     setAccountKind("Unknown");
+    setMainAccountName(null);
     setStatus("unauthenticated");
   }, [resolvedAuthApi]);
 
@@ -118,6 +156,7 @@ export function SessionProvider({ children, authApi }: SessionProviderProps) {
     status,
     csrfToken,
     accountKind,
+    mainAccountName,
     serviceAvailability,
     login,
     logout,

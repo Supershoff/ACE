@@ -1,3 +1,4 @@
+using ACE.Cloud.Hosting;
 using ACE.Cloud.Persistence;
 
 using Microsoft.AspNetCore.Hosting;
@@ -55,6 +56,16 @@ internal sealed class BackendTestFactory : WebApplicationFactory<Program>
 
     public FakeCloudIconDerivativeReader IconDerivativeReader { get; } = new();
 
+    public FakeCloudDisplayCharacterGateway DisplayCharacterGateway { get; } = new();
+
+    public FakeCloudCharacterIdentityReader CharacterIdentityReader { get; } = new();
+
+    public FakeCloudWithdrawalReservationGateway WithdrawalReservationGateway { get; } = new();
+
+    public FakeCloudStackLotSplitGateway StackLotSplitGateway { get; } = new();
+
+    public FakeCloudWorldBoundaryHealthProbe WorldBoundaryHealthProbe { get; } = new();
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.ConfigureServices(services =>
@@ -65,8 +76,26 @@ internal sealed class BackendTestFactory : WebApplicationFactory<Program>
             services.RemoveAll<ICloudWebSessionStore>();
             services.AddSingleton<ICloudWebSessionStore>(SessionStore);
 
+            services.RemoveAll<CloudAccountLinkGateway>();
             services.RemoveAll<ICloudAccountOwnershipResolver>();
+            services.RemoveAll<ICloudAccountLinkGateway>();
             services.AddSingleton<ICloudAccountOwnershipResolver>(AccountOwnershipResolver);
+            services.AddSingleton<ICloudAccountLinkGateway>(AccountOwnershipResolver);
+
+            services.RemoveAll<ICloudDisplayCharacterGateway>();
+            services.AddSingleton<ICloudDisplayCharacterGateway>(DisplayCharacterGateway);
+
+            services.RemoveAll<ICloudCharacterIdentityReader>();
+            services.AddSingleton<ICloudCharacterIdentityReader>(CharacterIdentityReader);
+
+            services.RemoveAll<ICloudWithdrawalReservationGateway>();
+            services.AddSingleton<ICloudWithdrawalReservationGateway>(WithdrawalReservationGateway);
+
+            services.RemoveAll<ICloudStackLotSplitGateway>();
+            services.AddSingleton<ICloudStackLotSplitGateway>(StackLotSplitGateway);
+
+            services.RemoveAll<ICloudWorldBoundaryHealthProbe>();
+            services.AddSingleton<ICloudWorldBoundaryHealthProbe>(WorldBoundaryHealthProbe);
 
             services.RemoveAll<ICloudInventoryQueryReader>();
             services.AddSingleton<ICloudInventoryQueryReader>(InventoryQueryReader);

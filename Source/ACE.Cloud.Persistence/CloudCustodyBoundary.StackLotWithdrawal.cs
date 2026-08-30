@@ -113,6 +113,17 @@ public sealed partial class CloudCustodyBoundary
             cancellationToken: cancellationToken);
 
     /// <summary>
+    /// A plain (unlocked) read of one reservation by its own ID, used by a caller (issue #33's
+    /// cancel endpoint) that needs to authorize a request against <see cref="CloudWithdrawalReservation.OwnerId"/>
+    /// before calling <see cref="CancelWithdrawalReservationAsync"/>, which -- unlike
+    /// <see cref="ReserveForWithdrawalAsync(System.Collections.Generic.IReadOnlyList{CloudWithdrawalReservationRequestTarget}, string, System.Guid, string, System.TimeSpan, System.Guid, System.Threading.CancellationToken)"/> --
+    /// takes no owner identity of its own to check against (security baseline: "Authorization is
+    /// server-side on every object query and command"). Returns null if no reservation has this ID.
+    /// </summary>
+    public async Task<CloudWithdrawalReservation?> TryGetReservationAsync(Guid reservationId, CancellationToken cancellationToken = default) =>
+        await _context.CloudWithdrawalReservations.AsNoTracking().SingleOrDefaultAsync(r => r.Id == reservationId, cancellationToken);
+
+    /// <summary>
     /// Reads whether a Withdrawal Token's local reservation is currently active without consuming it
     /// (WDR-008: ACE validates an already-issued token's local reservation and redemption rules even
     /// while the companion web service is unreachable). Returns null when no active reservation

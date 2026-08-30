@@ -12,6 +12,7 @@ function baseSessionValue(overrides: Partial<SessionContextValue> = {}): Session
     status: "unknown",
     csrfToken: null,
     accountKind: "Unknown",
+    mainAccountName: null,
     serviceAvailability: "unknown",
     login: vi.fn(),
     logout: vi.fn(),

@@ -15,7 +15,7 @@ namespace ACE.Cloud.Persistence;
 /// <see cref="CloudIdentityOutboxEvent"/> carries only the character snapshot ACE already decided
 /// to publish rather than this schema re-deriving it.
 /// </summary>
-public sealed class CloudDisplayCharacterGateway
+public sealed class CloudDisplayCharacterGateway : ICloudDisplayCharacterGateway
 {
     private readonly CloudDbContext _context;
 

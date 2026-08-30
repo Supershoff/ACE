@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { createHttpClient } from "../api/httpClient";
 import { createInventoryApi, type InventoryApi } from "../api/inventoryApi";
+import { createWithdrawalApi, type WithdrawalApi } from "../api/withdrawalApi";
 import type {
   CloudAppraisalPanel,
   CloudInventoryCategory,
@@ -20,10 +21,13 @@ import { InventoryQuantityControl } from "./InventoryQuantityControl";
 import { InventorySpreadsheet } from "./InventorySpreadsheet";
 import { MulePageGrid } from "./MulePageGrid";
 import { inventoryItemKey } from "./selection";
+import { WithdrawalDialog, type WithdrawalSelectionEntry } from "./WithdrawalDialog";
 
 export interface InventoryViewProps {
   /** Overridable for tests; production code lets this default to the real Cloud backend client. */
   readonly inventoryApi?: InventoryApi;
+  /** Overridable for tests; production code lets this default to the real Cloud backend client. */
+  readonly withdrawalApi?: WithdrawalApi;
 }
 
 const CATEGORIES: readonly CloudInventoryCategory[] = [
@@ -92,12 +96,18 @@ function appraisalErrorMessage(status: number): string {
  * desktop grid at narrow widths without changing page membership (UI-002/UI-003), and opens a
  * complete, character-independent Full Cloud Appraisal on click/right-click/keyboard/touch (UI-004).
  */
-export function InventoryView({ inventoryApi }: InventoryViewProps) {
+export function InventoryView({ inventoryApi, withdrawalApi }: InventoryViewProps) {
   const defaultApiRef = useRef<InventoryApi | null>(null);
   if (!defaultApiRef.current) {
     defaultApiRef.current = createInventoryApi(createHttpClient({ baseUrl: "", getCsrfToken: () => null }));
   }
   const api = inventoryApi ?? defaultApiRef.current;
+
+  const defaultWithdrawalApiRef = useRef<WithdrawalApi | null>(null);
+  if (!defaultWithdrawalApiRef.current) {
+    defaultWithdrawalApiRef.current = createWithdrawalApi(createHttpClient({ baseUrl: "", getCsrfToken: () => null }));
+  }
+  const resolvedWithdrawalApi = withdrawalApi ?? defaultWithdrawalApiRef.current;
 
   const isNarrow = useIsNarrowViewport();
   const columns = isNarrow ? NARROW_COLUMNS : iconGridTokens.desktopColumns;
@@ -117,6 +127,7 @@ export function InventoryView({ inventoryApi }: InventoryViewProps) {
   const [quantities, setQuantities] = useState<ReadonlyMap<string, number>>(new Map());
 
   const [appraisal, setAppraisal] = useState<AppraisalDialogState>(CLOSED_APPRAISAL_STATE);
+  const [isWithdrawalDialogOpen, setIsWithdrawalDialogOpen] = useState(false);
 
   const categorySelectId = useId();
 
@@ -195,6 +206,18 @@ export function InventoryView({ inventoryApi }: InventoryViewProps) {
   }
 
   const selectedStackItems = items.filter((item) => selectedKeys.has(inventoryItemKey(item)) && item.quantity > 1);
+
+  const selectedItems = items.filter((item) => selectedKeys.has(inventoryItemKey(item)));
+  const withdrawableSelection: WithdrawalSelectionEntry[] = selectedItems
+    .filter((item) => item.permittedActions.canWithdraw)
+    .map((item) => ({ item, quantity: quantities.get(inventoryItemKey(item)) ?? item.quantity }));
+  const canWithdrawSelection = selectedItems.length > 0 && withdrawableSelection.length === selectedItems.length;
+
+  function clearSelectionAndReload() {
+    setSelectedKeys(new Set());
+    setQuantities(new Map());
+    load();
+  }
 
   return (
     <section className="inventory-view">
@@ -287,6 +310,12 @@ export function InventoryView({ inventoryApi }: InventoryViewProps) {
             );
           })}
 
+          {selectedItems.length > 0 ? (
+            <Button variant="primary" onClick={() => setIsWithdrawalDialogOpen(true)} disabled={!canWithdrawSelection}>
+              Withdraw selected
+            </Button>
+          ) : null}
+
           <nav aria-label="Mule Page navigation">
             <Button variant="secondary" onClick={() => setPage((current) => current - 1)} disabled={page <= 1}>
               Previous page
@@ -318,6 +347,14 @@ export function InventoryView({ inventoryApi }: InventoryViewProps) {
             openAppraisal(reopenItem);
           }
         }}
+      />
+
+      <WithdrawalDialog
+        open={isWithdrawalDialogOpen}
+        onClose={() => setIsWithdrawalDialogOpen(false)}
+        selection={withdrawableSelection}
+        withdrawalApi={resolvedWithdrawalApi}
+        onSettled={clearSelectionAndReload}
       />
     </section>
   );

@@ -31,6 +31,13 @@ public sealed class CloudWorldBoundaryAuthoritySurfaceTests
         nameof(CloudCustodyBoundary.TryGetWithdrawalReservationOutcomeAsync),
         nameof(CloudCustodyBoundary.CancelWithdrawalReservationAsync),
         nameof(CloudCustodyBoundary.TryGetActiveWithdrawalReservationAsync),
+
+        // Deliberate authority-boundary review (issue #33): a plain by-ID read of the same
+        // CloudWithdrawalReservation aggregate TryGetActiveWithdrawalReservationAsync (by token
+        // hash) already exposes above -- needed because a cancel request only carries the
+        // reservation's own ID, never its token secret/hash. Not a marketplace ownership concept;
+        // matches no ForbiddenMarketplaceAuthorityTerms below.
+        nameof(CloudCustodyBoundary.TryGetReservationAsync),
         nameof(CloudCustodyBoundary.GetReservationTargetsAsync),
         nameof(CloudCustodyBoundary.PreviewWithdrawalReservationAsync),
         nameof(CloudCustodyBoundary.RedeemWithdrawalReservationAsync),
