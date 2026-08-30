@@ -191,6 +191,42 @@ public sealed class CloudWithdrawalEndpointsTests
     }
 
     [TestMethod]
+    public async Task Cancel_ReservationOwnedByAnotherAccount_ReturnsNotFound_AndLeavesItActive()
+    {
+        // Authorization must be server-side on every command (security baseline): a reservation ID is
+        // an opaque handle returned only to its own owner, but the endpoint must not trust a caller's
+        // session alone -- it must also confirm the caller actually owns the reservation it names,
+        // exactly like HandleGetAppraisalAsync's "not_found" for both missing and foreign items.
+        const uint OtherMainAccountId = 99;
+        await using var factory = new BackendTestFactory();
+
+        var (ownerClient, ownerCsrf) = await AuthenticatedClientWithCsrfAsync(factory, MainAccountId);
+        using var createResponse = await PostCreateAsync(ownerClient, ownerCsrf, ItemTarget(777));
+        var createBody = await createResponse.Content.ReadFromJsonAsync<JsonNode>();
+        var reservationId = createBody!["reservationId"]!.GetValue<string>();
+        var version = createBody["version"]!.GetValue<int>();
+        ownerClient.Dispose();
+
+        var (attackerClient, attackerCsrf) = await AuthenticatedClientWithCsrfAsync(factory, OtherMainAccountId);
+        using var cancelRequest = new HttpRequestMessage(HttpMethod.Post, $"/withdrawals/{reservationId}/cancel")
+        {
+            Content = JsonContent.Create(new CloudCancelWithdrawalRequestBody(version)),
+        };
+        UseAllowedOrigin(cancelRequest);
+        cancelRequest.Headers.Add(AuthSessionEndpoints.CsrfHeaderName, attackerCsrf);
+        using var cancelResponse = await attackerClient.SendAsync(cancelRequest);
+
+        Assert.AreEqual(HttpStatusCode.NotFound, cancelResponse.StatusCode);
+        attackerClient.Dispose();
+
+        using var ownerCheckClient = await AuthenticatedClientAsync(factory, MainAccountId);
+        using var currentResponse = await ownerCheckClient.GetAsync("/withdrawals/current");
+        var currentBody = await currentResponse.Content.ReadFromJsonAsync<JsonNode>();
+        Assert.IsTrue(currentBody!["active"]!.GetValue<bool>());
+        Assert.AreEqual(reservationId, currentBody["reservationId"]!.GetValue<string>());
+    }
+
+    [TestMethod]
     public async Task Cancel_CorrectVersion_ReleasesTheReservation_AndItNoLongerShowsAsActive()
     {
         await using var factory = new BackendTestFactory();

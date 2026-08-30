@@ -74,7 +74,11 @@ describe("AccountLinkingPanel", () => {
     fireEvent.change(screen.getByLabelText(/your main account name/i), { target: { value: "MainPlayer" } });
     expect(confirmButton).toBeDisabled(); // delay has not elapsed yet
 
-    act(() => vi.advanceTimersByTime(3000));
+    // AUTH-007 requires an approximately 10-second delay, not merely a token cooldown.
+    act(() => vi.advanceTimersByTime(9000));
+    expect(confirmButton).toBeDisabled();
+
+    act(() => vi.advanceTimersByTime(1000));
     expect(confirmButton).not.toBeDisabled();
 
     vi.useRealTimers();
@@ -86,7 +90,7 @@ describe("AccountLinkingPanel", () => {
 
     openLinkConfirmation();
     fireEvent.change(screen.getByLabelText(/your main account name/i), { target: { value: "NotTheMainAccount" } });
-    act(() => vi.advanceTimersByTime(3000));
+    act(() => vi.advanceTimersByTime(10000));
 
     expect(screen.getByRole("button", { name: /confirm link/i })).toBeDisabled();
 
@@ -102,7 +106,7 @@ describe("AccountLinkingPanel", () => {
 
     openLinkConfirmation();
     fireEvent.change(screen.getByLabelText(/your main account name/i), { target: { value: "MainPlayer" } });
-    act(() => vi.advanceTimersByTime(3000));
+    act(() => vi.advanceTimersByTime(10000));
 
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: /confirm link/i }));
@@ -120,7 +124,7 @@ describe("AccountLinkingPanel", () => {
 
     openLinkConfirmation();
     fireEvent.change(screen.getByLabelText(/your main account name/i), { target: { value: "MainPlayer" } });
-    act(() => vi.advanceTimersByTime(3000));
+    act(() => vi.advanceTimersByTime(10000));
 
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: /confirm link/i }));
@@ -141,7 +145,11 @@ describe("AccountLinkingPanel", () => {
     const confirmUnlink = screen.getByRole("button", { name: /confirm unlink/i });
     expect(confirmUnlink).toBeDisabled();
 
-    act(() => vi.advanceTimersByTime(3000));
+    // AUTH-007 requires an approximately 10-second delay, not merely a token cooldown.
+    act(() => vi.advanceTimersByTime(9000));
+    expect(confirmUnlink).toBeDisabled();
+
+    act(() => vi.advanceTimersByTime(1000));
     expect(confirmUnlink).not.toBeDisabled();
 
     vi.useRealTimers();

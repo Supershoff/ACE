@@ -203,6 +203,7 @@ public static class CloudWithdrawalEndpoints
         ICloudWebSessionStore sessionStore,
         ICloudAccountOwnershipResolver accountOwnershipResolver,
         ICloudWithdrawalReservationService reservationService,
+        ICloudWithdrawalReservationReader reservationReader,
         CloudBackendOptions options,
         CancellationToken cancellationToken)
     {
@@ -227,6 +228,18 @@ public static class CloudWithdrawalEndpoints
         if (reservationId == Guid.Empty)
         {
             return Results.Json(new { error = "invalid_request" }, statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        // Authorization must be server-side on every command, not just every query: a reservation ID
+        // is an opaque handle the client only ever learns for its own reservation, but the caller's
+        // session alone does not prove it names that caller's own reservation. Reuse
+        // HandleGetAppraisalAsync's "one generic not_found for missing-or-foreign" discipline instead
+        // of leaking whether a foreign reservation ID exists.
+        var ownerId = CloudOwnerIdentity.ForAccount(options.ShardId, session!.AccountId);
+        var ownedReservation = await reservationReader.TryGetActiveByOwnerAsync(ownerId, cancellationToken);
+        if (ownedReservation is null || ownedReservation.Id != reservationId)
+        {
+            return Results.Json(new { error = "not_found" }, statusCode: StatusCodes.Status404NotFound);
         }
 
         var outcome = await reservationService.CancelWithdrawalReservationAsync(reservationId, request.ExpectedVersion, cancellationToken);
