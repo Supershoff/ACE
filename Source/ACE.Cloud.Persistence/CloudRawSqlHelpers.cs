@@ -23,4 +23,8 @@ internal static class CloudRawSqlHelpers
 
     public static bool IsDuplicateKey(DbUpdateException ex) =>
         ex.InnerException is MySqlException { Number: 1062 };
+
+    /// <summary>MySQL/MariaDB error 1452: "Cannot add or update a child row: a foreign key constraint fails".</summary>
+    public static bool IsForeignKeyViolation(DbUpdateException ex) =>
+        ex.InnerException is MySqlException { Number: 1452 };
 }

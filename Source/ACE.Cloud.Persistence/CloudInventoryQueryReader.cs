@@ -49,115 +49,12 @@ public sealed class CloudInventoryQueryReader
             throw new ArgumentOutOfRangeException(nameof(request), "A Mule Page number must be positive.");
         }
 
-        var authorizedOwnerIds = viewer.AuthorizedOwnerIds;
-
-        var wholeItemCandidates = await _context.CloudCustodyRecords
-            .AsNoTracking()
-            .Where(record => record.ShardId == shardId && record.OwnerId != null)
-            .Where(record => viewer.IsAdmin || authorizedOwnerIds.Contains(record.OwnerId!.Value))
-            .Join(
-                _context.CloudInventoryItemPropertiesProjections.AsNoTracking().Where(properties => properties.ShardId == shardId),
-                record => record.BiotaId,
-                properties => properties.BiotaId,
-                (record, properties) => new { record.BiotaId, OwnerId = record.OwnerId!.Value, record.Version, properties })
-            .ToListAsync(cancellationToken);
-
-        var stackLotCandidates = await _context.CloudStackLots
-            .AsNoTracking()
-            .Where(lot => lot.ShardId == shardId)
-            .Where(lot => viewer.IsAdmin || authorizedOwnerIds.Contains(lot.OwnerId))
-            .Join(
-                _context.CloudCustodyRecords.AsNoTracking().Where(record => record.ShardId == shardId),
-                lot => lot.CustodyRecordId,
-                record => record.Id,
-                (lot, record) => new { lot.Id, lot.OwnerId, lot.Quantity, lot.Version, record.BiotaId })
-            .Join(
-                _context.CloudInventoryItemPropertiesProjections.AsNoTracking().Where(properties => properties.ShardId == shardId),
-                joined => joined.BiotaId,
-                properties => properties.BiotaId,
-                (joined, properties) => new { joined.Id, joined.OwnerId, joined.Quantity, joined.Version, joined.BiotaId, properties })
-            .ToListAsync(cancellationToken);
-
-        var reservedBiotaIds = await GetActivelyReservedItemBiotaIdsAsync(cancellationToken);
-        var reservedStackLotIds = await GetActivelyReservedStackLotIdsAsync(cancellationToken);
-
-        var candidates = new List<CloudInventoryQueryCandidate>(wholeItemCandidates.Count + stackLotCandidates.Count);
-
-        candidates.AddRange(wholeItemCandidates.Select(candidate => new CloudInventoryQueryCandidate(
-            new CloudItemId(candidate.BiotaId),
-            StackLotId: null,
-            candidate.OwnerId,
-            candidate.properties.Name,
-            candidate.properties.Category,
-            Quantity: 1,
-            candidate.properties.Value,
-            candidate.properties.Burden,
-            IsReserved: reservedBiotaIds.Contains(candidate.BiotaId),
-            new CloudAggregateVersion(candidate.Version),
-            candidate.properties.IconCacheKeyHex)));
-
-        candidates.AddRange(stackLotCandidates.Select(candidate => new CloudInventoryQueryCandidate(
-            new CloudItemId(candidate.BiotaId),
-            new CloudStackLotId(candidate.Id),
-            candidate.OwnerId,
-            candidate.properties.Name,
-            candidate.properties.Category,
-            candidate.Quantity,
-            candidate.properties.Value,
-            candidate.properties.Burden,
-            IsReserved: reservedStackLotIds.Contains(candidate.Id),
-            new CloudAggregateVersion(candidate.Version),
-            candidate.properties.IconCacheKeyHex)));
+        var candidateReader = new CloudInventoryCandidateReader(_context);
+        var candidates = await candidateReader.GetAuthorizedCandidatesAsync(shardId, viewer, cancellationToken);
 
         var page = CloudInventoryQueryEngine.Query(candidates, request.Category, request.Page, request.SortKey, request.SortDirection);
-        var asOfSequenceNumber = await GetCustodyProjectionCheckpointAsync(shardId, cancellationToken);
+        var asOfSequenceNumber = await candidateReader.GetCustodyProjectionCheckpointAsync(shardId, cancellationToken);
 
         return new CloudInventoryQueryResponse(page, asOfSequenceNumber);
-    }
-
-    private async Task<HashSet<uint>> GetActivelyReservedItemBiotaIdsAsync(CancellationToken cancellationToken)
-    {
-        var biotaIds = await _context.CloudWithdrawalReservationTargets
-            .AsNoTracking()
-            .Where(target => target.Kind == CloudWithdrawalReservationTargetKind.Item)
-            .Join(
-                _context.CloudWithdrawalReservations.AsNoTracking().Where(reservation => reservation.Status == CloudReservationStatus.Active),
-                target => target.ReservationId,
-                reservation => reservation.Id,
-                (target, reservation) => target.ItemBiotaId!.Value)
-            .ToListAsync(cancellationToken);
-
-        return [.. biotaIds];
-    }
-
-    private async Task<HashSet<Guid>> GetActivelyReservedStackLotIdsAsync(CancellationToken cancellationToken)
-    {
-        var lotIds = await _context.CloudWithdrawalReservationTargets
-            .AsNoTracking()
-            .Where(target => target.Kind == CloudWithdrawalReservationTargetKind.StackLot)
-            .Join(
-                _context.CloudWithdrawalReservations.AsNoTracking().Where(reservation => reservation.Status == CloudReservationStatus.Active),
-                target => target.ReservationId,
-                reservation => reservation.Id,
-                (target, reservation) => target.StackLotId!.Value)
-            .ToListAsync(cancellationToken);
-
-        return [.. lotIds];
-    }
-
-    /// <summary>
-    /// The freshness signal issue #30's Red section calls "projection lag ... responses": the
-    /// Custody Outbox sequence number the shard's custody projection consumer has durably applied as
-    /// of this query, taken from the same checkpoint row <see cref="CloudCustodyProjectionConsumer"/>
-    /// already maintains (ARCH-007). 0 when the consumer has not run yet for this shard.
-    /// </summary>
-    private async Task<long> GetCustodyProjectionCheckpointAsync(string shardId, CancellationToken cancellationToken)
-    {
-        var checkpoint = await _context.CloudProjectionCheckpoints
-            .AsNoTracking()
-            .SingleOrDefaultAsync(
-                c => c.ConsumerName == CloudCustodyProjectionConsumer.ConsumerName && c.ShardId == shardId, cancellationToken);
-
-        return checkpoint?.LastAppliedSequenceNumber ?? 0;
     }
 }
