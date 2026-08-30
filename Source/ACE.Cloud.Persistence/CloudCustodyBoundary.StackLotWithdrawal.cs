@@ -22,7 +22,7 @@ namespace ACE.Cloud.Persistence;
 /// companion backend's own multi-target reservation workflows (listings, offers, escrow) already
 /// share -- rather than duplicating exclusivity/ordering rules here.
 /// </summary>
-public sealed partial class CloudCustodyBoundary
+public sealed partial class CloudCustodyBoundary : ICloudWithdrawalReservationService
 {
     private static readonly IReadOnlyDictionary<Guid, uint> EmptyMaterializedBiotaIdsByTargetId = new Dictionary<Guid, uint>();
 

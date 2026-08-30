@@ -27,7 +27,7 @@ namespace ACE.Cloud.Persistence;
 /// today -- <paramref name="wouldCreateActiveAuctionConflict"/> on <see cref="LinkAsync"/> exists so
 /// a future marketplace-aware caller can wire in that check without changing this method's shape.
 /// </summary>
-public sealed class CloudAccountLinkGateway : ICloudAccountOwnershipResolver
+public sealed class CloudAccountLinkGateway : ICloudAccountOwnershipResolver, ICloudAccountLinkAdministration
 {
     private readonly CloudDbContext _context;
 
@@ -386,6 +386,49 @@ public sealed class CloudAccountLinkGateway : ICloudAccountOwnershipResolver
 
         linkedAccountIds.Add(mainAccountId);
         return linkedAccountIds;
+    }
+
+    /// <summary>
+    /// Every currently active Linked Account under <paramref name="mainAccountId"/>'s ownership
+    /// group, for the account identity/linking HTTP surface (issue #33). A plain (unlocked) read,
+    /// matching <see cref="GetOwnershipGroupAccountIdsAsync"/>'s own read-only shape.
+    /// </summary>
+    public async Task<IReadOnlyList<CloudAccountLinkSummary>> GetActiveLinksAsync(
+        string shardId, uint mainAccountId, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(shardId))
+        {
+            throw new ArgumentException("Listing active links requires a Cloud Shard ID.", nameof(shardId));
+        }
+
+        var group = await _context.Set<CloudOwnershipGroup>().AsNoTracking()
+            .SingleOrDefaultAsync(g => g.ShardId == shardId && g.MainAccountId == mainAccountId, cancellationToken);
+        if (group is null)
+        {
+            return [];
+        }
+
+        return await _context.Set<CloudAccountLink>().AsNoTracking()
+            .Where(l => l.OwnershipGroupId == group.Id && l.Status == CloudAccountLinkStatus.Active)
+            .Select(l => new CloudAccountLinkSummary(l.LinkedAccountId, l.LinkedAtUtc))
+            .ToListAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Resolves <paramref name="mainAccountId"/>'s own ownership group ID, or null if it has never
+    /// linked any account (a <see cref="CloudOwnershipGroup"/> row is only created on a Main
+    /// Account's first successful link -- see <see cref="LinkOnceAsync"/>).
+    /// </summary>
+    public async Task<Guid?> TryGetOwnershipGroupIdAsync(string shardId, uint mainAccountId, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(shardId))
+        {
+            throw new ArgumentException("Resolving an ownership group ID requires a Cloud Shard ID.", nameof(shardId));
+        }
+
+        var group = await _context.Set<CloudOwnershipGroup>().AsNoTracking()
+            .SingleOrDefaultAsync(g => g.ShardId == shardId && g.MainAccountId == mainAccountId, cancellationToken);
+        return group?.Id;
     }
 
     private async Task<CloudActiveAccountLinkMarker?> LockActiveLinkMarkerAsync(string shardId, uint accountId, CancellationToken cancellationToken) =>

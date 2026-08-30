@@ -13,7 +13,7 @@ namespace ACE.Cloud.Persistence;
 /// validation/transition to <see cref="CloudWithdrawalLocationConfigurationPolicy"/>, and -- only on
 /// success -- persists the result and commits.
 /// </summary>
-public sealed class CloudWithdrawalLocationConfigurationBoundary
+public sealed class CloudWithdrawalLocationConfigurationBoundary : ICloudWithdrawalLocationReader
 {
     private readonly CloudDbContext _context;
 

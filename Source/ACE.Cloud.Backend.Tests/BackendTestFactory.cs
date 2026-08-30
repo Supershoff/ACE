@@ -55,6 +55,18 @@ internal sealed class BackendTestFactory : WebApplicationFactory<Program>
 
     public FakeCloudIconDerivativeReader IconDerivativeReader { get; } = new();
 
+    public FakeCloudAccountLinkAdministration AccountLinkAdministration { get; } = new();
+
+    public FakeCloudDisplayCharacterReader DisplayCharacterReader { get; } = new();
+
+    public FakeCloudWithdrawalReservationService WithdrawalReservationService { get; } = new();
+
+    public FakeCloudWithdrawalLocationReader WithdrawalLocationReader { get; } = new();
+
+    public FakeCloudStackLotSplitService StackLotSplitService { get; } = new();
+
+    public FakeCloudServiceAvailabilityReader ServiceAvailabilityReader { get; } = new();
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.ConfigureServices(services =>
@@ -76,6 +88,27 @@ internal sealed class BackendTestFactory : WebApplicationFactory<Program>
 
             services.RemoveAll<ICloudIconDerivativeReader>();
             services.AddSingleton<ICloudIconDerivativeReader>(IconDerivativeReader);
+
+            services.RemoveAll<ICloudAccountLinkAdministration>();
+            services.AddSingleton<ICloudAccountLinkAdministration>(AccountLinkAdministration);
+
+            services.RemoveAll<ICloudDisplayCharacterReader>();
+            services.AddSingleton<ICloudDisplayCharacterReader>(DisplayCharacterReader);
+
+            services.RemoveAll<ICloudWithdrawalReservationService>();
+            services.AddSingleton<ICloudWithdrawalReservationService>(WithdrawalReservationService);
+
+            services.RemoveAll<ICloudWithdrawalReservationReader>();
+            services.AddSingleton<ICloudWithdrawalReservationReader>(WithdrawalReservationService);
+
+            services.RemoveAll<ICloudWithdrawalLocationReader>();
+            services.AddSingleton<ICloudWithdrawalLocationReader>(WithdrawalLocationReader);
+
+            services.RemoveAll<ICloudStackLotSplitService>();
+            services.AddSingleton<ICloudStackLotSplitService>(StackLotSplitService);
+
+            services.RemoveAll<ICloudServiceAvailabilityReader>();
+            services.AddSingleton<ICloudServiceAvailabilityReader>(ServiceAvailabilityReader);
         });
     }
 }

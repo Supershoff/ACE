@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createAccountApi, type AccountApi } from "../api/accountApi";
 import { createAuthApi, type AuthApi } from "../api/authApi";
 import { createHttpClient } from "../api/httpClient";
 import type { CloudServiceAvailabilityMode } from "../api/types";
@@ -12,9 +13,9 @@ import type { CloudServiceAvailabilityMode } from "../api/types";
 export type SessionStatus = "unknown" | "authenticating" | "authenticated" | "unauthenticated";
 
 /**
- * The server does not yet expose Main/Linked account status over HTTP (AUTH-004's identity
- * endpoints land with issue #33). `"Unknown"` is the only honest default until then, and
- * Main-only route guards must treat it as a denial, never as an implicit "Main".
+ * AUTH-004: resolved from `GET /account/identity` right after a successful login. `"Unknown"` is
+ * the fail-closed default before that resolution completes (or if it fails), and every Main-only
+ * route guard must treat it as a denial, never as an implicit "Main".
  */
 export type AccountKind = "Main" | "Linked" | "Unknown";
 
@@ -28,6 +29,8 @@ export interface SessionContextValue {
   readonly status: SessionStatus;
   readonly csrfToken: string | null;
   readonly accountKind: AccountKind;
+  /** The Main Account name the user themself just typed to log in (AUTH-005's "type your Main account name to confirm" linking safeguard); null before login resolves. */
+  readonly accountName: string | null;
   readonly serviceAvailability: CloudServiceAvailabilityMode | "unknown";
   login(accountName: string, password: string): Promise<{ ok: boolean }>;
   logout(): Promise<void>;
@@ -49,12 +52,15 @@ export interface SessionProviderProps {
   readonly children: ReactNode;
   /** Overridable for tests; production code lets this default to the real Cloud backend client. */
   readonly authApi?: AuthApi;
+  /** Overridable for tests; production code lets this default to the real Cloud backend client. */
+  readonly accountApi?: AccountApi;
 }
 
-export function SessionProvider({ children, authApi }: SessionProviderProps) {
+export function SessionProvider({ children, authApi, accountApi }: SessionProviderProps) {
   const [status, setStatus] = useState<SessionStatus>("unknown");
   const [csrfToken, setCsrfToken] = useState<string | null>(null);
   const [accountKind, setAccountKind] = useState<AccountKind>("Unknown");
+  const [accountName, setAccountName] = useState<string | null>(null);
   const [serviceAvailability, setServiceAvailability] = useState<CloudServiceAvailabilityMode | "unknown">("unknown");
 
   const csrfTokenRef = useRef<string | null>(null);
@@ -67,6 +73,14 @@ export function SessionProvider({ children, authApi }: SessionProviderProps) {
     );
   }
   const resolvedAuthApi = authApi ?? defaultAuthApiRef.current;
+
+  const defaultAccountApiRef = useRef<AccountApi | null>(null);
+  if (!defaultAccountApiRef.current) {
+    defaultAccountApiRef.current = createAccountApi(
+      createHttpClient({ baseUrl: "", getCsrfToken: () => csrfTokenRef.current }),
+    );
+  }
+  const resolvedAccountApi = accountApi ?? defaultAccountApiRef.current;
 
   useEffect(() => {
     let cancelled = false;
@@ -84,25 +98,33 @@ export function SessionProvider({ children, authApi }: SessionProviderProps) {
   }, []);
 
   const login = useCallback(
-    async (accountName: string, password: string): Promise<{ ok: boolean }> => {
+    async (typedAccountName: string, password: string): Promise<{ ok: boolean }> => {
       setStatus("authenticating");
-      const result = await resolvedAuthApi.login(accountName, password);
+      const result = await resolvedAuthApi.login(typedAccountName, password);
       if (result.ok && result.data) {
         setCsrfToken(result.data.csrfToken);
+        setAccountName(typedAccountName);
         setStatus("authenticated");
+
+        // AUTH-004: resolve Main/Linked status immediately so Main-only route guards never have to
+        // fall back to the fail-closed "Unknown" default for a genuinely logged-in session.
+        const identity = await resolvedAccountApi.fetchIdentity();
+        setAccountKind(identity.ok && identity.data ? identity.data.accountKind : "Unknown");
+
         return { ok: true };
       }
       setCsrfToken(null);
       setStatus("unauthenticated");
       return { ok: false };
     },
-    [resolvedAuthApi],
+    [resolvedAuthApi, resolvedAccountApi],
   );
 
   const logout = useCallback(async (): Promise<void> => {
     await resolvedAuthApi.logout();
     setCsrfToken(null);
     setAccountKind("Unknown");
+    setAccountName(null);
     setStatus("unauthenticated");
   }, [resolvedAuthApi]);
 
@@ -118,6 +140,7 @@ export function SessionProvider({ children, authApi }: SessionProviderProps) {
     status,
     csrfToken,
     accountKind,
+    accountName,
     serviceAvailability,
     login,
     logout,
