@@ -64,7 +64,7 @@ if (Test-Path $pidFile) {
 }
 
 $cloudConnectionBuilder = [System.Data.Common.DbConnectionStringBuilder]::new()
-$cloudConnectionBuilder.ConnectionString = $settings.aceShardConnectionString
+$cloudConnectionBuilder.set_ConnectionString([string]$settings.aceShardConnectionString)
 foreach ($key in @($cloudConnectionBuilder.Keys)) {
     if ([string]$key -match '^(Database|Initial Catalog|User Id|UserID|UID|Username|Password|Pwd)$') {
         $cloudConnectionBuilder.Remove([string]$key) | Out-Null

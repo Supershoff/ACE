@@ -59,7 +59,7 @@ function New-CloudRuntimeConnectionString {
     param([string]$ShardConnectionString, [string]$RuntimeUser, [string]$RuntimePassword)
 
     $builder = [System.Data.Common.DbConnectionStringBuilder]::new()
-    $builder.ConnectionString = $ShardConnectionString
+    $builder.set_ConnectionString($ShardConnectionString)
     foreach ($key in @($builder.Keys)) {
         if ([string]$key -match '^(Database|Initial Catalog|User Id|UserID|UID|Username|Password|Pwd)$') {
             $builder.Remove([string]$key) | Out-Null
