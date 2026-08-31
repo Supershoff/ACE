@@ -72,6 +72,9 @@ builder.Services.AddHostedService<CloudIdentityProjectionConsumerWorker>();
 builder.Services.AddHostedService<CloudNotificationProjectionConsumerWorker>();
 builder.Services.AddHostedService<CloudIconCompositionWorker>();
 
+builder.Services.AddScoped<ICloudAccountOwnershipResolver>(serviceProvider => new CloudAccountLinkGateway(serviceProvider.GetRequiredService<CloudDbContext>()));
+builder.Services.AddHostedService<CloudTransferOfferExpiryWorker>();
+
 var host = builder.Build();
 host.Run();
 return 0;

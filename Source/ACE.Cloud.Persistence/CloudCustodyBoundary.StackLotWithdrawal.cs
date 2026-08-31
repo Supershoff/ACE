@@ -415,6 +415,29 @@ public sealed partial class CloudCustodyBoundary : ICloudWithdrawalReservationSe
                 new CloudReservationId(conflict.Id), conflictTarget, CloudReservationKind.Withdrawal, CloudReservationStatus.Active);
         }
 
+        // Issue #35: a target already held by a Pending Transfer Offer also blocks a new Withdrawal
+        // Reservation over it (the reverse of CloudTransferOfferGateway.TryCreateOnceAsync's own
+        // matching check against this table), so "one quantity may have at most one exclusive
+        // reservation at a time" holds regardless of which reservation kind asked first.
+        var offerConflicts = await (
+            from t in _context.Set<CloudTransferOfferTargetRecord>().AsNoTracking()
+            join o in _context.Set<CloudTransferOfferRecord>().AsNoTracking() on t.OfferId equals o.Id
+            where o.Status == CloudTransferOfferStatus.Pending
+                && ((t.Kind == CloudReservationTargetKind.Item && requestedBiotaIds.Contains(t.ItemBiotaId!.Value))
+                    || (t.Kind == CloudReservationTargetKind.StackLot && requestedLotIds.Contains(t.StackLotId!.Value)))
+            select new { t.Kind, t.ItemBiotaId, t.StackLotId, o.Id })
+            .ToListAsync(cancellationToken);
+
+        foreach (var conflict in offerConflicts)
+        {
+            var conflictTarget = conflict.Kind == CloudReservationTargetKind.Item
+                ? CloudReservationTarget.ForItem(new CloudItemId(conflict.ItemBiotaId!.Value))
+                : CloudReservationTarget.ForStackLot(new CloudStackLotId(conflict.StackLotId!.Value));
+
+            existingAllocationsByTarget[conflictTarget] = new CloudReservationAllocation(
+                new CloudReservationId(conflict.Id), conflictTarget, CloudReservationKind.Offer, CloudReservationStatus.Active);
+        }
+
         var nowUtc = await GetDatabaseUtcNowAsync(cancellationToken);
         var gateState = await CloudMutationGateReader.ResolveAsync(_context, shardId, cancellationToken);
         var policyResult = CloudReservationPolicy.Open(

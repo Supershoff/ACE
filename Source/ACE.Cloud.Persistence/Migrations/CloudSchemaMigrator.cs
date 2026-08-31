@@ -46,6 +46,7 @@ public static class CloudSchemaMigrator
         new AddCloudNotification(),
         new AddAppraisalSnapshotAndIconCompositionInputs(),
         new AddIconCompositionSharedOverlayDids(),
+        new AddCloudTransferOffers(),
     ];
 
     /// <summary>

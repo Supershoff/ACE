@@ -131,6 +131,10 @@ public sealed class CloudDbContext : DbContext
 
     public DbSet<CloudNotification> CloudNotifications => Set<CloudNotification>();
 
+    public DbSet<CloudTransferOfferRecord> CloudTransferOffers => Set<CloudTransferOfferRecord>();
+
+    public DbSet<CloudTransferOfferTargetRecord> CloudTransferOfferTargets => Set<CloudTransferOfferTargetRecord>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<CloudShardBinding>(entity =>
@@ -1771,6 +1775,70 @@ public sealed class CloudDbContext : DbContext
                 .ValueGeneratedNever();
 
             entity.Property(notification => notification.ReadAtUtc);
+        });
+
+        modelBuilder.Entity<CloudTransferOfferRecord>(entity =>
+        {
+            entity.ToTable("CloudTransferOffer");
+
+            entity.HasKey(offer => offer.Id);
+            entity.Property(offer => offer.Id).ValueGeneratedNever();
+
+            entity.Property(offer => offer.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(offer => offer.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(offer => offer.SenderAccountId).IsRequired();
+            entity.HasIndex(offer => new { offer.ShardId, offer.SenderAccountId, offer.Status });
+
+            entity.Property(offer => offer.RecipientAccountId).IsRequired();
+            entity.HasIndex(offer => new { offer.ShardId, offer.RecipientAccountId, offer.Status });
+
+            entity.Property(offer => offer.CreateIdempotencyKey).IsRequired();
+            entity.HasIndex(offer => offer.CreateIdempotencyKey).IsUnique();
+
+            entity.Property(offer => offer.Status).IsRequired().HasConversion<string>().HasMaxLength(16);
+            entity.HasIndex(offer => new { offer.ShardId, offer.Status, offer.ExpiresAtUtc });
+
+            entity.Property(offer => offer.Version).IsRequired();
+
+            entity.Property(offer => offer.CreatedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAdd()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+            entity.Property(offer => offer.ExpiresAtUtc).IsRequired();
+            entity.Property(offer => offer.ResolvedAtUtc);
+        });
+
+        modelBuilder.Entity<CloudTransferOfferTargetRecord>(entity =>
+        {
+            entity.ToTable("CloudTransferOfferTarget");
+
+            entity.HasKey(target => target.Id);
+            entity.Property(target => target.Id).ValueGeneratedNever();
+
+            // XFER-002/INV-001: at most one active target may claim the same biota/lot at a time
+            // across every reservation kind, revalidated under this row's own lock for the whole
+            // opening transaction (CloudTransferOfferGateway.TryCreateOnceAsync); these indexes exist
+            // for lookup, not as the sole enforcement mechanism.
+            entity.Property(target => target.OfferId).IsRequired();
+            entity.HasIndex(target => target.OfferId);
+            entity.HasOne<CloudTransferOfferRecord>()
+                .WithMany()
+                .HasForeignKey(target => target.OfferId)
+                .HasPrincipalKey(offer => offer.Id)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.Property(target => target.Kind).IsRequired().HasConversion<string>().HasMaxLength(16);
+            entity.Property(target => target.ItemBiotaId);
+            entity.HasIndex(target => target.ItemBiotaId);
+            entity.Property(target => target.StackLotId);
+            entity.HasIndex(target => target.StackLotId);
+            entity.Property(target => target.Quantity);
         });
     }
 }
