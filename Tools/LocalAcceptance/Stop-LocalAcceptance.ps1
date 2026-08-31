@@ -5,9 +5,8 @@
 
 .DESCRIPTION
     Always stops the background AuthBridge/Backend/Worker/proxy processes it started. With -Purge,
-    also removes the disposable acceptance MariaDB container and its named volume -- scoped strictly
-    to the `ace-cloud-acceptance` Compose project, never touching an existing ACE installation's own
-    `docker-compose.yml`/`ace-db`/`db-data`.
+    also removes only the disposable ace_cloud schema and its known ace_shard boundary triggers from
+    the disposable test world's co-located database server.
 #>
 
 [CmdletBinding()]
@@ -36,11 +35,19 @@ if (Test-Path $pidFile) {
 }
 
 if ($Purge) {
-    Write-Host "Removing the disposable acceptance MariaDB container and its volume..." -ForegroundColor Cyan
-    $composeFile = Join-Path $scriptRoot "docker-compose.acceptance.yml"
-    docker compose -p ace-cloud-acceptance -f $composeFile down --volumes
+    $settings = Get-Content (Join-Path $scriptRoot "acceptance.settings.json") -Raw | ConvertFrom-Json
+    Write-Host "Removing the disposable ace_cloud schema and its known ace_shard boundary triggers..." -ForegroundColor Cyan
+    $env:ACE_CLOUD_ACCEPTANCE_ADMIN_CONNECTION_STRING = $settings.aceShardConnectionString
+    try {
+        dotnet run --project (Join-Path $scriptRoot "../../Source/ACE.Cloud.LocalAcceptanceMigrator") --configuration Release -- purge-colocated | Out-Host
+        if ($LASTEXITCODE -ne 0) {
+            throw "The disposable ace_cloud purge failed."
+        }
+    } finally {
+        Remove-Item Env:ACE_CLOUD_ACCEPTANCE_ADMIN_CONNECTION_STRING -ErrorAction SilentlyContinue
+    }
 } else {
-    Write-Host "The acceptance MariaDB container was left running so re-running Start-LocalAcceptance.ps1 is fast. Pass -Purge to remove it and its data." -ForegroundColor Yellow
+    Write-Host "The disposable ace_cloud schema was left in place so re-running Start-LocalAcceptance.ps1 is fast. Pass -Purge to remove it and its cross-schema boundary triggers." -ForegroundColor Yellow
 }
 
 Write-Host "Stopped." -ForegroundColor Green

@@ -2,7 +2,8 @@
 
 A reproducible, **local-only, disposable** environment for the Phase 5 inventory vertical slice
 (Activity Ledger, Notification Center, and the resumable Live State Stream). It runs on an operator's
-Windows development machine, uses Docker Compose only for an isolated MariaDB container, and connects
+Windows development machine, creates a disposable `ace_cloud` schema beside the disposable test world's
+existing `ace_shard` schema, and connects
 to a **separately started ACE test world** built from this PR branch through explicit configuration.
 It never requires public hosting, never bootstraps a production installation, and never touches an
 existing ACE installation or its databases.
@@ -15,19 +16,19 @@ existing ACE installation or its databases.
   `aceServerProjectPath` (step 4) -- and even then it only starts/restarts that process, never edits
   its `Config.js`.
 
-## Two-database topology
+## Co-located database topology
 
-This launcher manages exactly **one** disposable database: `ace_cloud`, in its own MariaDB 11.4
-container (`docker-compose.acceptance.yml`, Compose project `ace-cloud-acceptance`), on a distinct
-port (default `3307`) so it never collides with an existing ACE installation's own database.
+This launcher manages exactly **one** disposable schema: `ace_cloud`, on the same local MySQL/MariaDB
+instance as the disposable test world's `ace_shard`. Co-location is mandatory: the custody boundary
+uses database triggers in both schemas so world possession and Cloud custody can never coexist.
+Putting `ace_cloud` in a separate container would make those invariants impossible to exercise.
 
-Your **existing** `ace_auth`, `ace_shard`, and `ace_world` databases (from the disposable ACE test
-world you already created) stay exactly where they are. This launcher only ever runs a read-only
-`SELECT 1` against them to confirm they are reachable -- it never creates, migrates, or purges them.
+Your **existing disposable** `ace_auth`, `ace_shard`, and `ace_world` schemas stay in place. The
+launcher validates all three, creates/migrates only `ace_cloud`, and installs/removes only the named
+Cloud Mule custody triggers in `ace_shard`. Never point this acceptance launcher at a production world.
 
 ## Prerequisites
 
-- Windows, with [Docker Desktop](https://www.docker.com/products/docker-desktop/) (WSL2 backend) running.
 - [.NET 10 SDK](https://dotnet.microsoft.com/download).
 - [Node.js 20+](https://nodejs.org/) (npm ships with it).
 - PowerShell 7+ (`pwsh`). Run `Test-Prerequisites.ps1` any time to check all of the above plus free
@@ -53,7 +54,7 @@ Copy-Item acceptance.settings.example.json acceptance.settings.json
 ```
 
 Edit `acceptance.settings.json` (git-ignored -- it holds your local, disposable secrets) and replace
-every `CHANGE_ME` value: local ports, a throwaway MariaDB password for the acceptance container, your
+every `CHANGE_ME` value: local ports, a restricted `ace_cloud` runtime user/password, your
 test world's `ace_auth`/`ace_shard`/`ace_world` connection strings, a shard ID, a service-key ID/secret
 pair matching what your test world's ACE-side extension expects, and your synthetic test accounts.
 Leave `aceServerProjectPath` blank unless you want this launcher to manage restarting your ACE process
@@ -70,8 +71,8 @@ This, in order:
 
 1. Runs `Test-Prerequisites.ps1` and stops with a specific, actionable diagnostic if anything is missing.
 2. Validates (read-only) that your existing `ace_auth`, `ace_shard`, and `ace_world` databases are reachable, without touching them.
-3. Starts an isolated MariaDB 11.4 container for the `ace_cloud` schema only.
-4. Applies Cloud schema migrations (`ACE.Cloud.LocalAcceptanceMigrator`, wrapping the same `CloudSchemaMigrator` the integration tests already exercise).
+3. Creates `ace_cloud` beside `ace_shard`, creates/updates the non-root runtime identity, and grants it access only to `ace_cloud`.
+4. Applies Cloud schema migrations with the local `aceShardConnectionString` admin identity (`ACE.Cloud.LocalAcceptanceMigrator`, wrapping the same `CloudSchemaMigrator` the integration tests already exercise), including the required cross-schema custody triggers.
 5. Idempotently bootstraps (or strictly validates -- never overwrites a different existing one) the mandatory singleton `CloudShardBinding` row, using `acceptance.settings.json`'s `shardId`, `cloudAceExtensionVersion`, and `cloudContractProtocolVersion`.
 
 Safe to re-run any time -- every step here is idempotent.
@@ -83,7 +84,7 @@ Now that `ace_cloud` and its `CloudShardBinding` exist, (re)start your ACE test 
 - `CloudMule.Enabled = true`
 - `CloudMule.ShardId` matching `acceptance.settings.json`'s `shardId`
 - `CloudMule.CustodianBaseWeenieClassId` set to a real Vendor-type weenie in your `ace_world`
-- `MySql.Cloud` pointing at the `ace_cloud` database `Prepare-LocalAcceptanceCloudDatabase.ps1` just prepared (host `127.0.0.1`, port from `acceptance.settings.json`'s `dbPort`, the same `dbUser`/`dbPassword`)
+- `MySql.Cloud` pointing at the co-located `ace_cloud` database using an **ACE world-boundary database identity** that can read/write both `ace_cloud` and `ace_shard` (for this disposable world, the identity already used by `MySql.Shard` is sufficient). Do not use the restricted `dbUser`; it is for companion services only.
 - `CloudMule.HealthEndpoint.Enabled = true` (the default), bound/ported to match `acceptance.settings.json`'s `worldBoundaryHealthEndpoint`
 
 You can do this manually (your own `dotnet run --project Source/ACE.Server`, or however you normally
@@ -150,14 +151,12 @@ addition to the shipped app.
 
 ```powershell
 ./Stop-LocalAcceptance.ps1          # stops the background AuthBridge/Backend/Worker/proxy (and managed AceServer, if used) processes
-./Stop-LocalAcceptance.ps1 -Purge   # also removes the disposable acceptance MariaDB container and its volume
+./Stop-LocalAcceptance.ps1 -Purge   # also removes ace_cloud and the known Cloud Mule triggers from ace_shard
 ```
 
-Cleanup is scoped strictly to resources this launcher created (its own background process PIDs
-recorded in `.local-run/processes.json`, and the `ace-cloud-acceptance` Compose project's own
-container/volume) -- it never stops, modifies, or deletes an existing ACE installation, its
-`docker-compose.yml`/`ace-db`, or its `db-data`, and it never touches your `ace_auth`/`ace_shard`/
-`ace_world` databases. If you are managing your own separately started ACE test world (i.e.
+Cleanup is scoped strictly to resources this launcher created (its own background process PIDs,
+the `ace_cloud` schema, and the five named Cloud Mule custody triggers in `ace_shard`) -- it never
+drops or purges `ace_auth`, `ace_shard`, or `ace_world`. If you are managing your own separately started ACE test world (i.e.
 `aceServerProjectPath` is blank), that process is yours to stop on your own.
 
 ## Troubleshooting
@@ -178,6 +177,6 @@ container/volume) -- it never stops, modifies, or deletes an existing ACE instal
 - **Backend never becomes ready**: check `.local-run/logs/Backend.err.log`. A common cause is an
   unreachable `worldBoundaryHealthEndpoint` or a wrong `aceAuthConnectionString` -- confirm your test
   world is actually running first.
-- **Port already in use**: change the conflicting port in `acceptance.settings.json` (a different
-  ACE installation, or a previous unstopped acceptance run, is likely still using it -- try
-  `./Stop-LocalAcceptance.ps1` first).
+- **Port already in use**: change the conflicting web/backend/worker/auth-bridge port in
+  `acceptance.settings.json`; the existing database port is expected to be in use by the disposable
+  ACE test world's MySQL/MariaDB instance.

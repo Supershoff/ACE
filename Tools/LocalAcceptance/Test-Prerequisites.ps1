@@ -39,27 +39,6 @@ function Test-PortFree {
 
 Write-Host "Checking local acceptance prerequisites..." -ForegroundColor Cyan
 
-if (-not (Test-CommandAvailable -Name "docker" -Hint "Install Docker Desktop (with the WSL2 backend) from https://www.docker.com/products/docker-desktop/.")) {
-} else {
-    try {
-        docker info *> $null
-        if ($LASTEXITCODE -ne 0) {
-            $problems.Add("Docker is installed but the daemon is not running. Start Docker Desktop and try again.")
-        }
-    } catch {
-        $problems.Add("Could not reach the Docker daemon: $($_.Exception.Message)")
-    }
-
-    try {
-        docker compose version *> $null
-        if ($LASTEXITCODE -ne 0) {
-            $problems.Add("`"docker compose`" (the Compose v2 plugin) is not available. Update Docker Desktop.")
-        }
-    } catch {
-        $problems.Add("Could not run `"docker compose version`": $($_.Exception.Message)")
-    }
-}
-
 if (Test-CommandAvailable -Name "dotnet" -Hint "Install the .NET 10 SDK from https://dotnet.microsoft.com/download.") {
     $sdkList = dotnet --list-sdks 2>$null
     if (-not ($sdkList -match "^10\.")) {
@@ -91,8 +70,8 @@ if (-not (Test-Path $settingsPath)) {
 
     if ($settings) {
         $requiredFields = @(
-            "webUiPort", "backendPort", "workerHealthPort", "authBridgePort", "dbPort",
-            "dbRootPassword", "dbUser", "dbPassword", "worldBoundaryHealthEndpoint",
+            "webUiPort", "backendPort", "workerHealthPort", "authBridgePort",
+            "dbUser", "dbPassword", "worldBoundaryHealthEndpoint",
             "aceAuthConnectionString", "aceShardConnectionString", "aceWorldConnectionString",
             "shardId", "activeServiceKeyId", "activeServiceKeySecret",
             "cloudAceExtensionVersion", "cloudContractProtocolVersion"
@@ -109,6 +88,9 @@ if (-not (Test-Path $settingsPath)) {
                 $problems.Add("acceptance.settings.json is missing a real value for testAccounts.$accountField.")
             }
         }
+        if ([string]$settings.dbUser -eq 'root') {
+            $problems.Add('acceptance.settings.json dbUser must be a non-root runtime identity (for example, cloud_acceptance).')
+        }
         # aceServerProjectPath is optional (blank means "you manage your own ACE process"); no check needed.
     }
 }
@@ -116,7 +98,6 @@ if (-not (Test-Path $settingsPath)) {
 if ($settings) {
     Test-PortFree -Port $settings.webUiPort -UsedFor "the web client's local proxy"
     Test-PortFree -Port $settings.backendPort -UsedFor "ACE.Cloud.Backend"
-    Test-PortFree -Port $settings.dbPort -UsedFor "the disposable acceptance MariaDB container"
 }
 
 if ($problems.Count -eq 0) {

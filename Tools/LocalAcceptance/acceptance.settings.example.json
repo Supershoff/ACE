@@ -6,8 +6,7 @@
   "workerHealthPort": 5290,
   "authBridgePort": 5098,
 
-  "dbPort": 3307,
-  "dbRootPassword": "CHANGE_ME_DISPOSABLE_PASSWORD",
+  "_databaseComment": "ace_cloud is created beside this disposable test world's ace_shard schema because custody invariants require cross-schema triggers. aceShardConnectionString supplies the local admin identity for migrations; dbUser/dbPassword define the restricted companion-service identity granted access only to ace_cloud.",
   "dbUser": "cloud_acceptance",
   "dbPassword": "CHANGE_ME_DISPOSABLE_PASSWORD",
 

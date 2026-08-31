@@ -1,14 +1,14 @@
 using ACE.Cloud.Persistence;
 using ACE.Cloud.Persistence.Migrations;
 using MySqlConnector;
+using System.Text.RegularExpressions;
 
-// Test tooling only (issue #34's disposable local acceptance launcher). Two modes, dispatched by
+// Test tooling only (issue #34's disposable local acceptance launcher). Modes are dispatched by
 // args[0] (default "migrate-and-bootstrap" for backward compatibility with existing invocations):
 //
 //   migrate-and-bootstrap  Applies the Cloud schema's existing migrations (CloudSchemaMigrator,
 //                          already covered by ACE.Cloud.PersistenceIntegrationTests) against the
-//                          throwaway MariaDB container Prepare-LocalAcceptanceCloudDatabase.ps1 just
-//                          started, then idempotently bootstraps (or strictly validates) the
+//                          prepared ace_cloud schema, then idempotently bootstraps (or strictly validates) the
 //                          mandatory singleton CloudShardBinding row (blocking defect #2: migrations
 //                          alone left every companion startup check permanently reporting "Operator
 //                          Bootstrap has not completed").
@@ -18,22 +18,29 @@ using MySqlConnector;
 //                          database (ace_auth/ace_shard/ace_world) this launcher must never create,
 //                          migrate, or purge (blocking defect #4). Never mutates anything.
 //
-// This intentionally does not create schemas, identities, or secrets for a real deployment -- that is
-// the Operator Bootstrap command's production job (CONTEXT.md), out of scope here. The disposable
-// container's own `ace_cloud` database and user are created by MariaDB's standard image
-// initialization (Tools/LocalAcceptance/docker-compose.acceptance.yml), not by this tool.
+//   prepare-colocated     Creates disposable ace_cloud beside the disposable ace_shard schema,
+//                         migrates it with the local admin identity, bootstraps CloudShardBinding,
+//                         and grants a separate runtime identity access only to ace_cloud.
+//
+//   purge-colocated       Drops only the known Cloud Mule triggers from ace_shard and the disposable
+//                         ace_cloud schema. Used exclusively by Stop-LocalAcceptance.ps1 -Purge.
+//
+// This creates only disposable local-test resources. Creating production schemas, identities, and
+// secrets remains the Operator Bootstrap command's job (CONTEXT.md), out of scope here.
 var mode = args.Length > 0 ? args[0] : "migrate-and-bootstrap";
 
 return mode switch
 {
     "migrate-and-bootstrap" => await MigrateAndBootstrapAsync(),
     "validate-external-connection" => await ValidateExternalConnectionAsync(args),
+    "prepare-colocated" => await PrepareColocatedAsync(),
+    "purge-colocated" => await PurgeColocatedAsync(),
     _ => Unknown(mode),
 };
 
 static int Unknown(string mode)
 {
-    Console.Error.WriteLine($"Unknown mode '{mode}'. Expected 'migrate-and-bootstrap' or 'validate-external-connection'.");
+    Console.Error.WriteLine($"Unknown mode '{mode}'. Expected 'migrate-and-bootstrap', 'validate-external-connection', 'prepare-colocated', or 'purge-colocated'.");
     return 1;
 }
 
@@ -115,4 +122,138 @@ static async Task<int> ValidateExternalConnectionAsync(string[] args)
         Console.Error.WriteLine($"{label}: NOT reachable -- {ex.Message}");
         return 1;
     }
+}
+
+static async Task<int> PrepareColocatedAsync()
+{
+    var adminConnectionString = RequireEnvironment("ACE_CLOUD_ACCEPTANCE_ADMIN_CONNECTION_STRING");
+    var runtimeConnectionString = RequireEnvironment("ACE_CLOUD_ACCEPTANCE_RUNTIME_CONNECTION_STRING");
+    if (adminConnectionString is null || runtimeConnectionString is null)
+    {
+        return 1;
+    }
+
+    MySqlConnectionStringBuilder adminBuilder;
+    MySqlConnectionStringBuilder runtimeBuilder;
+    try
+    {
+        adminBuilder = new MySqlConnectionStringBuilder(adminConnectionString);
+        runtimeBuilder = new MySqlConnectionStringBuilder(runtimeConnectionString);
+    }
+    catch (ArgumentException ex)
+    {
+        Console.Error.WriteLine($"Invalid co-located acceptance connection string: {ex.Message}");
+        return 1;
+    }
+
+    if (!string.Equals(adminBuilder.Database, "ace_shard", StringComparison.OrdinalIgnoreCase))
+    {
+        Console.Error.WriteLine("The acceptance admin connection must target the disposable ace_shard schema.");
+        return 1;
+    }
+
+    if (!string.Equals(runtimeBuilder.Database, "ace_cloud", StringComparison.OrdinalIgnoreCase) ||
+        !string.Equals(adminBuilder.Server, runtimeBuilder.Server, StringComparison.OrdinalIgnoreCase) ||
+        adminBuilder.Port != runtimeBuilder.Port)
+    {
+        Console.Error.WriteLine("The ace_cloud runtime connection must target the same MySQL/MariaDB server and port as ace_shard.");
+        return 1;
+    }
+
+    if (!Regex.IsMatch(runtimeBuilder.UserID, "^[A-Za-z0-9_]{1,32}$") ||
+        string.Equals(runtimeBuilder.UserID, "root", StringComparison.OrdinalIgnoreCase))
+    {
+        Console.Error.WriteLine("The disposable Cloud runtime user must be a non-root name containing only letters, digits, and underscores.");
+        return 1;
+    }
+
+    var runtimeAccount = $"'{runtimeBuilder.UserID}'@'%'";
+    var escapedPassword = MySqlHelper.EscapeString(runtimeBuilder.Password);
+
+    adminBuilder.Database = "";
+    await using (var admin = new MySqlConnection(adminBuilder.ConnectionString))
+    {
+        await admin.OpenAsync();
+        await ExecuteAsync(admin, "CREATE DATABASE IF NOT EXISTS ace_cloud CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;");
+        await ExecuteAsync(admin, $"CREATE USER IF NOT EXISTS {runtimeAccount} IDENTIFIED BY '{escapedPassword}';");
+        await ExecuteAsync(admin, $"ALTER USER {runtimeAccount} IDENTIFIED BY '{escapedPassword}';");
+    }
+
+    var migrationBuilder = new MySqlConnectionStringBuilder(adminBuilder.ConnectionString) { Database = "ace_cloud" };
+    Environment.SetEnvironmentVariable("ACE_CLOUD_ACCEPTANCE_CONNECTION_STRING", migrationBuilder.ConnectionString);
+    var migrationResult = await MigrateAndBootstrapAsync();
+    if (migrationResult != 0)
+    {
+        return migrationResult;
+    }
+
+    await using (var admin = new MySqlConnection(adminBuilder.ConnectionString))
+    {
+        await admin.OpenAsync();
+        await ExecuteAsync(admin, $"GRANT SELECT, INSERT, UPDATE, DELETE ON ace_cloud.* TO {runtimeAccount};");
+    }
+
+    await using (var runtime = new MySqlConnection(runtimeBuilder.ConnectionString))
+    {
+        await runtime.OpenAsync();
+        await ExecuteAsync(runtime, "SELECT 1;");
+    }
+
+    Console.WriteLine("Co-located ace_cloud schema and restricted runtime identity are ready.");
+    return 0;
+}
+
+static async Task<int> PurgeColocatedAsync()
+{
+    var adminConnectionString = RequireEnvironment("ACE_CLOUD_ACCEPTANCE_ADMIN_CONNECTION_STRING");
+    if (adminConnectionString is null)
+    {
+        return 1;
+    }
+
+    var builder = new MySqlConnectionStringBuilder(adminConnectionString);
+    if (!string.Equals(builder.Database, "ace_shard", StringComparison.OrdinalIgnoreCase))
+    {
+        Console.Error.WriteLine("Refusing purge: the admin connection does not target ace_shard.");
+        return 1;
+    }
+
+    builder.Database = "";
+    await using var admin = new MySqlConnection(builder.ConnectionString);
+    await admin.OpenAsync();
+
+    foreach (var trigger in new[]
+    {
+        "trg_biota_position_reject_cloud_custodied_update",
+        "trg_biota_position_reject_cloud_custodied_insert",
+        "trg_biota_iid_reject_cloud_custodied_update",
+        "trg_biota_iid_reject_cloud_custodied_insert",
+        "trg_biota_reject_delete_when_cloud_custodied",
+    })
+    {
+        await ExecuteAsync(admin, $"DROP TRIGGER IF EXISTS ace_shard.{trigger};");
+    }
+
+    await ExecuteAsync(admin, "DROP DATABASE IF EXISTS ace_cloud;");
+    Console.WriteLine("Disposable ace_cloud schema and its known ace_shard boundary triggers were removed.");
+    return 0;
+}
+
+static string? RequireEnvironment(string name)
+{
+    var value = Environment.GetEnvironmentVariable(name);
+    if (!string.IsNullOrWhiteSpace(value))
+    {
+        return value;
+    }
+
+    Console.Error.WriteLine($"{name} is not set by the local acceptance launcher.");
+    return null;
+}
+
+static async Task ExecuteAsync(MySqlConnection connection, string commandText)
+{
+    await using var command = connection.CreateCommand();
+    command.CommandText = commandText;
+    await command.ExecuteNonQueryAsync();
 }

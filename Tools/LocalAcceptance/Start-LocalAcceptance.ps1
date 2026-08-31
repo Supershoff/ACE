@@ -63,7 +63,17 @@ if (Test-Path $pidFile) {
     Write-Host "A previous run's process record was found. Run Stop-LocalAcceptance.ps1 first if that run is still active." -ForegroundColor Yellow
 }
 
-$cloudConnectionString = "Server=127.0.0.1;Port=$($settings.dbPort);Database=ace_cloud;User Id=$($settings.dbUser);Password=$($settings.dbPassword);"
+$cloudConnectionBuilder = [System.Data.Common.DbConnectionStringBuilder]::new()
+$cloudConnectionBuilder.ConnectionString = $settings.aceShardConnectionString
+foreach ($key in @($cloudConnectionBuilder.Keys)) {
+    if ([string]$key -match '^(Database|Initial Catalog|User Id|UserID|UID|Username|Password|Pwd)$') {
+        $cloudConnectionBuilder.Remove([string]$key) | Out-Null
+    }
+}
+$cloudConnectionBuilder['Database'] = 'ace_cloud'
+$cloudConnectionBuilder['User Id'] = $settings.dbUser
+$cloudConnectionBuilder['Password'] = $settings.dbPassword
+$cloudConnectionString = $cloudConnectionBuilder.ConnectionString
 $webUiOrigin = "http://127.0.0.1:$($settings.webUiPort)"
 $backendOrigin = "http://127.0.0.1:$($settings.backendPort)"
 $authBridgeOrigin = "http://127.0.0.1:$($settings.authBridgePort)"
