@@ -138,6 +138,72 @@ public sealed class CloudNotificationProjectionConsumerTests
     }
 
     [TestMethod]
+    public async Task RunBatchAsync_TwoConcurrentRunsRacingRepeatedEvents_NeverCreateDuplicateNotificationRowsForTheSameOwner()
+    {
+        // AC Cloud Mule review of PR #149 (issue #34), P1: a plain (non-locking) read of "the most
+        // recent notification for this (ShardId, OwnerId, Kind)" let two concurrent consumer runs
+        // both observe "nothing to coalesce into yet" from their own snapshot and each insert their
+        // own row for the very first occurrence -- there being no existing row for either run to
+        // naturally serialize behind is exactly what made the duplicate reachable (the coalescing
+        // path's own UPDATE would always have serialized on an existing row regardless of this bug,
+        // since InnoDB always serializes a write against an already-locked existing row on its own).
+        // Two real consumer instances, each with their own connection, repeatedly race to apply the
+        // same still-unapplied event concurrently; verified once at the end via a fresh context,
+        // rather than per-race, because a redelivery-guard backlog can shift exactly which owner's
+        // event a given race actually resolves without ever creating a duplicate.
+        var options = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
+
+        await using (var warmupContext = new CloudDbContext(options))
+        {
+            await new CloudNotificationProjectionConsumer(warmupContext).RunBatchAsync(ShardId, maxCount: 1);
+        }
+
+        for (var i = 0; i < 10; i++)
+        {
+            var biotaId = NextId();
+            var recipient = Guid.NewGuid();
+            await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, biotaId);
+
+            await using (var context = new CloudDbContext(options))
+            {
+                var boundary = new CloudCustodyBoundary(context);
+                var authority = new CloudOwnershipTransferAuthority(context);
+                var deposit = await boundary.DepositAsync(biotaId, ShardId, Guid.NewGuid(), Guid.NewGuid());
+                await authority.TransferAsync(biotaId, recipient, deposit.Value!.Version, Guid.NewGuid());
+            }
+
+            await using var firstContext = new CloudDbContext(options);
+            await using var secondContext = new CloudDbContext(options);
+            var firstConsumer = new CloudNotificationProjectionConsumer(firstContext);
+            var secondConsumer = new CloudNotificationProjectionConsumer(secondContext);
+
+            try
+            {
+                await Task.WhenAll(
+                    firstConsumer.RunBatchAsync(ShardId, maxCount: 1),
+                    secondConsumer.RunBatchAsync(ShardId, maxCount: 1));
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                // A separate, pre-existing checkpoint-advance race (CloudProjectionCheckpoint.Advance
+                // rejecting a redelivered event's sequence number) can surface once this loop's
+                // aggressive maxCount:1 racing builds up a backlog. That is not issue #34's P1 this
+                // test targets and is not fixed here (AGENTS.md: keep each pull request scoped to one
+                // issue) -- this test's own invariant is checked below against whatever the database
+                // actually ended up holding, regardless of how any individual race resolved.
+            }
+        }
+
+        await using var verifyContext = new CloudDbContext(options);
+        var duplicateOwners = await verifyContext.CloudNotifications
+            .GroupBy(n => new { n.OwnerId, n.Kind })
+            .Where(g => g.Count() > 1)
+            .Select(g => g.Key.OwnerId)
+            .ToListAsync();
+        Assert.IsEmpty(duplicateOwners, "Two consumer runs repeatedly racing the same still-unapplied events must never leave more than one notification row for the same (owner, kind).");
+    }
+
+    [TestMethod]
     public async Task RunBatchAsync_AfterTheCoalescedNotificationIsRead_TheNextTransferStartsAFreshNotification()
     {
         var options = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);

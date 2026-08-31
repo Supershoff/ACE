@@ -184,7 +184,23 @@ public sealed class CloudNotificationProjectionConsumer
         _context.ChangeTracker.Clear();
     }
 
-    private async Task<CloudProjectionEventOutcomeKind> ApplyOneEventAsync(
+    /// <summary>
+    /// A concurrent second consumer run racing this exact (ShardId, OwnerId, Kind) coalescing
+    /// decision inside <see cref="ApplyOneEventAttemptAsync"/> can lose a deadlock to this attempt's
+    /// own new locking read (AC Cloud Mule review of issue #34, P1) -- <see cref="CloudBoundaryRetry.ExecuteWithDeadlockRetryAsync{T}"/>
+    /// is the same helper <c>CloudAccountLinkGateway</c> already uses to retry a single lost deadlock
+    /// from scratch instead of misclassifying it as a poison event to dead-letter.
+    /// </summary>
+    private Task<CloudProjectionEventOutcomeKind> ApplyOneEventAsync(
+        string shardId,
+        CloudCustodyOutboxEvent evt,
+        Func<CloudProjectionFaultPoint, CloudCustodyOutboxEvent, Exception?>? poisonInjector,
+        CancellationToken cancellationToken) =>
+        CloudBoundaryRetry.ExecuteWithDeadlockRetryAsync(
+            () => ApplyOneEventAttemptAsync(shardId, evt, poisonInjector, cancellationToken),
+            cancellationToken: cancellationToken);
+
+    private async Task<CloudProjectionEventOutcomeKind> ApplyOneEventAttemptAsync(
         string shardId,
         CloudCustodyOutboxEvent evt,
         Func<CloudProjectionFaultPoint, CloudCustodyOutboxEvent, Exception?>? poisonInjector,
@@ -224,10 +240,24 @@ public sealed class CloudNotificationProjectionConsumer
             // notification was already coalesced into and then read. Filtering this lookup to only
             // unread rows would hide that row from the redelivery guard below and let the same
             // already-acknowledged event mint a brand-new spurious unread notification.
-            var mostRecentNotification = await _context.CloudNotifications
-                .Where(row => row.ShardId == shardId && row.OwnerId == evt.OwnerId && row.Kind == kind)
-                .OrderByDescending(row => row.LatestSourceSequenceNumber)
-                .FirstOrDefaultAsync(cancellationToken);
+            //
+            // FOR UPDATE: a plain read here let two concurrent consumer runs for the same
+            // (ShardId, OwnerId, Kind) both observe "nothing to coalesce into yet" from their own
+            // snapshot and each insert a separate row (AC Cloud Mule review of issue #34, P1). Locking
+            // this exact read serializes concurrent runs on the same channel: a second run either
+            // blocks behind this transaction's commit and then correctly coalesces/skips, or loses a
+            // deadlock that ApplyOneEventAsync's CloudBoundaryRetry.ExecuteWithDeadlockRetryAsync
+            // wrapper retries from scratch.
+            var mostRecentNotification = (await _context.CloudNotifications
+                .FromSqlInterpolated($"""
+                    SELECT * FROM CloudNotification
+                    WHERE ShardId = {shardId} AND OwnerId = {evt.OwnerId} AND Kind = {kind.ToString()}
+                    ORDER BY LatestSourceSequenceNumber DESC
+                    LIMIT 1
+                    FOR UPDATE
+                    """)
+                .ToListAsync(cancellationToken))
+                .FirstOrDefault();
 
             // CloudProjectionSequenceGuard.ShouldApply is the same row-level redelivery guard
             // CloudInventoryReadProjection.TryApply uses, applied here per notification row instead
