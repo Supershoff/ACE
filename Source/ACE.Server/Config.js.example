@@ -269,6 +269,20 @@
       "Enabled": true,
       "BindAddress": "127.0.0.1",
       "Port": 9600
+    },
+
+    // Operator-supplied ItemType-derived background and static UiEffect overlay DIDs (issue #24:
+    // "Select the shared background DID from the item's ItemType; it is not an item icon property").
+    // Every DID below still names a resource in this server's own active client_portal.dat; ACE never
+    // fabricates or hard-codes a mapping for any specific item, so an unconfigured category/effect
+    // simply composes without that layer. Values are examples only -- confirm each DID against your
+    // own DAT the same way issue #24's local extraction validation does before relying on it.
+    "IconOverlays": {
+      // Keyed by ACE.Cloud.Domain.CloudInventoryCategory's member name, e.g. "MeleeWeapons".
+      "ItemTypeBackgroundDidsByCategory": {},
+
+      // Keyed by ACE.Entity.Enum.UiEffects's member name, e.g. "Magical".
+      "UiEffectOverlayDidsByEffect": {}
     }
   }
 }

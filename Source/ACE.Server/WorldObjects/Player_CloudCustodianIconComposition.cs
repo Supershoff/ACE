@@ -1,6 +1,8 @@
 using System;
 using ACE.Cloud.Domain;
+using ACE.Common;
 using ACE.Database.Models.Shard;
+using ACE.Entity.Enum;
 using ACE.Entity.Enum.Properties;
 
 namespace ACE.Server.WorldObjects
@@ -8,23 +10,25 @@ namespace ACE.Server.WorldObjects
     /// <summary>
     /// Captures <see cref="CloudIconCompositionInputs"/> from a live or reconstructed native
     /// <see cref="WorldObject"/> (issue #34 human-acceptance correction: "complete icon-composition
-    /// inputs at the ACE world boundary"). Every field is a direct, already-typed WorldObject property
-    /// read -- no property lookup tables or examiner/skill-check context is involved -- so, unlike
+    /// inputs at the ACE world boundary"). Every item-weenie-property field is a direct, already-typed
+    /// WorldObject property read -- no examiner/skill-check context is involved -- so, unlike
     /// <see cref="Player.BuildAppraisalSnapshot"/>, this can run against a biota-reconstructed
     /// WorldObject with no live session (see <c>CloudCustodianManager.BackfillInventoryPropertiesAsync</c>),
     /// not only at deposit time.
     ///
     /// <see cref="CloudIconCompositionInputs.ItemTypeBackgroundDid"/> and
-    /// <see cref="CloudIconCompositionInputs.UiEffectDids"/> are left at their defaults (null / empty):
-    /// the ItemType-&gt;background mapping and still-glow overlay resolution are explicitly a
-    /// different, not-yet-owned issue's scope per <see cref="CloudIconCompositionInputs"/>'s own doc
-    /// comment, not something this correction fabricates.
+    /// <see cref="CloudIconCompositionInputs.UiEffectDids"/> are not item weenie properties (issue #24:
+    /// "Select the shared background DID from the item's ItemType; it is not an item icon property"),
+    /// so both are resolved through <see cref="CloudIconSharedOverlayResolver"/> against the operator's
+    /// configured <see cref="CloudMuleConfiguration.IconOverlays"/> mapping instead.
     /// </summary>
     partial class Player
     {
         internal static CloudIconCompositionInputs BuildIconCompositionInputs(WorldObject item)
         {
             ArgumentNullException.ThrowIfNull(item);
+
+            var overlays = ConfigManager.Config.CloudMule.IconOverlays;
 
             return new CloudIconCompositionInputs
             {
@@ -37,6 +41,10 @@ namespace ACE.Server.WorldObjects
                 UnderlayDid = item.IconUnderlayId,
                 OverlayDid = item.IconOverlayId,
                 OverlaySecondaryDid = item.IconOverlaySecondary,
+                ItemTypeBackgroundDid = CloudIconSharedOverlayResolver.ResolveItemTypeBackgroundDid(
+                    item.ItemType, item.WeenieType, overlays.ItemTypeBackgroundDidsByCategory),
+                UiEffectDids = CloudIconSharedOverlayResolver.ResolveUiEffectDids(
+                    item.UiEffects, overlays.UiEffectOverlayDidsByEffect),
             };
         }
 
@@ -54,6 +62,10 @@ namespace ACE.Server.WorldObjects
             ArgumentNullException.ThrowIfNull(biota);
 
             var iconId = biota.GetProperty(PropertyDataId.Icon);
+            var overlays = ConfigManager.Config.CloudMule.IconOverlays;
+            var itemType = (ItemType)(uint)(biota.GetProperty(PropertyInt.ItemType) ?? 0);
+            var weenieType = (WeenieType)biota.WeenieType;
+            var uiEffects = biota.GetProperty(PropertyInt.UiEffects) is int rawUiEffects ? (UiEffects)rawUiEffects : (UiEffects?)null;
 
             return new CloudIconCompositionInputs
             {
@@ -66,6 +78,10 @@ namespace ACE.Server.WorldObjects
                 UnderlayDid = biota.GetProperty(PropertyDataId.IconUnderlay),
                 OverlayDid = biota.GetProperty(PropertyDataId.IconOverlay),
                 OverlaySecondaryDid = biota.GetProperty(PropertyDataId.IconOverlaySecondary),
+                ItemTypeBackgroundDid = CloudIconSharedOverlayResolver.ResolveItemTypeBackgroundDid(
+                    itemType, weenieType, overlays.ItemTypeBackgroundDidsByCategory),
+                UiEffectDids = CloudIconSharedOverlayResolver.ResolveUiEffectDids(
+                    uiEffects, overlays.UiEffectOverlayDidsByEffect),
             };
         }
     }

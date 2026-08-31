@@ -64,6 +64,8 @@ internal static class CloudBoundaryTestFixtureData
         "CloudGlobalMaintenance",
         "CloudStorageQuotaLimits",
         "CloudStorageQuotaOwnerLock",
+        "CloudAppraisalSnapshotProjection",
+        "CloudIconCompositionInputsProjection",
         "CloudShardBinding",
     ];
 

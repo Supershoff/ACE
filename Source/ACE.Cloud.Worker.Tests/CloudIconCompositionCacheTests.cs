@@ -123,6 +123,52 @@ public sealed class CloudIconCompositionCacheTests
     }
 
     [TestMethod]
+    public async Task GetOrComposeAsync_BackgroundBaseOverlayAndMagicalUiEffect_AlterTheCacheKeyAndComposedBytes()
+    {
+        // Issue #34's follow-up human-acceptance correction: ItemTypeBackgroundDid and UiEffectDids
+        // used to be dropped before ever reaching composition; this proves that once resolved and
+        // supplied, all four layers (background, base, overlay, and a final magical UiEffect) actually
+        // participate in the composed cache key/bytes, not just the base icon.
+        var storageRoot = CreateTempStorageRoot();
+        try
+        {
+            var blobStore = new LocalProtectedAssetBlobStore(new CloudAssetStorageOptions { RootDirectory = storageRoot });
+            var cache = new CloudIconCompositionCache(blobStore);
+
+            const uint overlayDid = 0x06006C34;
+            const uint backgroundDid = 0x060011D3;
+            const uint uiEffectDid = 0x06000777;
+
+            var baseOnly = new CloudIconCompositionInputs { BaseIconDid = BaseIconDid };
+            var everyLayer = new CloudIconCompositionInputs
+            {
+                BaseIconDid = BaseIconDid,
+                OverlayDid = overlayDid,
+                ItemTypeBackgroundDid = backgroundDid,
+                UiEffectDids = [uiEffectDid],
+            };
+
+            var layerSource = new CountingLayerSource(delay: null);
+            layerSource.SetResolved(CloudIconLayerKind.BaseIcon, BaseIconDid, 2, 2, 10, 20, 30, 255);
+            layerSource.SetResolved(CloudIconLayerKind.Overlay, overlayDid, 2, 2, 40, 50, 60, 255);
+            layerSource.SetResolved(CloudIconLayerKind.Background, backgroundDid, 2, 2, 70, 80, 90, 255);
+            layerSource.SetResolved(CloudIconLayerKind.UiEffect, uiEffectDid, 2, 2, 0, 0, 255, 128);
+
+            var baseOnlyEntry = await cache.GetOrComposeAsync(baseOnly, 1, new FakeClothingResolver(), layerSource);
+            var everyLayerEntry = await cache.GetOrComposeAsync(everyLayer, 1, new FakeClothingResolver(), layerSource);
+
+            Assert.AreEqual(CloudIconCompositionOutcomeKind.Composed, baseOnlyEntry.Outcome);
+            Assert.AreEqual(CloudIconCompositionOutcomeKind.Composed, everyLayerEntry.Outcome);
+            Assert.AreNotEqual(baseOnlyEntry.CacheKey, everyLayerEntry.CacheKey);
+            CollectionAssert.AreNotEqual(baseOnlyEntry.PngBytes, everyLayerEntry.PngBytes);
+        }
+        finally
+        {
+            Directory.Delete(storageRoot, recursive: true);
+        }
+    }
+
+    [TestMethod]
     public async Task GetOrComposeAsync_SameDidUnderADifferentManifestVersion_NeverServesTheOldManifestsBytes()
     {
         // Issue #28's Red requirement: "cache poisoning attempt". Simulates a DAT re-import (ASSET-002

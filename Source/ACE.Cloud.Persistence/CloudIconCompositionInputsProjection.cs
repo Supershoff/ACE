@@ -44,6 +44,12 @@ public sealed class CloudIconCompositionInputsProjection
 
     public uint? OverlaySecondaryDid { get; private set; }
 
+    /// <summary>The resolved shared background DID for the item's ItemType, if the operator has one configured.</summary>
+    public uint? ItemTypeBackgroundDid { get; private set; }
+
+    /// <summary>Still magical/imbue-glow overlay DIDs, in draw order. Empty when the item has none active.</summary>
+    public IReadOnlyList<uint> UiEffectDids { get; private set; } = Array.Empty<uint>();
+
     /// <summary>Caller-supplied monotonic write guard (see this type's doc comment); 0 means never written.</summary>
     public long Revision { get; private set; }
 
@@ -89,18 +95,19 @@ public sealed class CloudIconCompositionInputsProjection
         row.UnderlayDid = inputs.UnderlayDid;
         row.OverlayDid = inputs.OverlayDid;
         row.OverlaySecondaryDid = inputs.OverlaySecondaryDid;
+        row.ItemTypeBackgroundDid = inputs.ItemTypeBackgroundDid;
+        row.UiEffectDids = inputs.UiEffectDids ?? Array.Empty<uint>();
         row.Revision = revision;
         row.UpdatedAtUtc = DateTime.UtcNow;
         return (row, Applied: true);
     }
 
     /// <summary>
-    /// Reconstructs the <see cref="CloudIconCompositionInputs"/> this row was written from.
-    /// <see cref="CloudIconCompositionInputs.ItemTypeBackgroundDid"/> and
-    /// <see cref="CloudIconCompositionInputs.UiEffectDids"/> are not persisted (issue #24's
-    /// ItemType-&gt;background mapping and still-glow resolution are out of this issue's scope, per
-    /// <see cref="CloudIconCompositionInputs"/>'s own doc comment) and are always resolved fresh by
-    /// the caller.
+    /// Reconstructs the <see cref="CloudIconCompositionInputs"/> this row was written from, including
+    /// the ACE-world-boundary-resolved <see cref="CloudIconCompositionInputs.ItemTypeBackgroundDid"/>
+    /// and <see cref="CloudIconCompositionInputs.UiEffectDids"/> (issue #34 human-acceptance
+    /// correction: both are now captured and persisted like every other field here, not left for a
+    /// caller that has no route back to the operator's configured mapping).
     /// </summary>
     public CloudIconCompositionInputs ToInputs() => new()
     {
@@ -113,5 +120,7 @@ public sealed class CloudIconCompositionInputsProjection
         UnderlayDid = UnderlayDid,
         OverlayDid = OverlayDid,
         OverlaySecondaryDid = OverlaySecondaryDid,
+        ItemTypeBackgroundDid = ItemTypeBackgroundDid,
+        UiEffectDids = UiEffectDids,
     };
 }

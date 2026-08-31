@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
 
 namespace ACE.Cloud.Persistence;
 
@@ -1518,6 +1519,19 @@ public sealed class CloudDbContext : DbContext
             entity.Property(row => row.SetupTableId).IsRequired();
             entity.Property(row => row.IgnoreCloIcons).IsRequired();
             entity.Property(row => row.Revision).IsRequired();
+
+            var uiEffectDidsProperty = entity.Property(row => row.UiEffectDids)
+                .IsRequired()
+                .HasConversion(
+                    dids => string.Join(',', dids),
+                    csv => string.IsNullOrEmpty(csv)
+                        ? Array.Empty<uint>()
+                        : csv.Split(',', StringSplitOptions.RemoveEmptyEntries).Select(uint.Parse).ToArray())
+                .HasMaxLength(512);
+            uiEffectDidsProperty.Metadata.SetValueComparer(new ValueComparer<IReadOnlyList<uint>>(
+                (left, right) => left!.SequenceEqual(right!),
+                dids => dids.Aggregate(0, (hash, did) => HashCode.Combine(hash, did)),
+                dids => dids.ToArray()));
 
             entity.Property(row => row.UpdatedAtUtc)
                 .IsRequired()

@@ -26,5 +26,11 @@ namespace ACE.Common
         /// path degrades gracefully -- rather than hanging -- while the ACE world process is offline.
         /// </summary>
         public CloudMuleHealthEndpointConfiguration HealthEndpoint { get; set; } = new CloudMuleHealthEndpointConfiguration();
+
+        /// <summary>
+        /// Operator-supplied ItemType-derived background and static UiEffect overlay DIDs (issue #34
+        /// human-acceptance correction). See <see cref="CloudMuleIconOverlayConfiguration"/>.
+        /// </summary>
+        public CloudMuleIconOverlayConfiguration IconOverlays { get; set; } = new CloudMuleIconOverlayConfiguration();
     }
 }
