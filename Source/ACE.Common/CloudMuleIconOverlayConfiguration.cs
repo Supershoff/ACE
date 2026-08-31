@@ -19,11 +19,11 @@ namespace ACE.Common
         /// already uses (CONTEXT.md's "Inventory Category"), so this correction does not invent a
         /// second, competing ItemType priority order.
         /// </summary>
-        public Dictionary<string, uint> ItemTypeBackgroundDidsByCategory { get; set; } = new();
+        public Dictionary<string, uint> ItemTypeBackgroundDidsByCategory { get; set; } = new Dictionary<string, uint>();
 
         /// <summary>
         /// Keyed by <c>ACE.Entity.Enum.UiEffects</c>'s enum member name (for example <c>"Magical"</c>).
         /// </summary>
-        public Dictionary<string, uint> UiEffectOverlayDidsByEffect { get; set; } = new();
+        public Dictionary<string, uint> UiEffectOverlayDidsByEffect { get; set; } = new Dictionary<string, uint>();
     }
 }
