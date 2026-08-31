@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 using ACE.Cloud.Domain;
 using ACE.Entity;
@@ -57,17 +58,30 @@ namespace ACE.Server.WorldObjects
         {
             Name = "Cloud Custodian";
 
-            // Nothing is offered for sale (DEP-001: never a personal vendor with resale inventory).
-            // MerchandiseItemTypes/MinValue/MaxValue no longer gate incoming sell rows -- Player_Commerce
-            // .HandleActionSellItem routes every Cloud Custodian sale to Player.HandleCloudCustodianDeposit
-            // before VerifySellItems ever runs, and Cloud eligibility is decided by
-            // CloudItemEligibilityPolicy instead of an ItemType bitmask -- but these are still kept
-            // non-null so ValidateVendorRequirements() passes and the vendor window opens normally.
-            MerchandiseItemTypes = 0;
+            // Manager-spawned Custodians use dynamic GUIDs and are not generator children. Without
+            // an explicit never-rot value ACE classifies them like dropped world objects and removes
+            // them after WorldObject.DefaultTimeToRot (five minutes).
+            TimeToRot = CloudCustodianRuntimePolicy.NeverRot;
+
+            // A Custodian may be based on any ordinary Vendor weenie selected by the operator. Do
+            // not inherit that template's shop inventory: the Custodian is a deposit-only endpoint
+            // and must never offer merchandise (DEP-001).
+            CloudCustodianRuntimePolicy.RemoveInheritedShopInventory(Biota.PropertiesCreateList);
+
+            DefaultItemsForSale.Clear();
+            UniqueItemsForSale.Clear();
+
+            // These values are sent to the retail client when the vendor window opens. A zero item
+            // mask makes the client refuse every drag before HandleCloudCustodianDeposit can apply
+            // the authoritative CloudItemEligibilityPolicy. Advertise the complete protocol mask
+            // here, then let the server return the precise Cloud rejection for ineligible rows.
+            MerchandiseItemTypes = CloudCustodianRuntimePolicy.ClientAcceptedItemTypes;
             MerchandiseMinValue = 0;
-            MerchandiseMaxValue = 0;
+            MerchandiseMaxValue = int.MaxValue;
+            DealMagicalItems = true;
             BuyPrice = 0;
             SellPrice = 0;
+            OpenForBusiness = true;
         }
 
         /// <inheritdoc />
@@ -102,6 +116,30 @@ namespace ACE.Server.WorldObjects
         {
             throw new InvalidOperationException(
                 "CloudCustodian.ProcessItemsForPurchase must never be called; Cloud Custodian sales route through Player.HandleCloudCustodianDeposit.");
+        }
+    }
+
+    /// <summary>
+    /// Testable protocol/runtime invariants for dynamically spawned Cloud Custodians. These stay
+    /// separate from the authoritative per-item eligibility policy: their only purpose is to keep
+    /// the NPC alive, present an unrestricted client deposit pane, and suppress inherited stock.
+    /// </summary>
+    internal static class CloudCustodianRuntimePolicy
+    {
+        internal static double NeverRot => -1;
+        internal static int ClientAcceptedItemTypes => unchecked((int)uint.MaxValue);
+
+        internal static void RemoveInheritedShopInventory(ICollection<PropertiesCreateList> createList)
+        {
+            if (createList is null)
+                return;
+
+            foreach (var shopItem in createList
+                .Where(item => item.DestinationType == DestinationType.Shop)
+                .ToList())
+            {
+                createList.Remove(shopItem);
+            }
         }
     }
 }
