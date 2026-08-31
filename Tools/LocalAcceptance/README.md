@@ -107,7 +107,7 @@ This, in order:
 3. Waits for ACE's real `worldBoundaryHealthEndpoint` (its own `CloudWorldBoundaryHealthHost`, not a fake listener) to report live, then checks `/cloudmule/deposit-readiness` on the same origin and reports every remaining blocker -- ShardId mismatch, a missing/mismatched `CloudShardBinding`, a missing or non-Vendor Custodian weenie, or zero resolved Custodian locations -- before doing anything else.
 4. Starts the ACE Auth Bridge, `ACE.Cloud.Backend`, and `ACE.Cloud.Worker` as background processes (logs under `.local-run/logs/`), with their shared protected asset storage under the git-ignored `.local-run/protected-assets/` directory.
 5. Waits for the Backend's `/health/ready` to report ready.
-6. Builds the web client (`npm run build`; skip with `-SkipWebBuild` to reuse a previous build) and starts `same-origin-proxy.mjs`, a small dependency-free Node proxy that serves the built web client and proxies its API calls to the Backend from one origin (matching how the app's `fetch()` calls -- and its cookie-based session -- expect to work).
+6. Installs the exact locked web dependencies (`npm ci`), builds the web client (`npm run build`; skip both with `-SkipWebBuild` to reuse a previous build), and starts `same-origin-proxy.mjs`, a small dependency-free Node proxy that serves the built web client and proxies its API calls to the Backend from one origin (matching how the app's `fetch()` calls -- and its cookie-based session -- expect to work).
 7. Prints the local URL once the proxy itself reports ready.
 
 ## 6. Run the human acceptance checklist

@@ -178,10 +178,18 @@ if (-not $backendReady) {
     exit 1
 }
 
+# Persist the service PIDs before the web build so Stop-LocalAcceptance.ps1 can always clean up a
+# partial run if dependency installation or compilation fails.
+$processRecords | ConvertTo-Json -AsArray | Set-Content -Path $pidFile
+
 if (-not $SkipWebBuild) {
     Write-Host "Building the web client..." -ForegroundColor Cyan
     Push-Location (Join-Path $repoRoot "Source/ACE.Cloud.Web")
     try {
+        npm ci
+        if ($LASTEXITCODE -ne 0) {
+            throw "npm ci failed."
+        }
         npm run build
         if ($LASTEXITCODE -ne 0) {
             throw "npm run build failed."
