@@ -92,6 +92,12 @@ public sealed class CloudNotification
         OccurrenceCount++;
         LatestSourceEventId = sourceEventId;
         LatestSourceSequenceNumber = sourceSequenceNumber;
+        var nowUtc = DateTime.UtcNow;
+        if (FirstOccurredAtUtc == default)
+        {
+            FirstOccurredAtUtc = nowUtc;
+        }
+        LastOccurredAtUtc = nowUtc;
     }
 
     public void MarkRead(DateTime nowUtc)

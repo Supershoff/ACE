@@ -12,6 +12,7 @@ using ACE.Cloud.Domain;
 using ACE.Cloud.Persistence;
 using ACE.Common;
 using ACE.Database;
+using ACE.Database.Models.Shard;
 using ACE.Entity;
 using ACE.Entity.Enum;
 using ACE.Entity.Enum.Properties;
@@ -100,12 +101,89 @@ namespace ACE.Server.Managers
                 return;
             }
 
+            await BackfillInventoryPropertiesAsync(shardId).ConfigureAwait(false);
+
             var marketplacePosition = ResolveMarketplacePosition();
             var mansions = ResolveMansionLocations();
 
             var desired = CloudCustodianLocationResolver.Resolve(configuration, marketplacePosition, mansions);
 
             WorldManager.EnqueueAction(new ActionEventDelegate(() => ApplyPlanOnWorldThread(configuration, desired)));
+        }
+
+        /// <summary>
+        /// Repairs missing disposable inventory-display rows from the authoritative native biotas
+        /// ACE deliberately retains while they are in Cloud custody. Deposit-time capture normally
+        /// creates these rows; this bounded startup/reapply pass covers deployments upgraded from an
+        /// earlier build and transient projection-write failures without giving a companion service
+        /// direct access to ace_shard (ARCH-002/ARCH-004).
+        /// </summary>
+        private static async Task BackfillInventoryPropertiesAsync(string shardId, CancellationToken cancellationToken = default)
+        {
+            const int maxRowsPerPass = 500;
+
+            try
+            {
+                var options = CloudDbContextOptionsFactory.Create(BuildCloudConnectionString());
+                await using var context = new CloudDbContext(options);
+
+                var missing = await context.CloudCustodyRecords
+                    .AsNoTracking()
+                    .Where(record => record.ShardId == shardId)
+                    .Where(record => !context.CloudInventoryItemPropertiesProjections.Any(properties => properties.BiotaId == record.BiotaId))
+                    .OrderBy(record => record.BiotaId)
+                    .Select(record => new { record.BiotaId, record.Version })
+                    .Take(maxRowsPerPass)
+                    .ToListAsync(cancellationToken)
+                    .ConfigureAwait(false);
+
+                var gateway = new CloudInventoryItemPropertiesGateway(context);
+                var applied = 0;
+
+                foreach (var candidate in missing)
+                {
+                    var biota = DatabaseManager.Shard.BaseDatabase.GetBiota(candidate.BiotaId, doNotAddToCache: true);
+                    if (biota is null)
+                    {
+                        log.Warn($"AC Cloud Mule: Cloud custody record 0x{candidate.BiotaId:X8} has no retained native biota; inventory property backfill skipped it.");
+                        continue;
+                    }
+
+                    var name = biota.GetProperty(PropertyString.Name);
+                    if (string.IsNullOrWhiteSpace(name))
+                    {
+                        name = $"Item 0x{candidate.BiotaId:X8}";
+                    }
+
+                    var itemType = (ItemType)(uint)(biota.GetProperty(PropertyInt.ItemType) ?? 0);
+                    var wasApplied = await gateway.UpsertAsync(
+                        candidate.BiotaId,
+                        shardId,
+                        name,
+                        itemType,
+                        (WeenieType)biota.WeenieType,
+                        biota.GetProperty(PropertyInt.Value),
+                        biota.GetProperty(PropertyInt.EncumbranceVal),
+                        iconCacheKeyHex: null,
+                        revision: candidate.Version,
+                        cancellationToken)
+                        .ConfigureAwait(false);
+
+                    if (wasApplied)
+                    {
+                        applied++;
+                    }
+                }
+
+                if (applied > 0)
+                {
+                    log.Info($"AC Cloud Mule: backfilled inventory display properties for {applied} Cloud custody record(s).");
+                }
+            }
+            catch (Exception ex)
+            {
+                log.Error("AC Cloud Mule: inventory property backfill failed; custody remains authoritative and a later reapply will retry it.", ex);
+            }
         }
 
         /// <summary>

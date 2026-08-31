@@ -145,7 +145,13 @@ namespace ACE.Server.WorldObjects
                 decision,
                 shardId,
                 CloudOwnerIdentity.ForAccount(shardId, depositAccountId),
-                CloudOwnerIdentity.DepositIdempotencyKey(shardId, item.Guid.Full));
+                CloudOwnerIdentity.DepositIdempotencyKey(shardId, item.Guid.Full),
+                new CloudInventoryPropertyCapture(
+                    item.Name,
+                    item.ItemType,
+                    item.WeenieType,
+                    item.Value,
+                    item.EncumbranceVal));
         }
 
         /// <summary>
@@ -229,6 +235,10 @@ namespace ACE.Server.WorldObjects
                     var outcome = await boundary.DepositStackAsync(
                         pending.Item.Guid.Full, pending.ShardId, pending.OwnerId, pending.Decision.Quantity, pending.IdempotencyKey,
                         preservationRequirements: pending.Decision.PreservationRequirements);
+                    if (outcome.Kind == CloudBoundaryOutcomeKind.Committed)
+                    {
+                        await UpsertInventoryPropertiesAsync(pending, outcome.Value!.CustodyRecord.Version);
+                    }
                     return (outcome.Kind, outcome.Reason);
                 }
                 else
@@ -236,6 +246,10 @@ namespace ACE.Server.WorldObjects
                     var outcome = await boundary.DepositAsync(
                         pending.Item.Guid.Full, pending.ShardId, pending.OwnerId, pending.IdempotencyKey,
                         preservationRequirements: pending.Decision.PreservationRequirements);
+                    if (outcome.Kind == CloudBoundaryOutcomeKind.Committed)
+                    {
+                        await UpsertInventoryPropertiesAsync(pending, outcome.Value!.Version);
+                    }
                     return (outcome.Kind, outcome.Reason);
                 }
             }
@@ -243,6 +257,39 @@ namespace ACE.Server.WorldObjects
             {
                 cloudCustodianLog.Error($"[CLOUD CUSTODIAN] Deposit of 0x{pending.Item.Guid.Full:X8}:{pending.Item.Name} for player {Name} threw.", ex);
                 return (CloudBoundaryOutcomeKind.Unavailable, null);
+            }
+        }
+
+        /// <summary>
+        /// Captures the minimum item display/category fields while ACE still has the live
+        /// <see cref="WorldObject"/>. This projection is disposable and deliberately commits after
+        /// authoritative custody; a projection failure must never roll back or misreport a deposit
+        /// that the custody boundary already committed. Startup backfill in
+        /// <see cref="CloudCustodianManager"/> repairs any such missed capture from the retained
+        /// native biota.
+        /// </summary>
+        private async Task UpsertInventoryPropertiesAsync(PendingCloudDeposit pending, int revision)
+        {
+            try
+            {
+                using var context = new CloudDbContext(CloudDbContextOptionsFactory.Create(CloudCustodianManager.BuildCloudConnectionString()));
+                var gateway = new CloudInventoryItemPropertiesGateway(context);
+                await gateway.UpsertAsync(
+                    pending.Item.Guid.Full,
+                    pending.ShardId,
+                    pending.Properties.Name,
+                    pending.Properties.ItemType,
+                    pending.Properties.WeenieType,
+                    pending.Properties.Value,
+                    pending.Properties.Burden,
+                    iconCacheKeyHex: null,
+                    revision);
+            }
+            catch (Exception ex)
+            {
+                cloudCustodianLog.Warn(
+                    $"[CLOUD CUSTODIAN] Deposit of 0x{pending.Item.Guid.Full:X8}:{pending.Item.Name} committed, but its rebuildable inventory display projection could not be captured; startup backfill will retry it.",
+                    ex);
             }
         }
 
@@ -446,7 +493,15 @@ namespace ACE.Server.WorldObjects
             CloudCustodianDepositRowDecision Decision,
             string ShardId,
             Guid OwnerId,
-            Guid IdempotencyKey);
+            Guid IdempotencyKey,
+            CloudInventoryPropertyCapture Properties);
+
+        private sealed record CloudInventoryPropertyCapture(
+            string Name,
+            ItemType ItemType,
+            WeenieType WeenieType,
+            int? Value,
+            int? Burden);
 
         /// <summary>
         /// Runs <paramref name="persist"/> and reports any exception it throws to

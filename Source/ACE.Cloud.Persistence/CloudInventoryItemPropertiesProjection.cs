@@ -114,6 +114,7 @@ public sealed class CloudInventoryItemPropertiesProjection
         row.Burden = burden;
         row.IconCacheKeyHex = iconCacheKeyHex;
         row.Revision = revision;
+        row.UpdatedAtUtc = DateTime.UtcNow;
         return (row, Applied: true);
     }
 }

@@ -1393,8 +1393,7 @@ public sealed class CloudDbContext : DbContext
 
             entity.Property(checkpoint => checkpoint.UpdatedAtUtc)
                 .IsRequired()
-                .ValueGeneratedOnAddOrUpdate()
-                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+                .ValueGeneratedNever();
         });
 
         modelBuilder.Entity<CloudProjectionDeadLetter>(entity =>
@@ -1420,8 +1419,7 @@ public sealed class CloudDbContext : DbContext
 
             entity.Property(entry => entry.CreatedAtUtc)
                 .IsRequired()
-                .ValueGeneratedOnAdd()
-                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+                .ValueGeneratedNever();
         });
 
         modelBuilder.Entity<CloudInventoryReadProjection>(entity =>
@@ -1446,8 +1444,7 @@ public sealed class CloudDbContext : DbContext
 
             entity.Property(row => row.UpdatedAtUtc)
                 .IsRequired()
-                .ValueGeneratedOnAddOrUpdate()
-                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+                .ValueGeneratedNever();
         });
 
         modelBuilder.Entity<CloudInventoryItemPropertiesProjection>(entity =>
@@ -1475,8 +1472,7 @@ public sealed class CloudDbContext : DbContext
 
             entity.Property(row => row.UpdatedAtUtc)
                 .IsRequired()
-                .ValueGeneratedOnAddOrUpdate()
-                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+                .ValueGeneratedNever();
         });
 
         modelBuilder.Entity<CloudCharacterIdentityReadProjection>(entity =>
@@ -1501,8 +1497,7 @@ public sealed class CloudDbContext : DbContext
 
             entity.Property(row => row.UpdatedAtUtc)
                 .IsRequired()
-                .ValueGeneratedOnAddOrUpdate()
-                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+                .ValueGeneratedNever();
         });
 
         modelBuilder.Entity<CloudLiveStreamEvent>(entity =>
@@ -1534,8 +1529,7 @@ public sealed class CloudDbContext : DbContext
 
             entity.Property(evt => evt.CreatedAtUtc)
                 .IsRequired()
-                .ValueGeneratedOnAdd()
-                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+                .ValueGeneratedNever();
         });
 
         modelBuilder.Entity<CloudLiveStreamSequence>(entity =>
@@ -1709,13 +1703,11 @@ public sealed class CloudDbContext : DbContext
 
             entity.Property(notification => notification.FirstOccurredAtUtc)
                 .IsRequired()
-                .ValueGeneratedOnAdd()
-                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+                .ValueGeneratedNever();
 
             entity.Property(notification => notification.LastOccurredAtUtc)
                 .IsRequired()
-                .ValueGeneratedOnAddOrUpdate()
-                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+                .ValueGeneratedNever();
 
             entity.Property(notification => notification.ReadAtUtc);
         });

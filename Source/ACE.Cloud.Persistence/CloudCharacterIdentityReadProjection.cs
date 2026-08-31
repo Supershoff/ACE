@@ -71,6 +71,7 @@ public sealed class CloudCharacterIdentityReadProjection
         }
 
         row.LastAppliedSequenceNumber = evt.SequenceNumber;
+        row.UpdatedAtUtc = DateTime.UtcNow;
         return (row, Applied: true);
     }
 }

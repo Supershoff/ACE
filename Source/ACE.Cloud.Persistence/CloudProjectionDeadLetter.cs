@@ -49,6 +49,7 @@ public sealed class CloudProjectionDeadLetter
         SourceEventId = sourceEventId;
         SourceSequenceNumber = sourceSequenceNumber;
         Reason = reason.Length > 512 ? reason[..512] : reason;
+        CreatedAtUtc = DateTime.UtcNow;
     }
 
     public Guid Id { get; private set; }
