@@ -83,7 +83,7 @@ public sealed class CloudShardBindingBootstrapperTests
         await CloudShardBindingBootstrapper.BootstrapAsync(
             _fixture.CloudConnectionString, ShardId, SchemaVersion, AceExtensionVersion, ContractProtocolVersion);
 
-        await Assert.ThrowsExceptionAsync<CloudShardBindingMismatchException>(() =>
+        await Assert.ThrowsExactlyAsync<CloudShardBindingMismatchException>(() =>
             CloudShardBindingBootstrapper.BootstrapAsync(
                 _fixture.CloudConnectionString, "a-different-shard", SchemaVersion, AceExtensionVersion, ContractProtocolVersion));
 
@@ -98,7 +98,7 @@ public sealed class CloudShardBindingBootstrapperTests
         await CloudShardBindingBootstrapper.BootstrapAsync(
             _fixture.CloudConnectionString, ShardId, SchemaVersion, AceExtensionVersion, ContractProtocolVersion);
 
-        await Assert.ThrowsExceptionAsync<CloudShardBindingMismatchException>(() =>
+        await Assert.ThrowsExactlyAsync<CloudShardBindingMismatchException>(() =>
             CloudShardBindingBootstrapper.BootstrapAsync(
                 _fixture.CloudConnectionString, ShardId, SchemaVersion, "9.9.9-does-not-match", ContractProtocolVersion));
 

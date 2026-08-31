@@ -92,7 +92,7 @@ namespace ACE.Server.Tests
             Assert.IsNull(CloudWorldBoundaryHealthHost.ListenAddress);
 
             using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
-            await Assert.ThrowsExceptionAsync<HttpRequestException>(
+            await Assert.ThrowsExactlyAsync<HttpRequestException>(
                 () => client.GetAsync(new Uri(address, "health/live")));
         }
 
