@@ -46,6 +46,8 @@ namespace ACE.Server.Managers
 
         private static readonly Dictionary<CloudCustodianLocationKey, CloudCustodian> _spawned = new();
 
+        private static IReadOnlyList<CloudCustodianLocation> _desiredLocations = Array.Empty<CloudCustodianLocation>();
+
         private static CloudCustodianConfiguration _currentConfiguration;
 
         /// <summary>
@@ -398,6 +400,7 @@ namespace ACE.Server.Managers
         {
             lock (_stateLock)
             {
+                _desiredLocations = desired;
                 var plan = CloudCustodianSpawnPlanner.Plan(desired, _spawned.Keys.ToList());
 
                 foreach (var key in plan.ToDespawn)
@@ -418,6 +421,44 @@ namespace ACE.Server.Managers
                 }
 
                 _currentConfiguration = configuration;
+            }
+        }
+
+        /// <summary>
+        /// Reconciles configuration-owned runtime Custodians when ACE loads a landblock. A dynamic
+        /// Custodian must not be saved to ace_shard, so normal empty-landblock unloading destroys
+        /// it. The tracked reference then points at an object no longer in the world. Replacing that
+        /// stale reference here makes Marketplace and Mansion Custodians available when a player
+        /// arrives without persisting duplicates or permanently loading hundreds of landblocks.
+        /// Called by <see cref="LandblockManager.GetLandblock"/> after its own lock is released.
+        /// </summary>
+        internal static void OnLandblockLoaded(LandblockId landblockId)
+        {
+            if (!ConfigManager.Config.CloudMule.Enabled)
+                return;
+
+            lock (_stateLock)
+            {
+                if (_currentConfiguration is null)
+                    return;
+
+                foreach (var location in _desiredLocations.Where(location =>
+                    new LandblockId(location.Position.Landblock).Landblock == landblockId.Landblock))
+                {
+                    if (_spawned.TryGetValue(location.Key, out var tracked))
+                    {
+                        if (!CloudCustodianRuntimePolicy.ShouldRespawn(hasTrackedInstance: true, tracked.CurrentLandblock is not null))
+                            continue;
+
+                        _spawned.Remove(location.Key);
+                        if (tracked.CurrentLandblock is not null)
+                            tracked.Destroy();
+                    }
+
+                    var replacement = SpawnCustodian(location, _currentConfiguration.Version);
+                    if (replacement is not null)
+                        _spawned[location.Key] = replacement;
+                }
             }
         }
 

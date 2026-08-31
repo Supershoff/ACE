@@ -129,6 +129,9 @@ namespace ACE.Server.WorldObjects
         internal static double NeverRot => -1;
         internal static int ClientAcceptedItemTypes => unchecked((int)uint.MaxValue);
 
+        internal static bool ShouldRespawn(bool hasTrackedInstance, bool trackedInstanceIsInWorld) =>
+            !hasTrackedInstance || !trackedInstanceIsInWorld;
+
         internal static void RemoveInheritedShopInventory(ICollection<PropertiesCreateList> createList)
         {
             if (createList is null)

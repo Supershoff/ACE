@@ -14,6 +14,18 @@ namespace ACE.Cloud.ServerSeamsTests;
 public sealed class CloudCustodianRuntimePolicyTests
 {
     [TestMethod]
+    [DataRow(false, false, true)]
+    [DataRow(true, false, true)]
+    [DataRow(true, true, false)]
+    public void ShouldRespawn_ReplacesMissingOrUnloadedRuntimeInstance(
+        bool hasTrackedInstance,
+        bool trackedInstanceIsInWorld,
+        bool expected)
+    {
+        Assert.AreEqual(expected, CloudCustodianRuntimePolicy.ShouldRespawn(hasTrackedInstance, trackedInstanceIsInWorld));
+    }
+
+    [TestMethod]
     public void RuntimePresentation_IsPermanentAndLetsTheServerEvaluateEveryClientRow()
     {
         Assert.AreEqual(-1d, CloudCustodianRuntimePolicy.NeverRot);
