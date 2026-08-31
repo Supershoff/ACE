@@ -112,11 +112,6 @@ jobs:
             if [ "${conclusion}" = success ]; then
               gh workflow run claude-review.yml --repo "${GITHUB_REPOSITORY}" --ref master \
                 -f head_branch="${branch}" -f tested_sha="${sha}"
-            elif [ "${conclusion}" = action_required ]; then
-              # No jobs ran (GitHub gated the pull_request-triggered run before it started); this
-              # is not a code failure, so re-run the exact SHA via workflow_dispatch instead of
-              # spending a bounded Claude CI-repair cycle on it.
-              gh workflow run cloud-mule-ci.yml --repo "${GITHUB_REPOSITORY}" --ref "${branch}"
             else
               repair_for_sha="$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${number}/comments?per_page=100" | \
                 jq -r "[.[][] | select(.body | contains(\"${sha} -->\")) | select(.body | contains(\"<!-- claude-ci-repair:\"))] | length")"
