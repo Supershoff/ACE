@@ -1,5 +1,8 @@
 import { Route, Routes } from "react-router-dom";
+import { ActivityLedgerPage } from "./activity/ActivityLedgerPage";
+import { LiveStreamStaleBanner } from "./design-system/primitives/LiveStreamStaleBanner";
 import { ReadOnlyBanner } from "./design-system/primitives/ReadOnlyBanner";
+import { NotificationCenter } from "./notifications/NotificationCenter";
 import { AccountOverviewPage } from "./pages/AccountOverviewPage";
 import { AdminPage } from "./pages/AdminPage";
 import { DashboardPage } from "./pages/DashboardPage";
@@ -15,15 +18,23 @@ import { useSession } from "./session/SessionContext";
 const NAV_ITEMS = [
   { to: "/", label: "Marketplace" },
   { to: "/dashboard", label: "Dashboard" },
+  { to: "/activity", label: "Activity" },
   { to: "/account", label: "Account" },
 ];
 
 export function App() {
-  const { serviceAvailability } = useSession();
-  const banner = serviceAvailability === "unknown" ? null : <ReadOnlyBanner mode={serviceAvailability} />;
+  const { status, serviceAvailability, liveStream } = useSession();
+  const readOnlyBanner = serviceAvailability === "unknown" ? null : <ReadOnlyBanner mode={serviceAvailability} />;
+  const staleBanner = status === "authenticated" && liveStream.stale ? <LiveStreamStaleBanner /> : null;
+  const banner = readOnlyBanner || staleBanner ? (
+    <>
+      {readOnlyBanner}
+      {staleBanner}
+    </>
+  ) : null;
 
   return (
-    <AppShell navItems={NAV_ITEMS} banner={banner}>
+    <AppShell navItems={NAV_ITEMS} banner={banner} headerActions={<NotificationCenter />}>
       <ErrorBoundary>
         <Routes>
           <Route path="/" element={<MarketplacePage />} />
@@ -33,6 +44,14 @@ export function App() {
             element={
               <RequireAuth>
                 <DashboardPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/activity"
+            element={
+              <RequireAuth>
+                <ActivityLedgerPage />
               </RequireAuth>
             }
           />

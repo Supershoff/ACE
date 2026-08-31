@@ -302,3 +302,11 @@ Database/tools/password.txt
 docker.env
 docker-compose.yml
 docker-compose.arm64
+
+# AC Cloud Mule web client build output
+Source/ACE.Cloud.Web/dist/
+
+# Local acceptance launcher (issue #34): operator-supplied local secrets/config and run state, never
+# checked in -- only the *.example.json template and the scripts themselves are committed.
+Tools/LocalAcceptance/acceptance.settings.json
+Tools/LocalAcceptance/.local-run/

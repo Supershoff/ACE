@@ -4,6 +4,17 @@ using Microsoft.EntityFrameworkCore;
 namespace ACE.Cloud.Persistence;
 
 /// <summary>
+/// Interface-extracted (mirroring <see cref="ICloudInventoryQueryReader"/>) so
+/// <c>ACE.Cloud.Backend.Tests</c> can substitute an in-memory fake for the resumable stream endpoint
+/// test instead of a real MariaDB-backed <see cref="CloudDbContext"/>.
+/// </summary>
+public interface ICloudLiveStreamReader
+{
+    Task<IReadOnlyList<CloudLiveStreamEvent>> ReadAfterAsync(
+        CloudLiveStreamViewer viewer, long afterSequenceNumber, int maxCount, CancellationToken cancellationToken = default);
+}
+
+/// <summary>
 /// Read-only, authorization-scoped access to the Live State Stream (EVT-007). Filtering happens
 /// inside the database query itself, not by fetching everything and filtering client-side, matching
 /// the security baseline's "Search indexes and live streams must be scoped before data leaves the
@@ -12,7 +23,7 @@ namespace ACE.Cloud.Persistence;
 /// (a new browser tab, a laptop that just woke up) exactly the same "resume after any gap" guarantee
 /// <see cref="CloudCustodyOutboxReader.ReadAfterAsync"/> already gives a backend consumer.
 /// </summary>
-public sealed class CloudLiveStreamReader
+public sealed class CloudLiveStreamReader : ICloudLiveStreamReader
 {
     private readonly CloudDbContext _context;
 

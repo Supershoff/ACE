@@ -3,11 +3,32 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { InventoryView } from "./InventoryView";
 import { fakeInventoryApi, makeInventoryItem, makeQueryResponse } from "./testFakes";
+import { SessionContext, type SessionContextValue } from "../session/SessionContext";
+
+function baseSession(overrides: Partial<SessionContextValue> = {}): SessionContextValue {
+  return {
+    status: "authenticated",
+    csrfToken: "csrf",
+    accountKind: "Main",
+    accountName: "MainPlayer",
+    serviceAvailability: "Operational",
+    liveStream: { status: "idle", stale: false },
+    login: vi.fn(),
+    logout: vi.fn(),
+    checkAdminAccess: vi.fn(async () => ({ checked: true, isAdmin: false, accessLevel: null })),
+    subscribeLiveStream: vi.fn(() => vi.fn()),
+    ...overrides,
+  };
+}
 
 describe("InventoryView", () => {
   it("shows a loading state and then the fetched Mule Page", async () => {
     const api = fakeInventoryApi();
-    render(<InventoryView inventoryApi={api} />);
+    render(
+      <SessionContext.Provider value={baseSession()}>
+        <InventoryView inventoryApi={api} />
+      </SessionContext.Provider>,
+    );
 
     expect(screen.getByRole("status")).toBeInTheDocument();
     await waitFor(() => expect(screen.getByRole("option", { name: "Ivory Buckler" })).toBeInTheDocument());
@@ -18,7 +39,11 @@ describe("InventoryView", () => {
     const api = fakeInventoryApi({
       queryPages: vi.fn(async () => ({ ok: false, status: 500, error: {} })),
     });
-    render(<InventoryView inventoryApi={api} />);
+    render(
+      <SessionContext.Provider value={baseSession()}>
+        <InventoryView inventoryApi={api} />
+      </SessionContext.Provider>,
+    );
 
     await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
   });
@@ -27,7 +52,11 @@ describe("InventoryView", () => {
     const api = fakeInventoryApi({
       queryPages: vi.fn(async () => ({ ok: false, status: 403, error: { error: "linked_account_restricted" } })),
     });
-    render(<InventoryView inventoryApi={api} />);
+    render(
+      <SessionContext.Provider value={baseSession()}>
+        <InventoryView inventoryApi={api} />
+      </SessionContext.Provider>,
+    );
 
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(/Main Account/));
   });
@@ -36,7 +65,11 @@ describe("InventoryView", () => {
     const api = fakeInventoryApi({
       queryPages: vi.fn(async () => ({ ok: true, status: 200, data: makeQueryResponse([]) })),
     });
-    render(<InventoryView inventoryApi={api} />);
+    render(
+      <SessionContext.Provider value={baseSession()}>
+        <InventoryView inventoryApi={api} />
+      </SessionContext.Provider>,
+    );
 
     await waitFor(() => expect(screen.getByText("No items here")).toBeInTheDocument());
   });
@@ -44,7 +77,11 @@ describe("InventoryView", () => {
   it("opens the Full Cloud Appraisal dialog when an item is activated", async () => {
     const api = fakeInventoryApi();
     const user = userEvent.setup();
-    render(<InventoryView inventoryApi={api} />);
+    render(
+      <SessionContext.Provider value={baseSession()}>
+        <InventoryView inventoryApi={api} />
+      </SessionContext.Provider>,
+    );
 
     await waitFor(() => screen.getByRole("option", { name: "Ivory Buckler" }));
     await user.click(screen.getByRole("option", { name: "Ivory Buckler" }));
@@ -59,7 +96,11 @@ describe("InventoryView", () => {
       queryPages: vi.fn(async () => ({ ok: true, status: 200, data: makeQueryResponse([makeInventoryItem({ quantity: 8 })]) })),
     });
     const user = userEvent.setup();
-    render(<InventoryView inventoryApi={api} />);
+    render(
+      <SessionContext.Provider value={baseSession()}>
+        <InventoryView inventoryApi={api} />
+      </SessionContext.Provider>,
+    );
 
     await waitFor(() => screen.getByRole("option", { name: /Ivory Buckler/ }));
     await user.click(screen.getByRole("option", { name: /Ivory Buckler/ }));
@@ -71,7 +112,11 @@ describe("InventoryView", () => {
   it("switching to spreadsheet view still shows the same fetched items", async () => {
     const api = fakeInventoryApi();
     const user = userEvent.setup();
-    render(<InventoryView inventoryApi={api} />);
+    render(
+      <SessionContext.Provider value={baseSession()}>
+        <InventoryView inventoryApi={api} />
+      </SessionContext.Provider>,
+    );
 
     await waitFor(() => screen.getByRole("option", { name: "Ivory Buckler" }));
     await user.click(screen.getByRole("button", { name: "Spreadsheet" }));
@@ -82,7 +127,11 @@ describe("InventoryView", () => {
   it("changing category resets to page 1 and re-queries", async () => {
     const api = fakeInventoryApi();
     const user = userEvent.setup();
-    render(<InventoryView inventoryApi={api} />);
+    render(
+      <SessionContext.Provider value={baseSession()}>
+        <InventoryView inventoryApi={api} />
+      </SessionContext.Provider>,
+    );
 
     await waitFor(() => screen.getByRole("option", { name: "Ivory Buckler" }));
     await user.selectOptions(screen.getByLabelText("Category"), "Currency");
@@ -94,7 +143,11 @@ describe("InventoryView", () => {
 
   it("disables Previous page on the first page and Next page on the last page", async () => {
     const api = fakeInventoryApi();
-    render(<InventoryView inventoryApi={api} />);
+    render(
+      <SessionContext.Provider value={baseSession()}>
+        <InventoryView inventoryApi={api} />
+      </SessionContext.Provider>,
+    );
 
     await waitFor(() => screen.getByRole("option", { name: "Ivory Buckler" }));
 

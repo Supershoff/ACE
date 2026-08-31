@@ -2,7 +2,12 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import { createAccountApi, type AccountApi } from "../api/accountApi";
 import { createAuthApi, type AuthApi } from "../api/authApi";
 import { createHttpClient } from "../api/httpClient";
+import type { CloudLiveStreamStatus } from "../api/liveStream";
+import { createResumableCloudLiveStreamClient, type CloudResumableLiveStreamClient, type CloudResumableLiveStreamOptions } from "../api/liveStreamClient";
+import { createCloudLiveStreamReconciler, type CloudLiveStreamRefreshScope } from "../api/liveStreamReconciler";
 import type { CloudServiceAvailabilityMode } from "../api/types";
+
+const LIVE_STREAM_URL = "/live-stream";
 
 /**
  * `"unknown"` means the client has no proof either way (e.g. a fresh page load): the session
@@ -32,10 +37,22 @@ export interface SessionContextValue {
   /** The Main Account name the user themself just typed to log in (AUTH-005's "type your Main account name to confirm" linking safeguard); null before login resolves. */
   readonly accountName: string | null;
   readonly serviceAvailability: CloudServiceAvailabilityMode | "unknown";
+  /** EVT-007: the shared Live State Stream connection's own transport state, not the service-availability mode it carries. */
+  readonly liveStream: {
+    readonly status: CloudLiveStreamStatus;
+    /** True whenever the connection is not currently open, so views built from a live subscription can flag their data as possibly out of date. */
+    readonly stale: boolean;
+  };
   login(accountName: string, password: string): Promise<{ ok: boolean }>;
   logout(): Promise<void>;
   /** ADM-001: always revalidates against the server; never trust a cached client-side claim. */
   checkAdminAccess(): Promise<AdminAccessStatus>;
+  /**
+   * Subscribes to coalesced, deduplicated Live State Stream refresh signals for one scope
+   * (issue #34: inventory/Activity Ledger both react to "custody" events, Notification Center to
+   * "notification" events). Returns an unsubscribe function.
+   */
+  subscribeLiveStream(scope: CloudLiveStreamRefreshScope, listener: () => void): () => void;
 }
 
 export const SessionContext = createContext<SessionContextValue | null>(null);
@@ -54,14 +71,18 @@ export interface SessionProviderProps {
   readonly authApi?: AuthApi;
   /** Overridable for tests; production code lets this default to the real Cloud backend client. */
   readonly accountApi?: AccountApi;
+  /** Overridable for tests; production code lets this default to a real resumable Live State Stream connection. */
+  readonly createLiveStreamClient?: (options: CloudResumableLiveStreamOptions) => CloudResumableLiveStreamClient;
 }
 
-export function SessionProvider({ children, authApi, accountApi }: SessionProviderProps) {
+export function SessionProvider({ children, authApi, accountApi, createLiveStreamClient }: SessionProviderProps) {
   const [status, setStatus] = useState<SessionStatus>("unknown");
   const [csrfToken, setCsrfToken] = useState<string | null>(null);
   const [accountKind, setAccountKind] = useState<AccountKind>("Unknown");
   const [accountName, setAccountName] = useState<string | null>(null);
   const [serviceAvailability, setServiceAvailability] = useState<CloudServiceAvailabilityMode | "unknown">("unknown");
+  const [liveStreamStatus, setLiveStreamStatus] = useState<CloudLiveStreamStatus>("idle");
+  const [liveStreamStale, setLiveStreamStale] = useState(true);
 
   const csrfTokenRef = useRef<string | null>(null);
   csrfTokenRef.current = csrfToken;
@@ -96,6 +117,54 @@ export function SessionProvider({ children, authApi, accountApi }: SessionProvid
     // banner, not a per-render-dependent value.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const liveStreamSubscribersRef = useRef<Map<CloudLiveStreamRefreshScope, Set<() => void>>>(new Map());
+
+  const subscribeLiveStream = useCallback((scope: CloudLiveStreamRefreshScope, listener: () => void): (() => void) => {
+    let listeners = liveStreamSubscribersRef.current.get(scope);
+    if (!listeners) {
+      listeners = new Set();
+      liveStreamSubscribersRef.current.set(scope, listeners);
+    }
+    listeners.add(listener);
+    return () => {
+      listeners!.delete(listener);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (status !== "authenticated") {
+      return;
+    }
+
+    const reconciler = createCloudLiveStreamReconciler({
+      onModeChange: (mode) => setServiceAvailability(mode),
+      onRefresh: (scope) => {
+        liveStreamSubscribersRef.current.get(scope)?.forEach((listener) => listener());
+      },
+    });
+
+    const resolvedCreateLiveStreamClient = createLiveStreamClient ?? createResumableCloudLiveStreamClient;
+    const client = resolvedCreateLiveStreamClient({
+      url: LIVE_STREAM_URL,
+      onMessage: (message) => reconciler.handleMessage(message),
+      onStatusChange: (nextStatus, nextStale) => {
+        setLiveStreamStatus(nextStatus);
+        setLiveStreamStale(nextStale);
+      },
+    });
+    client.connect();
+
+    return () => {
+      client.disconnect();
+      reconciler.dispose();
+      setLiveStreamStatus("idle");
+      setLiveStreamStale(true);
+    };
+    // Reconnects only when authentication status itself changes; createLiveStreamClient is a
+    // test-only override that is stable in production.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status]);
 
   const login = useCallback(
     async (typedAccountName: string, password: string): Promise<{ ok: boolean }> => {
@@ -142,9 +211,11 @@ export function SessionProvider({ children, authApi, accountApi }: SessionProvid
     accountKind,
     accountName,
     serviceAvailability,
+    liveStream: { status: liveStreamStatus, stale: liveStreamStale },
     login,
     logout,
     checkAdminAccess,
+    subscribeLiveStream,
   };
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;

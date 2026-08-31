@@ -242,7 +242,7 @@ public sealed class CloudCustodyProjectionConsumer
                     _context.CloudInventoryReadProjections.Add(row);
                 }
 
-                var liveStreamSequenceNumber = await ReserveNextLiveStreamSequenceNumberAsync(cancellationToken);
+                var liveStreamSequenceNumber = await CloudLiveStreamSequenceReserver.ReserveNextAsync(_context, cancellationToken);
                 _context.CloudLiveStreamEvents.Add(new CloudLiveStreamEvent(
                     shardId,
                     liveStreamSequenceNumber,
@@ -276,37 +276,5 @@ public sealed class CloudCustodyProjectionConsumer
             await _context.SaveChangesAsync(cancellationToken);
             return CloudProjectionEventOutcomeKind.DeadLettered;
         }
-    }
-
-    /// <summary>
-    /// Locks <see cref="CloudLiveStreamSequence"/>'s single row and returns the next durable order
-    /// position, the same pattern <c>CloudCustodyBoundary.ReserveNextOutboxSequenceNumberAsync</c>
-    /// uses for the Custody Outbox itself.
-    /// </summary>
-    private async Task<long> ReserveNextLiveStreamSequenceNumberAsync(CancellationToken cancellationToken)
-    {
-        var connection = _context.Database.GetDbConnection();
-        var transaction = _context.Database.CurrentTransaction?.GetDbTransaction();
-
-        long reserved;
-        await using (var read = connection.CreateCommand())
-        {
-            read.Transaction = transaction;
-            read.CommandText = "SELECT NextValue FROM CloudLiveStreamSequence WHERE Id = 1 FOR UPDATE;";
-            reserved = Convert.ToInt64(await read.ExecuteScalarAsync(cancellationToken));
-        }
-
-        await using (var update = connection.CreateCommand())
-        {
-            update.Transaction = transaction;
-            update.CommandText = "UPDATE CloudLiveStreamSequence SET NextValue = @nextValue WHERE Id = 1;";
-            var parameter = update.CreateParameter();
-            parameter.ParameterName = "@nextValue";
-            parameter.Value = reserved + 1;
-            update.Parameters.Add(parameter);
-            await update.ExecuteNonQueryAsync(cancellationToken);
-        }
-
-        return reserved;
     }
 }
