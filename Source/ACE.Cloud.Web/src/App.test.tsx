@@ -11,9 +11,11 @@ function baseSessionValue(overrides: Partial<SessionContextValue> = {}): Session
     accountKind: "Unknown",
     accountName: null,
     serviceAvailability: "Operational",
+    liveStream: { status: "idle", stale: false },
     login: vi.fn(async () => ({ ok: true })),
     logout: vi.fn(async () => {}),
     checkAdminAccess: vi.fn(async () => ({ checked: true, isAdmin: false, accessLevel: null })),
+    subscribeLiveStream: vi.fn(() => vi.fn()),
     ...overrides,
   };
 }
@@ -52,5 +54,22 @@ describe("App routing", () => {
   it("shows the offline/read-only banner across the shell when the database is unavailable", () => {
     renderApp(baseSessionValue({ status: "unauthenticated", serviceAvailability: "ReadOnly" }));
     expect(screen.getByRole("status")).toHaveTextContent(/read-only/i);
+  });
+
+  it("shows an authenticated-only logout control and invokes the session logout", () => {
+    const logout = vi.fn(async () => {});
+    const { rerender } = renderApp(baseSessionValue({ status: "authenticated", logout }), "/dashboard");
+
+    screen.getByRole("button", { name: "Log out" }).click();
+    expect(logout).toHaveBeenCalledOnce();
+
+    rerender(
+      <SessionContext.Provider value={baseSessionValue({ status: "unauthenticated" })}>
+        <MemoryRouter initialEntries={["/"]}>
+          <App />
+        </MemoryRouter>
+      </SessionContext.Provider>,
+    );
+    expect(screen.queryByRole("button", { name: "Log out" })).not.toBeInTheDocument();
   });
 });

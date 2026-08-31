@@ -65,6 +65,7 @@ public sealed class CloudLiveStreamEvent
         EventKind = eventKind;
         SourceEventId = sourceEventId;
         SourceSequenceNumber = sourceSequenceNumber;
+        CreatedAtUtc = DateTime.UtcNow;
     }
 
     public Guid Id { get; private set; }

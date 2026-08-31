@@ -121,6 +121,7 @@ public static class CloudInventoryEndpoints
         ICloudAccountOwnershipResolver accountOwnershipResolver,
         ICloudInventoryQueryReader inventoryQueryReader,
         ICloudInventoryItemPropertiesGateway propertiesGateway,
+        ICloudAppraisalSnapshotGateway appraisalSnapshotGateway,
         CloudBackendOptions options,
         CancellationToken cancellationToken)
     {
@@ -154,20 +155,21 @@ public static class CloudInventoryEndpoints
             return notFound;
         }
 
-        // UI-004's full ACE appraisal fields (description, requirements, armor/weapon profiles,
-        // spells) require a future ACE-side raw-property capture integration this issue does not add
-        // -- the same deliberately deferred integration seam CloudInventoryItemPropertiesProjection's
-        // own doc comment already accepts for category classification. Until that lands, the panel is
-        // built from the only player-facing fields this Cloud schema currently captures; it is still a
-        // complete, character-independent, non-GM-field panel for exactly the data available, never a
-        // partially revealed or skill-gated one.
-        var snapshot = new CloudAppraisalRawItemSnapshot
-        {
-            ItemId = cloudItemId,
-            Name = properties.Name,
-            Value = properties.Value,
-            Burden = properties.Burden,
-        };
+        // Issue #34: ACE's world-boundary deposit/backfill code now captures the complete appraisal
+        // snapshot (workmanship/material, spells, armor/weapon profiles, requirements, descriptions,
+        // ...) into CloudAppraisalSnapshotProjection. A custody row deposited before this correction,
+        // or one whose snapshot capture failed, has no row there yet; it falls back to the same
+        // Name/Value/Burden-only panel this endpoint always served, which is still a complete,
+        // character-independent, non-GM-field panel for exactly the data available, never a partially
+        // revealed or skill-gated one.
+        var snapshot = await appraisalSnapshotGateway.TryGetAsync(itemId, options.ShardId, cancellationToken)
+            ?? new CloudAppraisalRawItemSnapshot
+            {
+                ItemId = cloudItemId,
+                Name = properties.Name,
+                Value = properties.Value,
+                Burden = properties.Burden,
+            };
 
         return Results.Ok(ToWireResponse(CloudAppraisalProjector.Build(snapshot)));
     }

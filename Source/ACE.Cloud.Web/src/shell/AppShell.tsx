@@ -12,12 +12,14 @@ export interface AppShellProps {
   readonly navItems: readonly NavItemDefinition[];
   readonly children: ReactNode;
   readonly banner?: ReactNode;
+  /** Rendered in the header alongside primary navigation, e.g. the Notification Center. */
+  readonly headerActions?: ReactNode;
 }
 
 const MAIN_CONTENT_ID = "main-content";
 const NAV_ID = "app-shell-primary-nav";
 
-export function AppShell({ navItems, children, banner }: AppShellProps) {
+export function AppShell({ navItems, children, banner, headerActions }: AppShellProps) {
   const isNarrow = useIsNarrowViewport();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
@@ -69,6 +71,7 @@ export function AppShell({ navItems, children, banner }: AppShellProps) {
             ))}
           </ul>
         </nav>
+        {headerActions}
       </header>
       <main id={MAIN_CONTENT_ID} tabIndex={-1} className="app-shell__main">
         {children}

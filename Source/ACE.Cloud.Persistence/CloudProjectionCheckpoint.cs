@@ -30,6 +30,7 @@ public sealed class CloudProjectionCheckpoint
         ConsumerName = consumerName;
         ShardId = shardId;
         LastAppliedSequenceNumber = 0;
+        UpdatedAtUtc = DateTime.UtcNow;
     }
 
     /// <summary>Stable identity of the consumer this checkpoint belongs to, for example "CustodyProjection".</summary>
@@ -56,11 +57,13 @@ public sealed class CloudProjectionCheckpoint
         }
 
         LastAppliedSequenceNumber = sequenceNumber;
+        UpdatedAtUtc = DateTime.UtcNow;
     }
 
     /// <summary>Resets this checkpoint back to empty for a full rebuild (issue #22's Green "full rebuild commands").</summary>
     internal void ResetForRebuild()
     {
         LastAppliedSequenceNumber = 0;
+        UpdatedAtUtc = DateTime.UtcNow;
     }
 }

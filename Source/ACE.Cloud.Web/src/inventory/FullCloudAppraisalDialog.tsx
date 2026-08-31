@@ -1,5 +1,5 @@
 import { useId } from "react";
-import { appraisalColorTokens } from "../design-system/inventoryFidelityTokens";
+import { appraisalColorTokens, appraisalLayoutTokens } from "../design-system/inventoryFidelityTokens";
 import { Dialog } from "../design-system/primitives/Dialog";
 import { LoadingState } from "../design-system/primitives/LoadingState";
 import { ErrorState } from "../design-system/primitives/ErrorState";
@@ -23,10 +23,44 @@ const textStyleColor: Record<CloudAppraisalTextStyle, string> = {
   Negative: appraisalColorTokens.negativeText,
 };
 
-const panelStyle = {
+/**
+ * Applied to the dialog box itself (not just an inner content div) so the AC parchment/brass
+ * treatment covers the whole panel, including its title -- matching the native ID panel's compact
+ * typography and dark translucent surface instead of the shell's generic dialog chrome. The "brass
+ * double edge" is a solid brass border plus an inset dark ring drawn via box-shadow.
+ */
+const dialogStyle = {
   backgroundColor: appraisalColorTokens.panelBackground,
   borderColor: appraisalColorTokens.panelBorderLight,
+  borderWidth: appraisalLayoutTokens.doubleEdgeBorderWidth,
+  borderStyle: "solid",
+  boxShadow: `inset 0 0 0 ${appraisalLayoutTokens.doubleEdgeInsetWidth} ${appraisalColorTokens.panelBorderDark}`,
+  fontFamily: appraisalLayoutTokens.fontFamily,
 } as const;
+
+const dialogTitleStyle = {
+  color: appraisalColorTokens.titleText,
+  fontFamily: appraisalLayoutTokens.fontFamily,
+  fontSize: appraisalLayoutTokens.titleFontSize,
+} as const;
+
+/** Scrollable so a long panel (armor/weapon stats, spells, requirements, ...) never overflows the dialog. */
+const bodyStyle = {
+  padding: appraisalLayoutTokens.bodyPadding,
+  maxHeight: appraisalLayoutTokens.bodyMaxHeight,
+  overflowY: "auto",
+} as const;
+
+const sectionStyle = {
+  marginBottom: appraisalLayoutTokens.sectionSpacing,
+} as const;
+
+const lineStyle = (color: string) =>
+  ({
+    color,
+    fontSize: appraisalLayoutTokens.bodyFontSize,
+    margin: 0,
+  }) as const;
 
 /**
  * UI-004's Full Cloud Appraisal: a faithful, always-complete, character-independent reconstruction
@@ -46,15 +80,26 @@ export function FullCloudAppraisalDialog({
   const titleId = useId();
 
   return (
-    <Dialog open={open} onClose={onClose} titleId={titleId} title={`${itemName} — Full Cloud Appraisal`}>
-      <div className="full-cloud-appraisal" style={panelStyle}>
+    <Dialog
+      open={open}
+      onClose={onClose}
+      titleId={titleId}
+      title={`${itemName} — Full Cloud Appraisal`}
+      style={dialogStyle}
+      titleStyle={dialogTitleStyle}
+    >
+      <div className="full-cloud-appraisal" style={bodyStyle}>
         {isLoading ? <LoadingState label="Appraising…" /> : null}
         {!isLoading && error ? <ErrorState title="Appraisal unavailable" description={error} onRetry={onRetry} /> : null}
         {!isLoading && !error && panel
           ? panel.sections.map((section) => (
-              <section key={section.kind} className={`full-cloud-appraisal__section full-cloud-appraisal__section--${section.kind}`}>
+              <section
+                key={section.kind}
+                className={`full-cloud-appraisal__section full-cloud-appraisal__section--${section.kind}`}
+                style={sectionStyle}
+              >
                 {section.lines.map((line, lineIndex) => (
-                  <p key={lineIndex} style={{ color: textStyleColor[line.style] }}>
+                  <p key={lineIndex} style={lineStyle(textStyleColor[line.style])}>
                     {line.text}
                   </p>
                 ))}

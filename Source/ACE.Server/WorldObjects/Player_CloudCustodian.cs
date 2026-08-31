@@ -36,8 +36,34 @@ namespace ACE.Server.WorldObjects
         /// eligibility, quantity, or duplicate checks -- or whose deposit is rejected by the Cloud
         /// persistence boundary -- stays with the player and reports its exact reason, while every
         /// other valid row in the same submission still deposits.
+        ///
+        /// Always completes the client's outstanding vendor-sell transaction exactly once, on every
+        /// exit path including an unhandled exception (human-acceptance regression, issue #34): a
+        /// Cloud deposit bypasses <see cref="Vendor.ProcessItemsForPurchase"/>, which is the only
+        /// place an ordinary sale calls <c>ApproachVendor</c> to tell the client the sale finished.
+        /// Without it the client believes a sell is still pending and refuses to reopen the same
+        /// Custodian with "You can only move or use one item at a time."
         /// </summary>
         public void HandleCloudCustodianDeposit(CloudCustodian custodian, List<ItemProfile> itemProfiles)
+        {
+            RunWithGuaranteedVendorCompletion(
+                () => HandleCloudCustodianDepositCore(custodian, itemProfiles),
+                () => custodian.ApproachVendor(this, VendorType.Sell),
+                ex =>
+                {
+                    cloudCustodianLog.Error($"[CLOUD CUSTODIAN] Deposit submission for player {Name} threw.", ex);
+                    Session.Network.EnqueueSend(new GameEventInventoryServerSaveFailed(Session, Guid.Full));
+                    SendUseDoneEvent();
+                });
+        }
+
+        /// <summary>
+        /// Validates and commits every submitted row independently (DEP-002): a row that fails
+        /// eligibility, quantity, or duplicate checks -- or whose deposit is rejected by the Cloud
+        /// persistence boundary -- stays with the player and reports its exact reason, while every
+        /// other valid row in the same submission still deposits.
+        /// </summary>
+        private void HandleCloudCustodianDepositCore(CloudCustodian custodian, List<ItemProfile> itemProfiles)
         {
             var shardId = ConfigManager.Config.CloudMule.ShardId;
 
@@ -145,7 +171,41 @@ namespace ACE.Server.WorldObjects
                 decision,
                 shardId,
                 CloudOwnerIdentity.ForAccount(shardId, depositAccountId),
-                CloudOwnerIdentity.DepositIdempotencyKey(shardId, item.Guid.Full));
+                CloudOwnerIdentity.DepositIdempotencyKey(shardId, item.Guid.Full),
+                new CloudInventoryPropertyCapture(
+                    item.Name,
+                    item.ItemType,
+                    item.WeenieType,
+                    item.Value,
+                    item.EncumbranceVal),
+                CaptureAppraisalSnapshot(item),
+                BuildIconCompositionInputs(item));
+        }
+
+        /// <summary>
+        /// Builds the complete, non-skill-gated appraisal snapshot (issue #34: "Capture the complete
+        /// rebuildable, player-facing appraisal snapshot ... at the ACE world boundary while the live
+        /// WorldObject exists") while <paramref name="item"/> is still this depositing player's own
+        /// live possession -- the same <c>success: true</c> full-disclosure call
+        /// <c>Player.HandleActionIdentifyObject</c> already makes for a successful ID, appropriate
+        /// here since this is the owner's own Cloud inventory, not another player's inspection.
+        /// Captured pre-deposit, alongside <see cref="CloudInventoryPropertyCapture"/>, so it never
+        /// depends on <paramref name="item"/>'s state surviving the Cloud custody commit.
+        /// </summary>
+        private CloudAppraisalRawItemSnapshot CaptureAppraisalSnapshot(WorldObject item)
+        {
+            try
+            {
+                var appraisal = new ACE.Server.Network.Structure.AppraiseInfo(item, this, success: true);
+                return BuildAppraisalSnapshot(new CloudItemId(item.Guid.Full), item.Name, appraisal);
+            }
+            catch (Exception ex)
+            {
+                cloudCustodianLog.Warn(
+                    $"[CLOUD CUSTODIAN] Failed to capture the appraisal snapshot for 0x{item.Guid.Full:X8}:{item.Name}; the Full Cloud Appraisal will fall back to its minimum fields.",
+                    ex);
+                return null;
+            }
         }
 
         /// <summary>
@@ -229,6 +289,10 @@ namespace ACE.Server.WorldObjects
                     var outcome = await boundary.DepositStackAsync(
                         pending.Item.Guid.Full, pending.ShardId, pending.OwnerId, pending.Decision.Quantity, pending.IdempotencyKey,
                         preservationRequirements: pending.Decision.PreservationRequirements);
+                    if (outcome.Kind == CloudBoundaryOutcomeKind.Committed)
+                    {
+                        await UpsertInventoryPropertiesAsync(pending, outcome.Value!.CustodyRecord.Version);
+                    }
                     return (outcome.Kind, outcome.Reason);
                 }
                 else
@@ -236,6 +300,10 @@ namespace ACE.Server.WorldObjects
                     var outcome = await boundary.DepositAsync(
                         pending.Item.Guid.Full, pending.ShardId, pending.OwnerId, pending.IdempotencyKey,
                         preservationRequirements: pending.Decision.PreservationRequirements);
+                    if (outcome.Kind == CloudBoundaryOutcomeKind.Committed)
+                    {
+                        await UpsertInventoryPropertiesAsync(pending, outcome.Value!.Version);
+                    }
                     return (outcome.Kind, outcome.Reason);
                 }
             }
@@ -243,6 +311,93 @@ namespace ACE.Server.WorldObjects
             {
                 cloudCustodianLog.Error($"[CLOUD CUSTODIAN] Deposit of 0x{pending.Item.Guid.Full:X8}:{pending.Item.Name} for player {Name} threw.", ex);
                 return (CloudBoundaryOutcomeKind.Unavailable, null);
+            }
+        }
+
+        /// <summary>
+        /// Captures the minimum item display/category fields while ACE still has the live
+        /// <see cref="WorldObject"/>. This projection is disposable and deliberately commits after
+        /// authoritative custody; a projection failure must never roll back or misreport a deposit
+        /// that the custody boundary already committed. Startup backfill in
+        /// <see cref="CloudCustodianManager"/> repairs any such missed capture from the retained
+        /// native biota.
+        /// </summary>
+        private async Task UpsertInventoryPropertiesAsync(PendingCloudDeposit pending, int revision)
+        {
+            try
+            {
+                using var context = new CloudDbContext(CloudDbContextOptionsFactory.Create(CloudCustodianManager.BuildCloudConnectionString()));
+                var gateway = new CloudInventoryItemPropertiesGateway(context);
+                await gateway.UpsertAsync(
+                    pending.Item.Guid.Full,
+                    pending.ShardId,
+                    pending.Properties.Name,
+                    pending.Properties.ItemType,
+                    pending.Properties.WeenieType,
+                    pending.Properties.Value,
+                    pending.Properties.Burden,
+                    iconCacheKeyHex: null,
+                    revision);
+            }
+            catch (Exception ex)
+            {
+                cloudCustodianLog.Warn(
+                    $"[CLOUD CUSTODIAN] Deposit of 0x{pending.Item.Guid.Full:X8}:{pending.Item.Name} committed, but its rebuildable inventory display projection could not be captured; startup backfill will retry it.",
+                    ex);
+            }
+
+            await UpsertAppraisalSnapshotAsync(pending, revision);
+            await UpsertIconCompositionInputsAsync(pending, revision);
+        }
+
+        /// <summary>
+        /// Persists the pre-deposit-captured appraisal snapshot (see
+        /// <see cref="CaptureAppraisalSnapshot"/>) so <c>CloudInventoryEndpoints.HandleGetAppraisalAsync</c>
+        /// can serve the complete Full Cloud Appraisal instead of the Name/Value/Burden-only fallback.
+        /// A failed capture (<see cref="PendingCloudDeposit.AppraisalSnapshot"/> is null) or a failed
+        /// write here never blocks or rolls back the already-committed deposit -- the same disposable-
+        /// projection contract <see cref="UpsertInventoryPropertiesAsync"/> itself follows.
+        /// </summary>
+        private async Task UpsertAppraisalSnapshotAsync(PendingCloudDeposit pending, int revision)
+        {
+            if (pending.AppraisalSnapshot is null)
+            {
+                return;
+            }
+
+            try
+            {
+                using var context = new CloudDbContext(CloudDbContextOptionsFactory.Create(CloudCustodianManager.BuildCloudConnectionString()));
+                var gateway = new CloudAppraisalSnapshotGateway(context);
+                await gateway.UpsertAsync(pending.Item.Guid.Full, pending.ShardId, pending.AppraisalSnapshot, revision);
+            }
+            catch (Exception ex)
+            {
+                cloudCustodianLog.Warn(
+                    $"[CLOUD CUSTODIAN] Deposit of 0x{pending.Item.Guid.Full:X8}:{pending.Item.Name} committed, but its appraisal snapshot could not be persisted; the Full Cloud Appraisal will fall back to its minimum fields.",
+                    ex);
+            }
+        }
+
+        /// <summary>
+        /// Persists the pre-deposit-captured icon composition inputs (see
+        /// <see cref="BuildIconCompositionInputs"/>) so a runtime icon composition worker can compose
+        /// this item's icon without direct ace_shard access. Same disposable-projection, never-blocks-
+        /// the-deposit contract as <see cref="UpsertAppraisalSnapshotAsync"/>.
+        /// </summary>
+        private async Task UpsertIconCompositionInputsAsync(PendingCloudDeposit pending, int revision)
+        {
+            try
+            {
+                using var context = new CloudDbContext(CloudDbContextOptionsFactory.Create(CloudCustodianManager.BuildCloudConnectionString()));
+                var gateway = new CloudIconCompositionInputsGateway(context);
+                await gateway.UpsertAsync(pending.Item.Guid.Full, pending.ShardId, pending.IconCompositionInputs, revision);
+            }
+            catch (Exception ex)
+            {
+                cloudCustodianLog.Warn(
+                    $"[CLOUD CUSTODIAN] Deposit of 0x{pending.Item.Guid.Full:X8}:{pending.Item.Name} committed, but its icon composition inputs could not be persisted; the icon composition worker will fall back to the neutral glyph.",
+                    ex);
             }
         }
 
@@ -441,12 +596,54 @@ namespace ACE.Server.WorldObjects
             return await Task.WhenAll(tasks);
         }
 
+        /// <summary>
+        /// Runs <paramref name="action"/> and always runs <paramref name="completeVendorTransaction"/>
+        /// afterward exactly once -- on ordinary completion, after <paramref name="action"/> throws, or
+        /// if <paramref name="completeVendorTransaction"/> itself throws -- reporting any exception to
+        /// <paramref name="onException"/> instead of letting it propagate and skip completion (issue
+        /// #34: an uncaught exception previously skipped the vendor-transaction completion entirely,
+        /// leaving the client's vendor pane permanently locked). Kept free of any live
+        /// WorldObject/Player dependency so it can run in a unit test.
+        /// </summary>
+        internal static void RunWithGuaranteedVendorCompletion(Action action, Action completeVendorTransaction, Action<Exception> onException)
+        {
+            try
+            {
+                action();
+            }
+            catch (Exception ex)
+            {
+                onException(ex);
+            }
+            finally
+            {
+                try
+                {
+                    completeVendorTransaction();
+                }
+                catch (Exception ex)
+                {
+                    onException(ex);
+                }
+            }
+        }
+
         private sealed record PendingCloudDeposit(
             WorldObject Item,
             CloudCustodianDepositRowDecision Decision,
             string ShardId,
             Guid OwnerId,
-            Guid IdempotencyKey);
+            Guid IdempotencyKey,
+            CloudInventoryPropertyCapture Properties,
+            CloudAppraisalRawItemSnapshot AppraisalSnapshot,
+            CloudIconCompositionInputs IconCompositionInputs);
+
+        private sealed record CloudInventoryPropertyCapture(
+            string Name,
+            ItemType ItemType,
+            WeenieType WeenieType,
+            int? Value,
+            int? Burden);
 
         /// <summary>
         /// Runs <paramref name="persist"/> and reports any exception it throws to

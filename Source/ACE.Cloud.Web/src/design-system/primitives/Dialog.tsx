@@ -1,4 +1,4 @@
-import { useEffect, useRef, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useRef, type CSSProperties, type MouseEvent, type ReactNode } from "react";
 
 export interface DialogProps {
   readonly open: boolean;
@@ -6,6 +6,10 @@ export interface DialogProps {
   readonly titleId: string;
   readonly title: string;
   readonly children: ReactNode;
+  /** Optional per-instance styling for the dialog box itself (e.g. a fidelity surface's own panel treatment). Never required -- omitting it preserves this primitive's plain default look. */
+  readonly style?: CSSProperties;
+  /** Optional per-instance styling for the `<h2>` title, independent of `style` above. */
+  readonly titleStyle?: CSSProperties;
 }
 
 const FOCUSABLE_SELECTOR =
@@ -18,7 +22,7 @@ function focusableElementsWithin(container: HTMLElement | null): HTMLElement[] {
   return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
 }
 
-export function Dialog({ open, onClose, titleId, title, children }: DialogProps) {
+export function Dialog({ open, onClose, titleId, title, children, style, titleStyle }: DialogProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const previouslyFocusedElementRef = useRef<HTMLElement | null>(null);
 
@@ -85,9 +89,10 @@ export function Dialog({ open, onClose, titleId, title, children }: DialogProps)
         aria-modal="true"
         aria-labelledby={titleId}
         className="dialog"
+        style={style}
         onClick={(event) => event.stopPropagation()}
       >
-        <h2 id={titleId} className="dialog__title">
+        <h2 id={titleId} className="dialog__title" style={titleStyle}>
           {title}
         </h2>
         {children}

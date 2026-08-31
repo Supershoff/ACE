@@ -24,15 +24,36 @@ export const appraisalColorTokens = {
   negativeText: "#e2574c",
 } as const;
 
+/**
+ * The Full Cloud Appraisal panel's own compact AC-style typography and layout, kept separate from
+ * `appraisalColorTokens` (which every renderable `CloudAppraisalLine` color routes through) since
+ * these govern structure/spacing rather than per-line color.
+ */
+export const appraisalLayoutTokens = {
+  fontFamily: '"Book Antiqua", "Palatino Linotype", Georgia, serif',
+  titleFontSize: "15px",
+  bodyFontSize: "13px",
+  /** The brass double-edge treatment: an outer brass border plus an inset dark ring drawn via box-shadow. */
+  doubleEdgeBorderWidth: "2px",
+  doubleEdgeInsetWidth: "2px",
+  sectionSpacing: "10px",
+  bodyPadding: "12px",
+  bodyMaxHeight: "70vh",
+} as const;
+
 export const iconGridTokens = {
   cellBackground: "#241c14",
   cellBorderLight: "#5a4a30",
   cellBorderDark: "#0c0904",
   cellSize: "48px",
+  /** ACE's native reconstructed icon resolution: icons render at this size, centered within the larger cell frame, never stretched to fill it. */
+  iconNativeSize: "32px",
   cellGap: "2px",
   desktopColumns: 6,
   desktopRows: 17,
-  selectedOutline: "#5fd0ff",
+  /** The classic AC bright-green selection outline, drawn as a separate overlay around the icon (UI-006) -- never the icon's own generic/blue cell highlight. */
+  selectionOutlineColor: "#39ff14",
+  selectionOutlineWidth: "2px",
   reservedBadgeBackground: "#8a3a2f",
   reservedBadgeText: "#f5e6d8",
   quantityBadgeBackground: "#0a0602",

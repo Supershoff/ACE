@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { axe, toHaveNoViolations } from "jest-axe";
 import { describe, expect, it, vi } from "vitest";
 import { MulePageGrid } from "./MulePageGrid";
+import { iconGridTokens } from "../design-system/inventoryFidelityTokens";
 import type { CloudInventoryItem } from "../api/types";
 
 expect.extend(toHaveNoViolations);
@@ -147,6 +148,49 @@ describe("MulePageGrid", () => {
     );
 
     expect(screen.getByRole("option", { name: "Ivory Buckler" })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("draws the AC-style bright green selection outline as a separate overlay, not on the icon itself", () => {
+    const items = [makeItem({ itemId: 1 })];
+    const { container } = render(
+      <MulePageGrid
+        pageName="[Armor] Mule 1"
+        items={items}
+        columns={6}
+        selectedKeys={new Set(["1"])}
+        activeKey={null}
+        onActivate={() => {}}
+        onFocusItem={() => {}}
+        buildIconUrl={buildIconUrl}
+      />,
+    );
+
+    const outline = container.querySelector(".mule-page-grid__selection-outline");
+    expect(outline).not.toBeNull();
+    expect(outline).toHaveStyle({ borderColor: iconGridTokens.selectionOutlineColor });
+
+    // The overlay is a sibling of the icon, not a style applied to the icon element itself, so
+    // selection can never alter the composed source icon (UI-006).
+    const icon = screen.getByRole("option", { name: "Ivory Buckler" }).querySelector(".inventory-icon");
+    expect(icon).not.toHaveStyle({ borderColor: iconGridTokens.selectionOutlineColor });
+  });
+
+  it("renders no selection outline overlay for an unselected item", () => {
+    const items = [makeItem({ itemId: 1 })];
+    const { container } = render(
+      <MulePageGrid
+        pageName="[Armor] Mule 1"
+        items={items}
+        columns={6}
+        selectedKeys={new Set()}
+        activeKey={null}
+        onActivate={() => {}}
+        onFocusItem={() => {}}
+        buildIconUrl={buildIconUrl}
+      />,
+    );
+
+    expect(container.querySelector(".mule-page-grid__selection-outline")).toBeNull();
   });
 
   it("Enter opens/activates the focused item", async () => {

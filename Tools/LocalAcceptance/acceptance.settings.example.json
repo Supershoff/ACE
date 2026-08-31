@@ -1,0 +1,39 @@
+{
+  "_comment": "Copy this file to acceptance.settings.json (git-ignored) in this same folder and replace every CHANGE_ME with your own disposable, local-only values. Never commit acceptance.settings.json -- it is your machine's local secrets file for a throwaway test stack, not a deployment artifact.",
+
+  "webUiPort": 4173,
+  "backendPort": 5280,
+  "workerHealthPort": 5290,
+  "authBridgePort": 5098,
+
+  "_databaseComment": "ace_cloud is created beside this disposable test world's ace_shard schema because custody invariants require cross-schema triggers. aceShardConnectionString supplies the local admin identity for migrations; dbUser/dbPassword define the restricted companion-service identity granted access only to ace_cloud.",
+  "dbUser": "cloud_acceptance",
+  "dbPassword": "CHANGE_ME_DISPOSABLE_PASSWORD",
+
+  "_worldComment": "Point these at a separately started ACE test world built from this PR branch -- this launcher never starts or bootstraps ACE itself unless you opt into aceServerProjectPath below. worldBoundaryHealthEndpoint is ACE's own CloudMule.HealthEndpoint (default port 9600); the deposit-readiness diagnostic lives alongside it at /cloudmule/deposit-readiness on the same origin.",
+  "worldBoundaryHealthEndpoint": "http://127.0.0.1:9600/health/live",
+  "aceAuthConnectionString": "Server=127.0.0.1;Port=3306;Database=ace_auth;User Id=CHANGE_ME;Password=CHANGE_ME;",
+
+  "_externalDatabaseComment": "Your already-existing ace_shard and ace_world databases, used ONLY for a read-only reachability check (Prepare-LocalAcceptanceCloudDatabase.ps1 and Test-AceWorldReadiness.ps1 run 'SELECT 1' against these -- they are never created, migrated, or purged by this launcher; only the disposable ace_cloud database is).",
+  "aceShardConnectionString": "Server=127.0.0.1;Port=3306;Database=ace_shard;User Id=CHANGE_ME;Password=CHANGE_ME;",
+  "aceWorldConnectionString": "Server=127.0.0.1;Port=3306;Database=ace_world;User Id=CHANGE_ME;Password=CHANGE_ME;",
+
+  "shardId": "CHANGE_ME_SHARD_ID",
+  "activeServiceKeyId": "CHANGE_ME_KEY_ID",
+  "activeServiceKeySecret": "CHANGE_ME_BASE64_SECRET",
+
+  "_versionComment": "The exact Cloud schema/ACE-extension/contract protocol versions this PR branch expects (matching Backend/Worker's own ExpectedAceExtensionVersion/ExpectedContractProtocolVersion defaults). Only change these if you know your ACE test world's CloudMule extension reports different versions.",
+  "cloudAceExtensionVersion": "0.1.0",
+  "cloudContractProtocolVersion": "0.1.0",
+
+  "_managedAceComment": "Optional. Leave blank (the default) to manage your own separately started ACE test world -- Start-LocalAcceptance.ps1 will then just wait for worldBoundaryHealthEndpoint and print instructions. Set this to the path of your ACE.Server project (e.g. '..\\..\\Source\\ACE.Server') to have Start-LocalAcceptance.ps1 also start/restart it as a managed background process, the same way it manages AuthBridge/Backend/Worker -- it is still never used against a non-disposable ACE instance; only point this at a test world you are willing to have this launcher restart.",
+  "aceServerProjectPath": "",
+
+  "_testAccountsComment": "Synthetic accounts you create on your disposable ACE test world for this launcher only -- never a real player's credentials.",
+  "testAccounts": {
+    "mainAccountName": "CHANGE_ME_SYNTHETIC_MAIN",
+    "mainAccountPassword": "CHANGE_ME_DISPOSABLE_PASSWORD",
+    "linkedAccountName": "CHANGE_ME_SYNTHETIC_LINKED",
+    "linkedAccountPassword": "CHANGE_ME_DISPOSABLE_PASSWORD"
+  }
+}

@@ -120,6 +120,37 @@ public sealed class CloudInventoryEndpointsTests
     }
 
     [TestMethod]
+    public async Task GetAppraisal_ItemHasCapturedSnapshot_ServesTheCompleteInGameStyleContent()
+    {
+        // Issue #34 human-acceptance correction: before ACE's world boundary captured the complete
+        // snapshot, this endpoint could only ever serve Name/Value/Burden. Once a
+        // CloudAppraisalSnapshotProjection row exists, the endpoint must serve it instead of the
+        // minimal fallback.
+        await using var factory = new BackendTestFactory();
+        var ownerId = CloudOwnerIdentity.ForAccount(ShardId, AccountId);
+        SeedWholeItem(factory, ownerId, "Ivory Buckler", CloudInventoryCategory.Armor, biotaId: 888, value: 100, burden: 20);
+        factory.AppraisalSnapshotGateway.Seed(888, new CloudAppraisalRawItemSnapshot
+        {
+            ItemId = new CloudItemId(888),
+            Name = "Ivory Buckler",
+            Value = 100,
+            Burden = 20,
+            Workmanship = 8,
+        });
+
+        using var client = await AuthenticatedClientAsync(factory, AccountId);
+
+        using var response = await client.GetAsync("/inventory/items/888/appraisal");
+
+        Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+        var panel = await response.Content.ReadFromJsonAsync<JsonNode>();
+        var sections = panel!["sections"]!.AsArray();
+        var allLineText = string.Join(
+            " ", sections.SelectMany(section => section!["lines"]!.AsArray()).Select(line => line!["text"]!.GetValue<string>()));
+        StringAssert.Contains(allLineText, "Workmanship: 8");
+    }
+
+    [TestMethod]
     public async Task GetIcon_NoSessionCookie_ReturnsUnauthorized()
     {
         await using var factory = new BackendTestFactory();

@@ -24,15 +24,33 @@ const gridStyle = (columns: number) =>
     gap: iconGridTokens.cellGap,
   }) as const;
 
-function cellStyle(isSelected: boolean) {
+function cellStyle() {
   return {
     width: iconGridTokens.cellSize,
     height: iconGridTokens.cellSize,
     backgroundColor: iconGridTokens.cellBackground,
-    borderColor: isSelected ? iconGridTokens.selectedOutline : iconGridTokens.cellBorderLight,
+    borderColor: iconGridTokens.cellBorderLight,
     position: "relative",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
   } as const;
 }
+
+/**
+ * The classic AC bright-green selection border, drawn as its own absolutely positioned overlay
+ * (UI-006: "Stack quantity, selection, reservation, and web badges are separate UI layers") --
+ * never a style applied to the cell or to `InventoryIcon` itself, so selecting an item can never
+ * alter the composed source icon underneath it.
+ */
+const selectionOutlineStyle = {
+  position: "absolute",
+  inset: 0,
+  borderColor: iconGridTokens.selectionOutlineColor,
+  borderWidth: iconGridTokens.selectionOutlineWidth,
+  borderStyle: "solid",
+  pointerEvents: "none",
+} as const;
 
 const quantityBadgeStyle = {
   position: "absolute",
@@ -143,7 +161,7 @@ export function MulePageGrid({
             aria-label={accessibleLabel(item)}
             tabIndex={key === effectiveActiveKey ? 0 : -1}
             className="mule-page-grid__cell"
-            style={{ ...cellStyle(isSelected), ...touchTargetStyle }}
+            style={{ ...cellStyle(), ...touchTargetStyle }}
             ref={(element) => {
               if (element) {
                 cellRefs.current.set(key, element);
@@ -157,6 +175,9 @@ export function MulePageGrid({
             onFocus={() => onFocusItem(item)}
           >
             <InventoryIcon name={item.name} iconCacheKeyHex={item.iconCacheKeyHex} buildIconUrl={buildIconUrl} />
+            {isSelected ? (
+              <span className="mule-page-grid__selection-outline" style={selectionOutlineStyle} aria-hidden="true" />
+            ) : null}
             {item.quantity > 1 ? (
               <span className="mule-page-grid__quantity-badge" style={quantityBadgeStyle}>
                 {item.quantity}
