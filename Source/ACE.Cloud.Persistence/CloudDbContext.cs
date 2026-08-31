@@ -1211,8 +1211,7 @@ public sealed class CloudDbContext : DbContext
 
             entity.Property(manifest => manifest.CreatedAtUtc)
                 .IsRequired()
-                .ValueGeneratedOnAdd()
-                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+                .ValueGeneratedNever();
 
             entity.Property(manifest => manifest.ActivatedAtUtc);
             entity.Property(manifest => manifest.SupersededAtUtc);

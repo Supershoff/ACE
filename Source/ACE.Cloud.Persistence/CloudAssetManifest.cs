@@ -50,6 +50,7 @@ public sealed class CloudAssetManifest
         SourceImportSessionId = sourceImportSessionId;
         EntryCount = entryCount;
         State = CloudAssetManifestState.StagingComplete;
+        CreatedAtUtc = DateTime.UtcNow;
     }
 
     public Guid Id { get; private set; }
