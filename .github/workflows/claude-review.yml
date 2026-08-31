@@ -125,6 +125,7 @@ jobs:
           gh api "repos/${GITHUB_REPOSITORY}/issues/comments/${COMMENT_ID}" --jq .body > .claude-review.md
 
       - name: Have Claude perform a read-only code review
+        id: claude_review
         if: steps.prepare.outputs.skip == 'false' && steps.prepare.outputs.reuse_review != 'true'
         uses: anthropics/claude-code-action@62529b7c89dbb8cfaa838f2c87f2f8459b46fe68 # v1
         with:
@@ -140,19 +141,38 @@ jobs:
             universal-quality, common-bugs, review-template, and checklist references. Validate
             material findings with focused read-only checks when practical. Prioritize custody,
             conservation, transactionality, concurrency, authorization, privacy, data loss,
-            compatibility, and missing regression tests. Write the final review to
-            .claude-review.md. Its first line must be exactly VERDICT: CLEAN or VERDICT: BLOCKING.
-            CLEAN means no P0/P1 defect; lower-severity advice may follow and must not block.
-            BLOCKING requires each defect to be labeled [P0] or [P1] with a precise file/line,
-            impact, evidence, and smallest safe correction. Do not report speculative findings.
+            compatibility, and missing regression tests. Return the final review through the required
+            structured output: set verdict to CLEAN or BLOCKING and put the Markdown review body in
+            review. CLEAN means no P0/P1 defect; lower-severity advice may follow and must not block.
+            BLOCKING requires each defect in review to be labeled [P0] or [P1] with a precise
+            file/line, impact, evidence, and smallest safe correction. Do not report speculative
+            findings and do not write any files.
           additional_permissions: |
             actions: read
             checks: read
           claude_args: |
             --max-turns 200
             --append-system-prompt "Act as an independent reviewer. The requested code-review skill is authoritative. Never approve code merely because CI is green."
-            --allowedTools "Read,Glob,Grep,Write,Bash(git status:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(dotnet restore:*),Bash(dotnet build:*),Bash(dotnet test:*),Bash(node:*),Bash(npm:*),Bash(npx:*),Bash(pnpm:*),Bash(gh issue view:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh run view:*),Bash(gh run list:*)"
+            --allowedTools "Read,Glob,Grep,Bash(git status:*),Bash(git log:*),Bash(git diff:*),Bash(git show:*),Bash(dotnet restore:*),Bash(dotnet build:*),Bash(dotnet test:*),Bash(node:*),Bash(npm:*),Bash(npx:*),Bash(pnpm:*),Bash(gh issue view:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr checks:*),Bash(gh run view:*),Bash(gh run list:*)"
             --disallowedTools "Edit,NotebookEdit,Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(git merge:*),Bash(gh pr merge:*),Bash(gh repo delete:*),Bash(sudo:*),Bash(ssh:*),Bash(scp:*)"
+            --json-schema '{"type":"object","properties":{"verdict":{"type":"string","enum":["CLEAN","BLOCKING"]},"review":{"type":"string","minLength":1}},"required":["verdict","review"],"additionalProperties":false}'
+
+      - name: Materialize Claude's structured review
+        if: steps.prepare.outputs.skip == 'false' && steps.prepare.outputs.reuse_review != 'true'
+        env:
+          STRUCTURED_OUTPUT: ${{ steps.claude_review.outputs.structured_output }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -n "${STRUCTURED_OUTPUT}" ] || { echo 'Claude produced no structured review output.'; exit 1; }
+          verdict="$(jq -r '.verdict // empty' <<<"${STRUCTURED_OUTPUT}")"
+          review="$(jq -r '.review // empty' <<<"${STRUCTURED_OUTPUT}")"
+          case "${verdict}" in
+            CLEAN|BLOCKING) ;;
+            *) echo "Invalid structured Claude verdict: ${verdict}"; exit 1 ;;
+          esac
+          [ -n "${review}" ] || { echo 'Claude produced an empty structured review.'; exit 1; }
+          printf 'VERDICT: %s\n\n%s\n' "${verdict}" "${review}" > .claude-review.md
 
       - name: Publish and classify Claude's exact-SHA review
         if: steps.prepare.outputs.skip == 'false'

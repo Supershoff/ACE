@@ -9,6 +9,7 @@ transient_classifier=.github/scripts/is-cloud-mule-transient-claude-result.sh
 workflow=.github/workflows/claude.yml
 ci_workflow=.github/workflows/cloud-mule-ci.yml
 reconcile_workflow=.github/workflows/cloud-mule-reconcile.yml
+review_workflow=.github/workflows/claude-review.yml
 fixture_dir="$(mktemp -d)"
 trap 'rm -rf "${fixture_dir}"' EXIT
 
@@ -47,6 +48,10 @@ grep -Fq 'elif [ "${POLICY_RESULT}" = failure ]' "${ci_workflow}"
 grep -Fq 'leaving recovery to the reconciler' "${ci_workflow}"
 grep -Fq 'count-cloud-mule-implementation-attempts.sh' "${reconcile_workflow}"
 grep -Fq 'Checkout automation helpers' "${reconcile_workflow}"
+grep -Fq 'id: claude_review' "${review_workflow}"
+grep -Fq -- '--json-schema' "${review_workflow}"
+grep -Fq 'steps.claude_review.outputs.structured_output' "${review_workflow}"
+grep -Fq "Materialize Claude's structured review" "${review_workflow}"
 
 for claude_workflow in \
   .github/workflows/claude.yml \
