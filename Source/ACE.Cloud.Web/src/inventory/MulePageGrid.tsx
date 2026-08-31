@@ -1,6 +1,5 @@
 import { useRef, type KeyboardEvent, type MouseEvent } from "react";
 import { iconGridTokens } from "../design-system/inventoryFidelityTokens";
-import { touchTargetStyle } from "../design-system/touchTarget";
 import type { CloudInventoryItem } from "../api/types";
 import { InventoryIcon } from "./InventoryIcon";
 import { inventoryItemKey } from "./selection";
@@ -50,6 +49,8 @@ const selectionOutlineStyle = {
   borderWidth: iconGridTokens.selectionOutlineWidth,
   borderStyle: "solid",
   pointerEvents: "none",
+  boxSizing: "border-box",
+  zIndex: 2,
 } as const;
 
 const quantityBadgeStyle = {
@@ -161,7 +162,7 @@ export function MulePageGrid({
             aria-label={accessibleLabel(item)}
             tabIndex={key === effectiveActiveKey ? 0 : -1}
             className="mule-page-grid__cell"
-            style={{ ...cellStyle(), ...touchTargetStyle }}
+            style={cellStyle()}
             ref={(element) => {
               if (element) {
                 cellRefs.current.set(key, element);

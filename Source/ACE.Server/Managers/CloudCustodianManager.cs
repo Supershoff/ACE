@@ -63,7 +63,42 @@ namespace ACE.Server.Managers
 
             CloudIdentityEventManager.RunStartupIntegrityCheck();
 
+            RemovePersistedRuntimeCustodians();
+
             _ = ReapplyAsync();
+        }
+
+        /// <summary>
+        /// Removes copies written by builds predating the non-persistence guard. Matching both the
+        /// operator-selected base WCID and the manager-assigned name avoids touching ordinary
+        /// instances of the template vendor.
+        /// </summary>
+        private static void RemovePersistedRuntimeCustodians()
+        {
+            var baseWeenieClassId = ConfigManager.Config.CloudMule.CustodianBaseWeenieClassId;
+            if (baseWeenieClassId == 0)
+                return;
+
+            try
+            {
+                var stale = DatabaseManager.Shard.BaseDatabase.GetBiotasByWcid(baseWeenieClassId)
+                    .Where(biota => string.Equals(
+                        biota.GetProperty(PropertyString.Name),
+                        "Cloud Custodian",
+                        StringComparison.Ordinal))
+                    .Select(biota => biota.Id)
+                    .ToList();
+
+                foreach (var biotaId in stale)
+                    DatabaseManager.Shard.BaseDatabase.RemoveBiota(biotaId);
+
+                if (stale.Count > 0)
+                    log.Warn($"AC Cloud Mule: removed {stale.Count} persisted runtime Cloud Custodian copy/copies left by an earlier build.");
+            }
+            catch (Exception ex)
+            {
+                log.Error("AC Cloud Mule: failed to remove persisted runtime Custodian copies; startup will continue without deleting unrelated shard data.", ex);
+            }
         }
 
         /// <summary>

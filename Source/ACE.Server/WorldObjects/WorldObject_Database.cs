@@ -142,6 +142,12 @@ namespace ACE.Server.WorldObjects
             if (!Guid.IsDynamic())
                 return false;
 
+            // Cloud Custodians are configuration-owned runtime endpoints. Persisting one turns
+            // every server restart into another permanent copy of the NPC (and its inherited base
+            // vendor biota). The manager deterministically recreates the desired set instead.
+            if (this is CloudCustodian)
+                return false;
+
             if (BiotaOriginatedFromOrHasBeenSavedToDatabase())
                 return true;
 

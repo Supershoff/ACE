@@ -18,8 +18,9 @@ const fallbackGlyphStyle = {
 } as const;
 
 const imageStyle = {
-  width: iconGridTokens.iconNativeSize,
-  height: iconGridTokens.iconNativeSize,
+  width: "100%",
+  height: "100%",
+  display: "block",
 } as const;
 
 /**

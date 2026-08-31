@@ -39,16 +39,18 @@ export const appraisalLayoutTokens = {
   sectionSpacing: "10px",
   bodyPadding: "12px",
   bodyMaxHeight: "70vh",
+  panelWidth: "340px",
+  workspaceGap: "16px",
 } as const;
 
 export const iconGridTokens = {
   cellBackground: "#241c14",
   cellBorderLight: "#5a4a30",
   cellBorderDark: "#0c0904",
-  cellSize: "48px",
-  /** ACE's native reconstructed icon resolution: icons render at this size, centered within the larger cell frame, never stretched to fill it. */
+  cellSize: "32px",
+  /** ACE's reconstructed icon resolution is also the cell size: the composed image fills the slot edge-to-edge. */
   iconNativeSize: "32px",
-  cellGap: "2px",
+  cellGap: "1px",
   desktopColumns: 6,
   desktopRows: 17,
   /** The classic AC bright-green selection outline, drawn as a separate overlay around the icon (UI-006) -- never the icon's own generic/blue cell highlight. */

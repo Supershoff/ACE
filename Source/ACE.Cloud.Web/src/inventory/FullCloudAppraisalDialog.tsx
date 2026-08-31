@@ -1,6 +1,6 @@
-import { useId } from "react";
+import { useEffect, useId } from "react";
 import { appraisalColorTokens, appraisalLayoutTokens } from "../design-system/inventoryFidelityTokens";
-import { Dialog } from "../design-system/primitives/Dialog";
+import { Button } from "../design-system/primitives/Button";
 import { LoadingState } from "../design-system/primitives/LoadingState";
 import { ErrorState } from "../design-system/primitives/ErrorState";
 import type { CloudAppraisalPanel, CloudAppraisalTextStyle } from "../api/types";
@@ -36,6 +36,9 @@ const dialogStyle = {
   borderStyle: "solid",
   boxShadow: `inset 0 0 0 ${appraisalLayoutTokens.doubleEdgeInsetWidth} ${appraisalColorTokens.panelBorderDark}`,
   fontFamily: appraisalLayoutTokens.fontFamily,
+  width: `min(${appraisalLayoutTokens.panelWidth}, 100%)`,
+  minWidth: 0,
+  alignSelf: "start",
 } as const;
 
 const dialogTitleStyle = {
@@ -79,15 +82,29 @@ export function FullCloudAppraisalDialog({
 }: FullCloudAppraisalDialogProps) {
   const titleId = useId();
 
+  useEffect(() => {
+    if (!open) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [open, onClose]);
+
+  if (!open) return null;
+
   return (
-    <Dialog
-      open={open}
-      onClose={onClose}
-      titleId={titleId}
-      title={`${itemName} — Full Cloud Appraisal`}
+    <aside
+      role="dialog"
+      aria-modal="false"
+      aria-labelledby={titleId}
+      className="full-cloud-appraisal-panel"
       style={dialogStyle}
-      titleStyle={dialogTitleStyle}
     >
+      <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <h2 id={titleId} style={dialogTitleStyle}>{itemName}</h2>
+        <Button variant="secondary" onClick={onClose} aria-label="Close appraisal">×</Button>
+      </header>
       <div className="full-cloud-appraisal" style={bodyStyle}>
         {isLoading ? <LoadingState label="Appraising…" /> : null}
         {!isLoading && error ? <ErrorState title="Appraisal unavailable" description={error} onRetry={onRetry} /> : null}
@@ -107,6 +124,6 @@ export function FullCloudAppraisalDialog({
             ))
           : null}
       </div>
-    </Dialog>
+    </aside>
   );
 }
