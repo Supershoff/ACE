@@ -13,8 +13,9 @@ import { Button } from "../design-system/primitives/Button";
 import { EmptyState } from "../design-system/primitives/EmptyState";
 import { ErrorState } from "../design-system/primitives/ErrorState";
 import { LoadingState } from "../design-system/primitives/LoadingState";
+import { useSession } from "../session/SessionContext";
 import { useIsNarrowViewport } from "../shell/useIsNarrowViewport";
-import { iconGridTokens } from "../design-system/inventoryFidelityTokens";
+import { appraisalLayoutTokens, iconGridTokens } from "../design-system/inventoryFidelityTokens";
 import { FullCloudAppraisalDialog } from "./FullCloudAppraisalDialog";
 import { InventoryQuantityControl } from "./InventoryQuantityControl";
 import { InventorySpreadsheet } from "./InventorySpreadsheet";
@@ -93,6 +94,8 @@ function appraisalErrorMessage(status: number): string {
  * complete, character-independent Full Cloud Appraisal on click/right-click/keyboard/touch (UI-004).
  */
 export function InventoryView({ inventoryApi }: InventoryViewProps) {
+  const { status, subscribeLiveStream } = useSession();
+
   const defaultApiRef = useRef<InventoryApi | null>(null);
   if (!defaultApiRef.current) {
     defaultApiRef.current = createInventoryApi(createHttpClient({ baseUrl: "", getCsrfToken: () => null }));
@@ -138,6 +141,13 @@ export function InventoryView({ inventoryApi }: InventoryViewProps) {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    if (status !== "authenticated") {
+      return;
+    }
+    return subscribeLiveStream("custody", load);
+  }, [status, subscribeLiveStream, load]);
 
   const items = useMemo(() => response?.page.items ?? [], [response]);
 
@@ -240,6 +250,29 @@ export function InventoryView({ inventoryApi }: InventoryViewProps) {
         ) : null}
       </div>
 
+      <div
+        className="inventory-view__workspace"
+        style={{
+          display: "flex",
+          flexDirection: isNarrow ? "column" : "row",
+          alignItems: "flex-start",
+          gap: appraisalLayoutTokens.workspaceGap,
+        }}
+      >
+        <FullCloudAppraisalDialog
+          open={appraisal.open}
+          onClose={() => setAppraisal(CLOSED_APPRAISAL_STATE)}
+          itemName={appraisal.itemName}
+          panel={appraisal.panel}
+          isLoading={appraisal.isLoading}
+          error={appraisal.error}
+          onRetry={() => {
+            const reopenItem = items.find((item) => item.itemId === appraisal.itemId);
+            if (reopenItem) openAppraisal(reopenItem);
+          }}
+        />
+        <div className="inventory-view__inventory-pane" style={{ minWidth: 0 }}>
+
       {isLoading ? <LoadingState label="Loading your Cloud Inventory…" /> : null}
       {!isLoading && loadError ? <ErrorState title="Cloud Inventory unavailable" description={loadError} onRetry={load} /> : null}
 
@@ -304,21 +337,8 @@ export function InventoryView({ inventoryApi }: InventoryViewProps) {
           </nav>
         </>
       ) : null}
-
-      <FullCloudAppraisalDialog
-        open={appraisal.open}
-        onClose={() => setAppraisal(CLOSED_APPRAISAL_STATE)}
-        itemName={appraisal.itemName}
-        panel={appraisal.panel}
-        isLoading={appraisal.isLoading}
-        error={appraisal.error}
-        onRetry={() => {
-          const reopenItem = items.find((item) => item.itemId === appraisal.itemId);
-          if (reopenItem) {
-            openAppraisal(reopenItem);
-          }
-        }}
-      />
+        </div>
+      </div>
     </section>
   );
 }

@@ -89,6 +89,24 @@ describe("Dialog", () => {
     expect(screen.getByRole("button", { name: "second action" })).toHaveFocus();
   });
 
+  it("applies optional per-instance style/titleStyle without affecting consumers that omit them", () => {
+    render(
+      <Dialog
+        open={true}
+        onClose={() => {}}
+        titleId="styled-title"
+        title="Styled dialog"
+        style={{ backgroundColor: "rgb(1, 2, 3)" }}
+        titleStyle={{ color: "rgb(4, 5, 6)" }}
+      >
+        <p>content</p>
+      </Dialog>,
+    );
+
+    expect(screen.getByRole("dialog")).toHaveStyle({ backgroundColor: "rgb(1, 2, 3)" });
+    expect(screen.getByText("Styled dialog")).toHaveStyle({ color: "rgb(4, 5, 6)" });
+  });
+
   it("restores focus to the previously focused element after closing", () => {
     const { rerender } = render(<Harness open={false} />);
     screen.getByText("trigger").focus();

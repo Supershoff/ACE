@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { axe, toHaveNoViolations } from "jest-axe";
 import { describe, expect, it, vi } from "vitest";
 import { FullCloudAppraisalDialog } from "./FullCloudAppraisalDialog";
+import { appraisalColorTokens, appraisalLayoutTokens } from "../design-system/inventoryFidelityTokens";
 import type { CloudAppraisalPanel } from "../api/types";
 
 expect.extend(toHaveNoViolations);
@@ -32,6 +33,48 @@ describe("FullCloudAppraisalDialog", () => {
 
     expect(screen.getByRole("dialog", { name: /Ivory Buckler/ })).toBeInTheDocument();
     expect(screen.getByText("Value: 100")).toBeInTheDocument();
+  });
+
+  it("styles the dialog itself (not just an inner div) with the AC parchment/brass panel treatment", () => {
+    render(
+      <FullCloudAppraisalDialog
+        open
+        onClose={() => {}}
+        itemName="Ivory Buckler"
+        panel={samplePanel}
+        isLoading={false}
+        error={null}
+        onRetry={() => {}}
+      />,
+    );
+
+    const dialog = screen.getByRole("dialog", { name: /Ivory Buckler/ });
+    expect(dialog).toHaveStyle({
+      backgroundColor: appraisalColorTokens.panelBackground,
+      borderColor: appraisalColorTokens.panelBorderLight,
+      fontFamily: appraisalLayoutTokens.fontFamily,
+    });
+  });
+
+  it("renders the appraisal body as a scrollable region so a long panel never overflows the dialog", () => {
+    render(
+      <FullCloudAppraisalDialog
+        open
+        onClose={() => {}}
+        itemName="Ivory Buckler"
+        panel={samplePanel}
+        isLoading={false}
+        error={null}
+        onRetry={() => {}}
+      />,
+    );
+
+    const body = document.querySelector(".full-cloud-appraisal") as HTMLElement | null;
+    // jsdom's getComputedStyle resolves "vh" to a viewport-dependent px value, so toHaveStyle's
+    // computed-style comparison can never match the literal token here; assert the inline style
+    // source (what the browser actually receives) instead.
+    expect(body?.style.maxHeight).toBe(appraisalLayoutTokens.bodyMaxHeight);
+    expect(body).toHaveStyle({ overflowY: "auto" });
   });
 
   it("shows a loading state while the appraisal is being fetched", () => {

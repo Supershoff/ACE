@@ -8,8 +8,8 @@ export interface InventoryIconProps {
 }
 
 const fallbackGlyphStyle = {
-  width: iconGridTokens.cellSize,
-  height: iconGridTokens.cellSize,
+  width: iconGridTokens.iconNativeSize,
+  height: iconGridTokens.iconNativeSize,
   backgroundColor: iconGridTokens.fallbackGlyphBackground,
   color: iconGridTokens.fallbackGlyphText,
   display: "flex",
@@ -18,8 +18,9 @@ const fallbackGlyphStyle = {
 } as const;
 
 const imageStyle = {
-  width: iconGridTokens.cellSize,
-  height: iconGridTokens.cellSize,
+  width: "100%",
+  height: "100%",
+  display: "block",
 } as const;
 
 /**

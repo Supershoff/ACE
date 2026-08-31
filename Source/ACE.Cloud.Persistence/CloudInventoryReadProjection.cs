@@ -75,6 +75,7 @@ public sealed class CloudInventoryReadProjection
         row.OwnerId = ownerId;
         row.LastEventType = eventType;
         row.LastAppliedSequenceNumber = sequenceNumber;
+        row.UpdatedAtUtc = DateTime.UtcNow;
         return (row, Applied: true);
     }
 }

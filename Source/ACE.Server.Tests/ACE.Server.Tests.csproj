@@ -35,6 +35,10 @@
 
   <ItemGroup>
     <ProjectReference Include="..\ACE.Server\ACE.Server.csproj" />
+    <!-- Reuses the exact production probe (HttpCloudWorldBoundaryHealthProbe/CloudStartupChecks)
+         Backend and Worker use, so CloudWorldBoundaryHealthHostTests proves the real prepare -> ACE
+         live -> ready contract instead of a mock-only health check (issue #34's blocking defect #6). -->
+    <ProjectReference Include="..\ACE.Cloud.Hosting\ACE.Cloud.Hosting.csproj" />
   </ItemGroup>
 
     <ItemGroup>

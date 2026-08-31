@@ -12,6 +12,7 @@ using ACE.Common.Performance;
 using ACE.Entity;
 using ACE.Entity.Enum;
 using ACE.Server.Entity;
+using ACE.Server.Entity.Actions;
 using ACE.Server.WorldObjects;
 
 using log4net;
@@ -477,6 +478,7 @@ namespace ACE.Server.Managers
         public static Landblock GetLandblock(LandblockId landblockId, bool loadAdjacents, bool permaload = false)
         {
             Landblock landblock;
+            var newlyLoaded = false;
 
             landblockLock.EnterUpgradeableReadLock();
             try
@@ -487,6 +489,7 @@ namespace ACE.Server.Managers
 
                 if (landblock == null)
                 {
+                    newlyLoaded = true;
                     landblockLock.EnterWriteLock();
                     try
                     {
@@ -531,6 +534,12 @@ namespace ACE.Server.Managers
             finally
             {
                 landblockLock.ExitUpgradeableReadLock();
+            }
+
+            if (newlyLoaded)
+            {
+                var loadedId = landblock.Id;
+                WorldManager.EnqueueAction(new ActionEventDelegate(() => CloudCustodianManager.OnLandblockLoaded(loadedId)));
             }
 
             return landblock;

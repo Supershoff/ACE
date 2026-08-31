@@ -58,6 +58,7 @@ public sealed class CloudAssetImportLedgerEvent
         ManifestVersion = manifestVersion;
         AdminAccountId = adminAccountId;
         Reason = reason;
+        OccurredAtUtc = DateTime.UtcNow;
     }
 
     public Guid Id { get; private set; }

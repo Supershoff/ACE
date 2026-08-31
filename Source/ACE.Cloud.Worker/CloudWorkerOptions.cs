@@ -39,4 +39,10 @@ public sealed class CloudWorkerOptions
 
     /// <summary>The maximum number of outbox events a projection consumer applies per poll tick.</summary>
     public int ProjectionConsumerBatchSize { get; init; } = 200;
+
+    /// <summary>How often the icon composition worker polls for items missing a composed icon (issue #34).</summary>
+    public TimeSpan IconCompositionPollInterval { get; init; } = TimeSpan.FromSeconds(15);
+
+    /// <summary>The maximum number of items the icon composition worker composes per poll tick.</summary>
+    public int IconCompositionBatchSize { get; init; } = 50;
 }

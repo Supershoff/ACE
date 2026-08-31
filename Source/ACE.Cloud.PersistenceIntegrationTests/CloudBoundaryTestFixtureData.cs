@@ -11,6 +11,7 @@ internal static class CloudBoundaryTestFixtureData
 {
     private static readonly string[] TablesInDeleteOrder =
     [
+        "CloudNotification",
         "CloudLiveStreamEvent",
         "CloudInventoryItemPropertiesProjection",
         "CloudInventoryReadProjection",
@@ -63,6 +64,8 @@ internal static class CloudBoundaryTestFixtureData
         "CloudGlobalMaintenance",
         "CloudStorageQuotaLimits",
         "CloudStorageQuotaOwnerLock",
+        "CloudAppraisalSnapshotProjection",
+        "CloudIconCompositionInputsProjection",
         "CloudShardBinding",
     ];
 

@@ -3,6 +3,30 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { InventoryView } from "./InventoryView";
 import { mockMatchMedia } from "../test/mockMatchMedia";
 import { fakeInventoryApi, makeInventoryItem, makeQueryResponse } from "./testFakes";
+import { SessionContext, type SessionContextValue } from "../session/SessionContext";
+
+function baseSession(): SessionContextValue {
+  return {
+    status: "authenticated",
+    csrfToken: "csrf",
+    accountKind: "Main",
+    accountName: "MainPlayer",
+    serviceAvailability: "Operational",
+    liveStream: { status: "idle", stale: false },
+    login: vi.fn(),
+    logout: vi.fn(),
+    checkAdminAccess: vi.fn(async () => ({ checked: true, isAdmin: false, accessLevel: null })),
+    subscribeLiveStream: vi.fn(() => vi.fn()),
+  };
+}
+
+function renderInventoryView(api: ReturnType<typeof fakeInventoryApi>) {
+  return render(
+    <SessionContext.Provider value={baseSession()}>
+      <InventoryView inventoryApi={api} />
+    </SessionContext.Provider>,
+  );
+}
 
 /**
  * UI-003: "Narrow layouts may reflow without changing page membership under the current
@@ -19,13 +43,13 @@ describe("InventoryView responsive reflow", () => {
     const api = fakeInventoryApi({ queryPages: vi.fn(async () => ({ ok: true, status: 200, data: makeQueryResponse(items) })) });
 
     mockMatchMedia([]);
-    const { unmount } = render(<InventoryView inventoryApi={api} />);
+    const { unmount } = renderInventoryView(api);
     await waitFor(() => screen.getByRole("option", { name: "First" }));
     const desktopOptionCount = screen.getAllByRole("option").length;
     unmount();
 
     mockMatchMedia(["max-width"]);
-    render(<InventoryView inventoryApi={api} />);
+    renderInventoryView(api);
     await waitFor(() => screen.getByRole("option", { name: "First" }));
     const narrowOptionCount = screen.getAllByRole("option").length;
 
@@ -36,7 +60,7 @@ describe("InventoryView responsive reflow", () => {
   it("preserves every operation at a narrow width: activating an item still opens its appraisal", async () => {
     const api = fakeInventoryApi();
     mockMatchMedia(["max-width"]);
-    render(<InventoryView inventoryApi={api} />);
+    renderInventoryView(api);
 
     await waitFor(() => screen.getByRole("option", { name: "Ivory Buckler" }));
     const { default: userEvent } = await import("@testing-library/user-event");

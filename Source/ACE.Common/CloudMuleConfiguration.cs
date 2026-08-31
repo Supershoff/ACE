@@ -19,5 +19,18 @@ namespace ACE.Common
         /// Custodians do not spawn while it is unset.
         /// </summary>
         public uint CustodianBaseWeenieClassId { get; set; } = 0;
+
+        /// <summary>
+        /// ACE's own loopback/private-bound world-boundary liveness endpoint (ARCH-008). Companion
+        /// services and the disposable local acceptance launcher poll this so a deposit/withdrawal
+        /// path degrades gracefully -- rather than hanging -- while the ACE world process is offline.
+        /// </summary>
+        public CloudMuleHealthEndpointConfiguration HealthEndpoint { get; set; } = new CloudMuleHealthEndpointConfiguration();
+
+        /// <summary>
+        /// Operator-supplied ItemType-derived background and static UiEffect overlay DIDs (issue #34
+        /// human-acceptance correction). See <see cref="CloudMuleIconOverlayConfiguration"/>.
+        /// </summary>
+        public CloudMuleIconOverlayConfiguration IconOverlays { get; set; } = new CloudMuleIconOverlayConfiguration();
     }
 }

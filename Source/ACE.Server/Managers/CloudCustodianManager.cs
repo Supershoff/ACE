@@ -1,14 +1,18 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 
 using log4net;
+
+using Microsoft.EntityFrameworkCore;
 
 using ACE.Cloud.Domain;
 using ACE.Cloud.Persistence;
 using ACE.Common;
 using ACE.Database;
+using ACE.Database.Models.Shard;
 using ACE.Entity;
 using ACE.Entity.Enum;
 using ACE.Entity.Enum.Properties;
@@ -42,6 +46,8 @@ namespace ACE.Server.Managers
 
         private static readonly Dictionary<CloudCustodianLocationKey, CloudCustodian> _spawned = new();
 
+        private static IReadOnlyList<CloudCustodianLocation> _desiredLocations = Array.Empty<CloudCustodianLocation>();
+
         private static CloudCustodianConfiguration _currentConfiguration;
 
         /// <summary>
@@ -59,7 +65,42 @@ namespace ACE.Server.Managers
 
             CloudIdentityEventManager.RunStartupIntegrityCheck();
 
+            RemovePersistedRuntimeCustodians();
+
             _ = ReapplyAsync();
+        }
+
+        /// <summary>
+        /// Removes copies written by builds predating the non-persistence guard. Matching both the
+        /// operator-selected base WCID and the manager-assigned name avoids touching ordinary
+        /// instances of the template vendor.
+        /// </summary>
+        private static void RemovePersistedRuntimeCustodians()
+        {
+            var baseWeenieClassId = ConfigManager.Config.CloudMule.CustodianBaseWeenieClassId;
+            if (baseWeenieClassId == 0)
+                return;
+
+            try
+            {
+                var stale = DatabaseManager.Shard.BaseDatabase.GetBiotasByWcid(baseWeenieClassId)
+                    .Where(biota => string.Equals(
+                        biota.GetProperty(PropertyString.Name),
+                        "Cloud Custodian",
+                        StringComparison.Ordinal))
+                    .Select(biota => biota.Id)
+                    .ToList();
+
+                foreach (var biotaId in stale)
+                    DatabaseManager.Shard.BaseDatabase.RemoveBiota(biotaId);
+
+                if (stale.Count > 0)
+                    log.Warn($"AC Cloud Mule: removed {stale.Count} persisted runtime Cloud Custodian copy/copies left by an earlier build.");
+            }
+            catch (Exception ex)
+            {
+                log.Error("AC Cloud Mule: failed to remove persisted runtime Custodian copies; startup will continue without deleting unrelated shard data.", ex);
+            }
         }
 
         /// <summary>
@@ -97,12 +138,237 @@ namespace ACE.Server.Managers
                 return;
             }
 
+            await BackfillInventoryPropertiesAsync(shardId).ConfigureAwait(false);
+            await BackfillIconCompositionInputsAsync(shardId).ConfigureAwait(false);
+            await BackfillAppraisalSnapshotAsync(shardId).ConfigureAwait(false);
+
             var marketplacePosition = ResolveMarketplacePosition();
             var mansions = ResolveMansionLocations();
 
             var desired = CloudCustodianLocationResolver.Resolve(configuration, marketplacePosition, mansions);
 
             WorldManager.EnqueueAction(new ActionEventDelegate(() => ApplyPlanOnWorldThread(configuration, desired)));
+        }
+
+        /// <summary>
+        /// Repairs missing disposable inventory-display rows from the authoritative native biotas
+        /// ACE deliberately retains while they are in Cloud custody. Deposit-time capture normally
+        /// creates these rows; this bounded startup/reapply pass covers deployments upgraded from an
+        /// earlier build and transient projection-write failures without giving a companion service
+        /// direct access to ace_shard (ARCH-002/ARCH-004).
+        /// </summary>
+        private static async Task BackfillInventoryPropertiesAsync(string shardId, CancellationToken cancellationToken = default)
+        {
+            const int maxRowsPerPass = 500;
+
+            try
+            {
+                var options = CloudDbContextOptionsFactory.Create(BuildCloudConnectionString());
+                await using var context = new CloudDbContext(options);
+
+                var missing = await context.CloudCustodyRecords
+                    .AsNoTracking()
+                    .Where(record => record.ShardId == shardId)
+                    .Where(record => !context.CloudInventoryItemPropertiesProjections.Any(properties => properties.BiotaId == record.BiotaId))
+                    .OrderBy(record => record.BiotaId)
+                    .Select(record => new { record.BiotaId, record.Version })
+                    .Take(maxRowsPerPass)
+                    .ToListAsync(cancellationToken)
+                    .ConfigureAwait(false);
+
+                var gateway = new CloudInventoryItemPropertiesGateway(context);
+                var applied = 0;
+
+                foreach (var candidate in missing)
+                {
+                    var biota = DatabaseManager.Shard.BaseDatabase.GetBiota(candidate.BiotaId, doNotAddToCache: true);
+                    if (biota is null)
+                    {
+                        log.Warn($"AC Cloud Mule: Cloud custody record 0x{candidate.BiotaId:X8} has no retained native biota; inventory property backfill skipped it.");
+                        continue;
+                    }
+
+                    var name = biota.GetProperty(PropertyString.Name);
+                    if (string.IsNullOrWhiteSpace(name))
+                    {
+                        name = $"Item 0x{candidate.BiotaId:X8}";
+                    }
+
+                    var itemType = (ItemType)(uint)(biota.GetProperty(PropertyInt.ItemType) ?? 0);
+                    var wasApplied = await gateway.UpsertAsync(
+                        candidate.BiotaId,
+                        shardId,
+                        name,
+                        itemType,
+                        (WeenieType)biota.WeenieType,
+                        biota.GetProperty(PropertyInt.Value),
+                        biota.GetProperty(PropertyInt.EncumbranceVal),
+                        iconCacheKeyHex: null,
+                        revision: candidate.Version,
+                        cancellationToken)
+                        .ConfigureAwait(false);
+
+                    if (wasApplied)
+                    {
+                        applied++;
+                    }
+                }
+
+                if (applied > 0)
+                {
+                    log.Info($"AC Cloud Mule: backfilled inventory display properties for {applied} Cloud custody record(s).");
+                }
+            }
+            catch (Exception ex)
+            {
+                log.Error("AC Cloud Mule: inventory property backfill failed; custody remains authoritative and a later reapply will retry it.", ex);
+            }
+        }
+
+        /// <summary>
+        /// Repairs missing <see cref="CloudIconCompositionInputsProjection"/> rows from the
+        /// authoritative retained native biota, independently of <see cref="BackfillInventoryPropertiesAsync"/>
+        /// (issue #34 human-acceptance correction): a custody record can already have an inventory
+        /// display properties row -- deposited by a build before this correction landed -- while still
+        /// having no icon composition inputs at all, which <see cref="BackfillInventoryPropertiesAsync"/>'s
+        /// "properties row missing entirely" query would never catch. Every field is a direct native
+        /// biota property read (no examiner/skill-check context needed), so unlike the appraisal
+        /// snapshot this can always run here, not only at deposit time.
+        /// </summary>
+        private static async Task BackfillIconCompositionInputsAsync(string shardId, CancellationToken cancellationToken = default)
+        {
+            const int maxRowsPerPass = 500;
+
+            try
+            {
+                var options = CloudDbContextOptionsFactory.Create(BuildCloudConnectionString());
+                await using var context = new CloudDbContext(options);
+
+                var missing = await context.CloudCustodyRecords
+                    .AsNoTracking()
+                    .Where(record => record.ShardId == shardId)
+                    .Where(record => !context.CloudIconCompositionInputsProjections.Any(row => row.BiotaId == record.BiotaId))
+                    .OrderBy(record => record.BiotaId)
+                    .Select(record => new { record.BiotaId, record.Version })
+                    .Take(maxRowsPerPass)
+                    .ToListAsync(cancellationToken)
+                    .ConfigureAwait(false);
+
+                var iconInputsGateway = new CloudIconCompositionInputsGateway(context);
+                var applied = 0;
+
+                foreach (var candidate in missing)
+                {
+                    var biota = DatabaseManager.Shard.BaseDatabase.GetBiota(candidate.BiotaId, doNotAddToCache: true);
+                    if (biota is null)
+                    {
+                        log.Warn($"AC Cloud Mule: Cloud custody record 0x{candidate.BiotaId:X8} has no retained native biota; icon composition inputs backfill skipped it.");
+                        continue;
+                    }
+
+                    var iconInputs = Player.BuildIconCompositionInputs(biota);
+                    var wasApplied = await iconInputsGateway.UpsertAsync(candidate.BiotaId, shardId, iconInputs, candidate.Version, cancellationToken)
+                        .ConfigureAwait(false);
+
+                    if (wasApplied)
+                    {
+                        applied++;
+                    }
+                }
+
+                if (applied > 0)
+                {
+                    log.Info($"AC Cloud Mule: backfilled icon composition inputs for {applied} Cloud custody record(s).");
+                }
+            }
+            catch (Exception ex)
+            {
+                log.Error("AC Cloud Mule: icon composition inputs backfill failed; a later reapply will retry it.", ex);
+            }
+        }
+
+        /// <summary>
+        /// Repairs missing <see cref="CloudAppraisalSnapshotProjection"/> rows from the authoritative
+        /// retained native biota (issue #34 human-acceptance correction, item 4: the maintainer's
+        /// 2026-08-31 human-acceptance pass found this backfill never existed, permanently stranding
+        /// any custody record deposited before the appraisal-snapshot capture landed -- or whose
+        /// deposit-time capture failed -- on <c>CloudInventoryEndpoints.HandleGetAppraisalAsync</c>'s
+        /// Name/Value/Burden-only fallback with no repair pass ever able to fix it, unlike every other
+        /// rebuildable Cloud projection in this same PR). Independent of
+        /// <see cref="BackfillInventoryPropertiesAsync"/> and <see cref="BackfillIconCompositionInputsAsync"/>
+        /// for the same reason those two are independent of each other: a custody record can have
+        /// either of those rows already while still having no appraisal snapshot row at all.
+        /// <see cref="Player.BuildAppraisalSnapshot(ACE.Database.Models.Shard.Biota)"/> reconstructs a
+        /// detached native WorldObject from the retained biota and appraises it with no live examiner,
+        /// so -- like the icon composition inputs backfill, and unlike the live deposit-time capture --
+        /// this can always run here, not only at deposit time.
+        /// </summary>
+        private static async Task BackfillAppraisalSnapshotAsync(string shardId, CancellationToken cancellationToken = default)
+        {
+            const int maxRowsPerPass = 500;
+
+            try
+            {
+                var options = CloudDbContextOptionsFactory.Create(BuildCloudConnectionString());
+                await using var context = new CloudDbContext(options);
+
+                var missing = await context.CloudCustodyRecords
+                    .AsNoTracking()
+                    .Where(record => record.ShardId == shardId)
+                    .Where(record => !context.CloudAppraisalSnapshotProjections.Any(row => row.BiotaId == record.BiotaId))
+                    .OrderBy(record => record.BiotaId)
+                    .Select(record => new { record.BiotaId, record.Version })
+                    .Take(maxRowsPerPass)
+                    .ToListAsync(cancellationToken)
+                    .ConfigureAwait(false);
+
+                var appraisalSnapshotGateway = new CloudAppraisalSnapshotGateway(context);
+                var applied = 0;
+
+                foreach (var candidate in missing)
+                {
+                    var biota = DatabaseManager.Shard.BaseDatabase.GetBiota(candidate.BiotaId, doNotAddToCache: true);
+                    if (biota is null)
+                    {
+                        log.Warn($"AC Cloud Mule: Cloud custody record 0x{candidate.BiotaId:X8} has no retained native biota; appraisal snapshot backfill skipped it.");
+                        continue;
+                    }
+
+                    CloudAppraisalRawItemSnapshot snapshot;
+                    try
+                    {
+                        snapshot = Player.BuildAppraisalSnapshot(biota);
+                    }
+                    catch (Exception ex)
+                    {
+                        log.Warn($"AC Cloud Mule: failed to build an appraisal snapshot for Cloud custody record 0x{candidate.BiotaId:X8}; a later reapply will retry it.", ex);
+                        continue;
+                    }
+
+                    if (snapshot is null)
+                    {
+                        log.Warn($"AC Cloud Mule: Cloud custody record 0x{candidate.BiotaId:X8} has no mapped WorldObject type; appraisal snapshot backfill skipped it.");
+                        continue;
+                    }
+
+                    var wasApplied = await appraisalSnapshotGateway.UpsertAsync(candidate.BiotaId, shardId, snapshot, candidate.Version, cancellationToken)
+                        .ConfigureAwait(false);
+
+                    if (wasApplied)
+                    {
+                        applied++;
+                    }
+                }
+
+                if (applied > 0)
+                {
+                    log.Info($"AC Cloud Mule: backfilled appraisal snapshots for {applied} Cloud custody record(s).");
+                }
+            }
+            catch (Exception ex)
+            {
+                log.Error("AC Cloud Mule: appraisal snapshot backfill failed; the Full Cloud Appraisal will fall back to its minimum fields until a later reapply retries it.", ex);
+            }
         }
 
         /// <summary>
@@ -134,6 +400,7 @@ namespace ACE.Server.Managers
         {
             lock (_stateLock)
             {
+                _desiredLocations = desired;
                 var plan = CloudCustodianSpawnPlanner.Plan(desired, _spawned.Keys.ToList());
 
                 foreach (var key in plan.ToDespawn)
@@ -154,6 +421,44 @@ namespace ACE.Server.Managers
                 }
 
                 _currentConfiguration = configuration;
+            }
+        }
+
+        /// <summary>
+        /// Reconciles configuration-owned runtime Custodians when ACE loads a landblock. A dynamic
+        /// Custodian must not be saved to ace_shard, so normal empty-landblock unloading destroys
+        /// it. The tracked reference then points at an object no longer in the world. Replacing that
+        /// stale reference here makes Marketplace and Mansion Custodians available when a player
+        /// arrives without persisting duplicates or permanently loading hundreds of landblocks.
+        /// Called by <see cref="LandblockManager.GetLandblock"/> after its own lock is released.
+        /// </summary>
+        internal static void OnLandblockLoaded(LandblockId landblockId)
+        {
+            if (!ConfigManager.Config.CloudMule.Enabled)
+                return;
+
+            lock (_stateLock)
+            {
+                if (_currentConfiguration is null)
+                    return;
+
+                foreach (var location in _desiredLocations.Where(location =>
+                    new LandblockId(location.Position.Landblock).Landblock == landblockId.Landblock))
+                {
+                    if (_spawned.TryGetValue(location.Key, out var tracked))
+                    {
+                        if (!CloudCustodianRuntimePolicy.ShouldRespawn(hasTrackedInstance: true, tracked.CurrentLandblock is not null))
+                            continue;
+
+                        _spawned.Remove(location.Key);
+                        if (tracked.CurrentLandblock is not null)
+                            tracked.Destroy();
+                    }
+
+                    var replacement = SpawnCustodian(location, _currentConfiguration.Version);
+                    if (replacement is not null)
+                        _spawned[location.Key] = replacement;
+                }
             }
         }
 
@@ -250,6 +555,139 @@ namespace ACE.Server.Managers
                 log.Error("AC Cloud Mule: failed to enumerate Mansion positions from ace_world; treating the Mansion set as empty for this reapplication.", ex);
                 return [];
             }
+        }
+
+        /// <summary>
+        /// Read-only diagnostic for issue #34's blocking defect #5: every remaining prerequisite an
+        /// operator needs to reach an actual Cloud Custodian deposit (matching ShardId, a reachable
+        /// and matching CloudShardBinding, a resolvable Vendor-type base weenie, and at least one
+        /// resolved Custodian location), reported so the disposable local acceptance launcher can give
+        /// an actionable diagnostic before starting the web stack instead of silently no-op-spawning.
+        /// Served over <see cref="CloudWorldBoundaryHealthHost"/>'s loopback/private endpoint; this
+        /// never mutates custody state, only reads configuration and ace_world/ace_cloud diagnostics
+        /// the same way <see cref="ReapplyAsync"/> already does.
+        /// </summary>
+        public static async Task<CloudMuleDepositReadinessReport> GetDepositReadinessAsync(CancellationToken cancellationToken = default)
+        {
+            var config = ConfigManager.Config.CloudMule;
+            if (!config.Enabled)
+            {
+                return CloudMuleDepositReadinessReport.Disabled();
+            }
+
+            var shardId = config.ShardId;
+            var shardIdConfigured = !string.IsNullOrWhiteSpace(shardId);
+
+            string shardBindingStatus;
+            string shardBindingDetail;
+
+            if (!shardIdConfigured)
+            {
+                shardBindingStatus = "NotConfigured";
+                shardBindingDetail = "CloudMule.ShardId is not configured.";
+            }
+            else
+            {
+                try
+                {
+                    var options = CloudDbContextOptionsFactory.Create(BuildCloudConnectionString());
+                    await using var context = new CloudDbContext(options);
+                    var diagnostics = new CloudGatewayDiagnostics(context);
+                    var hasBinding = await diagnostics.HasShardBindingAsync(cancellationToken).ConfigureAwait(false);
+
+                    if (!hasBinding)
+                    {
+                        shardBindingStatus = "Missing";
+                        shardBindingDetail = "This deployment has no CloudShardBinding row; prepare ace_cloud first.";
+                    }
+                    else
+                    {
+                        var binding = await context.CloudShardBindings.AsNoTracking().SingleAsync(cancellationToken).ConfigureAwait(false);
+                        if (binding.ShardId == shardId)
+                        {
+                            shardBindingStatus = "Matches";
+                            shardBindingDetail = $"CloudShardBinding.ShardId matches CloudMule.ShardId ({shardId}).";
+                        }
+                        else
+                        {
+                            shardBindingStatus = "Mismatch";
+                            shardBindingDetail = $"CloudMule.ShardId ({shardId}) does not match CloudShardBinding.ShardId ({binding.ShardId}).";
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    shardBindingStatus = "Unavailable";
+                    shardBindingDetail = $"Could not reach ace_cloud via MySql.Cloud: {ex.Message}";
+                }
+            }
+
+            var baseWeenieClassId = config.CustodianBaseWeenieClassId;
+            var weenieConfigured = baseWeenieClassId != 0;
+            var weenieFound = false;
+            var weenieIsVendorType = false;
+
+            if (weenieConfigured)
+            {
+                var weenie = DatabaseManager.World.GetCachedWeenie(baseWeenieClassId);
+                if (weenie is not null)
+                {
+                    weenieFound = true;
+                    weenieIsVendorType = weenie.WeenieType == WeenieType.Vendor;
+                }
+            }
+
+            var resolvedLocationCount = 0;
+            if (shardBindingStatus == "Matches")
+            {
+                try
+                {
+                    var options = CloudDbContextOptionsFactory.Create(BuildCloudConnectionString());
+                    await using var context = new CloudDbContext(options);
+                    var boundary = new CloudCustodianConfigurationBoundary(context);
+                    var configuration = await boundary.GetCurrentAsync(shardId, cancellationToken).ConfigureAwait(false);
+
+                    var marketplacePosition = ResolveMarketplacePosition();
+                    var mansions = ResolveMansionLocations();
+                    resolvedLocationCount = CloudCustodianLocationResolver.Resolve(configuration, marketplacePosition, mansions).Count;
+                }
+                catch (Exception ex)
+                {
+                    log.Error("AC Cloud Mule: failed to resolve Custodian locations while reporting deposit readiness.", ex);
+                }
+            }
+
+            var ready =
+                shardIdConfigured
+                && shardBindingStatus == "Matches"
+                && weenieConfigured
+                && weenieFound
+                && weenieIsVendorType
+                && resolvedLocationCount > 0;
+
+            var reason = ready
+                ? "Ready."
+                : !shardIdConfigured ? "CloudMule.ShardId is not configured."
+                : shardBindingStatus != "Matches" ? shardBindingDetail
+                : !weenieConfigured ? "CloudMule.CustodianBaseWeenieClassId is not configured."
+                : !weenieFound ? $"WeenieClassId {baseWeenieClassId} was not found in ace_world."
+                : !weenieIsVendorType ? $"WeenieClassId {baseWeenieClassId} is not a Vendor-type weenie."
+                : "No Custodian location resolved (Marketplace and Mansions are both disabled, and there are no custom positions).";
+
+            return new CloudMuleDepositReadinessReport
+            {
+                CloudMuleEnabled = true,
+                ShardId = shardId,
+                ShardBindingStatus = shardBindingStatus,
+                ShardBindingDetail = shardBindingDetail,
+                CustodianWeenieConfigured = weenieConfigured,
+                CustodianWeenieClassId = baseWeenieClassId,
+                CustodianWeenieFound = weenieFound,
+                CustodianWeenieIsVendorType = weenieIsVendorType,
+                ResolvedCustodianLocationCount = resolvedLocationCount,
+                Ready = ready,
+                Reason = reason,
+            };
         }
 
         /// <summary>

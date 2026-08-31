@@ -12,6 +12,13 @@ describe("InventoryIcon", () => {
     expect(img).toHaveAttribute("src", `/inventory/icons/${"a".repeat(64)}`);
   });
 
+  it("fills the grid cell edge-to-edge with the composed icon", () => {
+    render(<InventoryIcon name="Ivory Buckler" iconCacheKeyHex={"a".repeat(64)} buildIconUrl={buildIconUrl} />);
+
+    const img = document.querySelector("img.inventory-icon");
+    expect(img).toHaveStyle({ width: "100%", height: "100%" });
+  });
+
   it("shows a neutral fallback glyph when no icon cache key exists yet", () => {
     render(<InventoryIcon name="Ivory Buckler" iconCacheKeyHex={null} buildIconUrl={buildIconUrl} />);
 

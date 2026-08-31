@@ -7,6 +7,10 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
+// ACE DAT metadata contains Windows-1252 strings. The standalone worker does not pass through
+// ACE.Server.Program, so it must register the same provider before any DAT reader is constructed.
+System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
+
 // Issue #28's local-only fixture-generation tooling: `dotnet run --project Source/ACE.Cloud.Worker --
 // generate-icon-fixture ...` (see docs/agents/fidelity-phase-gate.md). Dispatches and exits before any
 // of the hosted worker's database/configuration requirements below are ever touched; ordinary worker
@@ -65,6 +69,8 @@ builder.Services.AddHostedService<CloudAssetImportStagingWorker>();
 
 builder.Services.AddHostedService<CloudCustodyProjectionConsumerWorker>();
 builder.Services.AddHostedService<CloudIdentityProjectionConsumerWorker>();
+builder.Services.AddHostedService<CloudNotificationProjectionConsumerWorker>();
+builder.Services.AddHostedService<CloudIconCompositionWorker>();
 
 var host = builder.Build();
 host.Run();
