@@ -128,13 +128,33 @@ hard-code a personal path -- always pass your own via `-ClientPortalDatPath`. On
 for already-deposited items on its next poll (`CloudWorker__IconCompositionPollInterval`, 15s by
 default) and for every new deposit going forward.
 
+Icon backgrounds and static `UiEffects` are selected from the operator-owned DAT through the
+`CloudMule.IconOverlays` mapping in ACE.Server's `Config.js`. Before restarting the test world, add
+the mapping for the categories/effects you intend to test. Issue #24 validated the stock-DAT Armor
+background as decimal DID `100667859` (`0x060011D3`):
+
+```json
+"IconOverlays": {
+  "ItemTypeBackgroundDidsByCategory": {
+    "Armor": 100667859
+  },
+  "UiEffectOverlayDidsByEffect": {}
+}
+```
+
+This value is a documented stock-DAT default, not a runtime dependency on TreeStats or WCID 42635.
+If the server uses a modified DAT, replace it with the category DID validated from that DAT. Add
+effect-name mappings (for example `Magical`) only after validating their still-layer DIDs from the
+same active DAT. Restart ACE.Server after changing `Config.js`; already-retained custody items are
+re-captured by the startup backfill and the icon worker recomposes them from the persisted inputs.
+
 ## 7. Run the human acceptance checklist
 
 Open the printed URL and, using your synthetic test account(s):
 
 - [ ] Log in, and confirm the Notification Center and Activity link appear.
 - [ ] Browse the Mule Page grid and spreadsheet view; confirm icons render and reflow at a narrow width without changing page membership.
-- [ ] Deposit an item from your ACE Custodian and confirm it appears in your live inventory with its real reconstructed icon (not the one-letter fallback) once the icon composition worker has had a chance to run.
+- [ ] Deposit an armor item from your ACE Custodian and confirm it appears in your live inventory with its real background + item + overlay reconstruction (not the one-letter fallback) once the icon composition worker has had a chance to run.
 - [ ] Select a grid cell and confirm the bright green AC-style selection border appears as an overlay around the icon, not a generic/blue highlight.
 - [ ] Open a Full Cloud Appraisal for an armor or weapon item; confirm workmanship/material, armor or weapon statistics, spells, requirements, and description content all appear, styled like the native in-game ID panel.
 - [ ] After submitting a deposit and closing the native vendor window, use the same Cloud Custodian again immediately; confirm it reopens without "You can only move or use one item at a time," including after multiple consecutive deposits.
