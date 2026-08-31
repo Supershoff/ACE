@@ -1341,8 +1341,7 @@ public sealed class CloudDbContext : DbContext
 
             entity.Property(evt => evt.OccurredAtUtc)
                 .IsRequired()
-                .ValueGeneratedOnAdd()
-                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+                .ValueGeneratedNever();
         });
 
         modelBuilder.Entity<CloudIconDiagnostic>(entity =>
