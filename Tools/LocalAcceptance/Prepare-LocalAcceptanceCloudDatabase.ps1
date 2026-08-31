@@ -41,8 +41,13 @@ function Invoke-Migrator {
     }
 
     try {
-        dotnet run --project (Join-Path $repoRoot "Source/ACE.Cloud.LocalAcceptanceMigrator") --configuration Release -- @MigratorArgs
-        return $LASTEXITCODE
+        # Keep the child process's informational output visible without emitting it into this
+        # function's success stream. Callers assign this function's result to $exitCode; allowing
+        # dotnet's stdout into that assignment produces an array (messages plus the integer exit
+        # code), which makes every successful connectivity probe compare as non-zero.
+        dotnet run --project (Join-Path $repoRoot "Source/ACE.Cloud.LocalAcceptanceMigrator") --configuration Release -- @MigratorArgs | Out-Host
+        $exitCode = $LASTEXITCODE
+        return $exitCode
     } finally {
         foreach ($key in $EnvironmentOverrides.Keys) {
             Remove-Item -Path "Env:$key" -ErrorAction SilentlyContinue
