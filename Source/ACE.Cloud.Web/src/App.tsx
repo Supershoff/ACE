@@ -2,6 +2,7 @@ import { Route, Routes } from "react-router-dom";
 import { ActivityLedgerPage } from "./activity/ActivityLedgerPage";
 import { LiveStreamStaleBanner } from "./design-system/primitives/LiveStreamStaleBanner";
 import { ReadOnlyBanner } from "./design-system/primitives/ReadOnlyBanner";
+import { Button } from "./design-system/primitives/Button";
 import { NotificationCenter } from "./notifications/NotificationCenter";
 import { AccountOverviewPage } from "./pages/AccountOverviewPage";
 import { AdminPage } from "./pages/AdminPage";
@@ -23,7 +24,7 @@ const NAV_ITEMS = [
 ];
 
 export function App() {
-  const { status, serviceAvailability, liveStream } = useSession();
+  const { status, serviceAvailability, liveStream, logout } = useSession();
   const readOnlyBanner = serviceAvailability === "unknown" ? null : <ReadOnlyBanner mode={serviceAvailability} />;
   const staleBanner = status === "authenticated" && liveStream.stale ? <LiveStreamStaleBanner /> : null;
   const banner = readOnlyBanner || staleBanner ? (
@@ -34,7 +35,20 @@ export function App() {
   ) : null;
 
   return (
-    <AppShell navItems={NAV_ITEMS} banner={banner} headerActions={<NotificationCenter />}>
+    <AppShell
+      navItems={NAV_ITEMS}
+      banner={banner}
+      headerActions={
+        <>
+          <NotificationCenter />
+          {status === "authenticated" ? (
+            <Button variant="secondary" onClick={() => void logout()}>
+              Log out
+            </Button>
+          ) : null}
+        </>
+      }
+    >
       <ErrorBoundary>
         <Routes>
           <Route path="/" element={<MarketplacePage />} />

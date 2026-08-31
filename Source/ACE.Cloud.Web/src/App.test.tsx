@@ -55,4 +55,21 @@ describe("App routing", () => {
     renderApp(baseSessionValue({ status: "unauthenticated", serviceAvailability: "ReadOnly" }));
     expect(screen.getByRole("status")).toHaveTextContent(/read-only/i);
   });
+
+  it("shows an authenticated-only logout control and invokes the session logout", () => {
+    const logout = vi.fn(async () => {});
+    const { rerender } = renderApp(baseSessionValue({ status: "authenticated", logout }), "/dashboard");
+
+    screen.getByRole("button", { name: "Log out" }).click();
+    expect(logout).toHaveBeenCalledOnce();
+
+    rerender(
+      <SessionContext.Provider value={baseSessionValue({ status: "unauthenticated" })}>
+        <MemoryRouter initialEntries={["/"]}>
+          <App />
+        </MemoryRouter>
+      </SessionContext.Provider>,
+    );
+    expect(screen.queryByRole("button", { name: "Log out" })).not.toBeInTheDocument();
+  });
 });
