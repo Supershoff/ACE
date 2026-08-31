@@ -80,7 +80,9 @@ $authBridgeOrigin = "http://127.0.0.1:$($settings.authBridgePort)"
 
 $processRecords = @()
 $logDir = Join-Path $runStateDir "logs"
+$protectedAssetStorageRoot = Join-Path $runStateDir "protected-assets"
 New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+New-Item -ItemType Directory -Path $protectedAssetStorageRoot -Force | Out-Null
 
 function Start-BackgroundDotnetProject {
     param([string]$ProjectPath, [string]$Name, [hashtable]$EnvironmentOverrides)
@@ -143,6 +145,7 @@ $processRecords += Start-BackgroundDotnetProject -ProjectPath (Join-Path $repoRo
     "CloudBackend__AllowedOrigins__0" = $webUiOrigin
     "CloudBackend__ExpectedAceExtensionVersion" = $settings.cloudAceExtensionVersion
     "CloudBackend__ExpectedContractProtocolVersion" = $settings.cloudContractProtocolVersion
+    "CloudBackend__ProtectedAssetStorageRootDirectory" = $protectedAssetStorageRoot
 }
 
 Write-Host "Starting ACE.Cloud.Worker..." -ForegroundColor Cyan
@@ -152,6 +155,7 @@ $processRecords += Start-BackgroundDotnetProject -ProjectPath (Join-Path $repoRo
     "CloudWorker__WorldBoundaryHealthEndpoint" = $settings.worldBoundaryHealthEndpoint
     "CloudWorker__ExpectedAceExtensionVersion" = $settings.cloudAceExtensionVersion
     "CloudWorker__ExpectedContractProtocolVersion" = $settings.cloudContractProtocolVersion
+    "CloudWorker__AssetStorageRootDirectory" = $protectedAssetStorageRoot
 }
 
 Write-Host "Waiting for the Backend health endpoint..." -ForegroundColor Cyan
