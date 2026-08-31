@@ -94,7 +94,7 @@ export function FullCloudAppraisalDialog({
   if (!open) return null;
 
   return (
-    <aside
+    <div
       role="dialog"
       aria-modal="false"
       aria-labelledby={titleId}
@@ -124,6 +124,6 @@ export function FullCloudAppraisalDialog({
             ))
           : null}
       </div>
-    </aside>
+    </div>
   );
 }

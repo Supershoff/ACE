@@ -1,7 +1,6 @@
 import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { InventoryIcon } from "./InventoryIcon";
-import { iconGridTokens } from "../design-system/inventoryFidelityTokens";
 
 const buildIconUrl = (hex: string) => `/inventory/icons/${hex}`;
 
@@ -13,11 +12,11 @@ describe("InventoryIcon", () => {
     expect(img).toHaveAttribute("src", `/inventory/icons/${"a".repeat(64)}`);
   });
 
-  it("renders the composed icon at ACE's native icon resolution, never stretched to fill the larger cell", () => {
+  it("fills the grid cell edge-to-edge with the composed icon", () => {
     render(<InventoryIcon name="Ivory Buckler" iconCacheKeyHex={"a".repeat(64)} buildIconUrl={buildIconUrl} />);
 
     const img = document.querySelector("img.inventory-icon");
-    expect(img).toHaveStyle({ width: iconGridTokens.iconNativeSize, height: iconGridTokens.iconNativeSize });
+    expect(img).toHaveStyle({ width: "100%", height: "100%" });
   });
 
   it("shows a neutral fallback glyph when no icon cache key exists yet", () => {
