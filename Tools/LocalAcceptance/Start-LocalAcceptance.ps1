@@ -1,20 +1,39 @@
 #Requires -Version 7.0
 <#
 .SYNOPSIS
-    Starts the disposable, local-only Phase 5 inventory acceptance stack (issue #34): an isolated
-    MariaDB container, Cloud schema migrations, ACE Auth Bridge, ACE.Cloud.Backend, ACE.Cloud.Worker,
-    and the web client behind a same-origin local proxy. Connects to a separately started ACE test
-    world through acceptance.settings.json -- it never starts, bootstraps, or modifies ACE itself.
+    Phase 2 ("continue") of the disposable, local-only Phase 5 inventory acceptance stack (issue #34):
+    waits for your Cloud-enabled ACE test world to be live and deposit-ready, then starts ACE Auth
+    Bridge, ACE.Cloud.Backend, ACE.Cloud.Worker, and the web client behind a same-origin local proxy.
 
 .DESCRIPTION
-    Run Test-Prerequisites.ps1 first (this script calls it automatically and stops on failure with an
-    actionable diagnostic -- it never silently skips a step). See README.md for the full runbook.
+    Runs Prepare-LocalAcceptanceCloudDatabase.ps1 first (idempotent -- safe to re-run): this prepares
+    the disposable ace_cloud database and its CloudShardBinding BEFORE anything checks whether ACE
+    itself is live, fixing the previous ordering where the prerequisite checker demanded an
+    already-live ACE endpoint before ace_cloud (which a Cloud-enabled ACE process needs) could exist.
+
+    If acceptance.settings.json's aceServerProjectPath is set, this script also starts/restarts that
+    ACE.Server project as a managed background process (trusting its own Config.js is already
+    configured with CloudMule.Enabled = true and MySql.Cloud pointing at the disposable ace_cloud
+    database this script just prepared) -- it never edits that project's files. Leave
+    aceServerProjectPath blank (the default) to manage your own separately started ACE test world
+    instead; this script will then just wait for its liveness endpoint with clear instructions.
+
+    Either way, this never starts, bootstraps, or modifies ACE itself beyond that one optional,
+    explicitly opted-into managed-process restart, and never touches a non-disposable ACE installation
+    or its ace_auth/ace_shard/ace_world databases.
 #>
 
 [CmdletBinding()]
 param(
     # Skips `npm run build`, reusing the previous build in Source/ACE.Cloud.Web/dist.
-    [switch]$SkipWebBuild
+    [switch]$SkipWebBuild,
+
+    # Skips Prepare-LocalAcceptanceCloudDatabase.ps1 (use only if you already ran it this session and
+    # know ace_cloud is still up -- otherwise ACE's own deposit-readiness checks will fail).
+    [switch]$SkipPrepare,
+
+    # How long to wait for ACE's liveness endpoint after (re)starting it.
+    [int]$AceLivenessTimeoutSeconds = 60
 )
 
 $ErrorActionPreference = "Stop"
@@ -23,10 +42,18 @@ $repoRoot = Resolve-Path (Join-Path $scriptRoot "../..")
 $runStateDir = Join-Path $scriptRoot ".local-run"
 $pidFile = Join-Path $runStateDir "processes.json"
 
-& (Join-Path $scriptRoot "Test-Prerequisites.ps1")
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "Aborting: prerequisites failed. Fix the problems above and re-run." -ForegroundColor Red
-    exit 1
+if (-not $SkipPrepare) {
+    & (Join-Path $scriptRoot "Prepare-LocalAcceptanceCloudDatabase.ps1")
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Aborting: preparing the disposable ace_cloud database failed." -ForegroundColor Red
+        exit 1
+    }
+} else {
+    & (Join-Path $scriptRoot "Test-Prerequisites.ps1")
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Aborting: prerequisites failed. Fix the problems above and re-run." -ForegroundColor Red
+        exit 1
+    }
 }
 
 $settings = Get-Content (Join-Path $scriptRoot "acceptance.settings.json") -Raw | ConvertFrom-Json
@@ -41,28 +68,7 @@ $webUiOrigin = "http://127.0.0.1:$($settings.webUiPort)"
 $backendOrigin = "http://127.0.0.1:$($settings.backendPort)"
 $authBridgeOrigin = "http://127.0.0.1:$($settings.authBridgePort)"
 
-Write-Host "Starting the disposable acceptance MariaDB container..." -ForegroundColor Cyan
-$composeFile = Join-Path $scriptRoot "docker-compose.acceptance.yml"
-$env:ACE_CLOUD_ACCEPTANCE_DB_ROOT_PASSWORD = $settings.dbRootPassword
-$env:ACE_CLOUD_ACCEPTANCE_DB_USER = $settings.dbUser
-$env:ACE_CLOUD_ACCEPTANCE_DB_PASSWORD = $settings.dbPassword
-$env:ACE_CLOUD_ACCEPTANCE_DB_PORT = $settings.dbPort
-docker compose -p ace-cloud-acceptance -f $composeFile up -d --wait
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "Aborting: the acceptance MariaDB container did not become healthy." -ForegroundColor Red
-    exit 1
-}
-
-Write-Host "Applying Cloud schema migrations..." -ForegroundColor Cyan
-$env:ACE_CLOUD_ACCEPTANCE_CONNECTION_STRING = $cloudConnectionString
-dotnet run --project (Join-Path $repoRoot "Source/ACE.Cloud.LocalAcceptanceMigrator") --configuration Release
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "Aborting: Cloud schema migrations failed." -ForegroundColor Red
-    exit 1
-}
-
 $processRecords = @()
-
 $logDir = Join-Path $runStateDir "logs"
 New-Item -ItemType Directory -Path $logDir -Force | Out-Null
 
@@ -86,6 +92,26 @@ function Start-BackgroundDotnetProject {
     return [pscustomobject]@{ Name = $Name; Pid = $process.Id }
 }
 
+if (-not [string]::IsNullOrWhiteSpace($settings.aceServerProjectPath)) {
+    Write-Host "Starting the managed ACE.Server process (aceServerProjectPath is set)..." -ForegroundColor Cyan
+    Write-Host "This trusts $($settings.aceServerProjectPath)'s own Config.js is already configured with CloudMule.Enabled = true and MySql.Cloud pointing at ace_cloud -- it is not edited by this script." -ForegroundColor DarkGray
+    $aceServerPath = Join-Path $repoRoot $settings.aceServerProjectPath
+    $processRecords += Start-BackgroundDotnetProject -ProjectPath $aceServerPath -Name "AceServer" -EnvironmentOverrides @{}
+} else {
+    Write-Host "aceServerProjectPath is blank -- managing your own separately started ACE test world." -ForegroundColor Cyan
+    Write-Host "If you have not already (re)started it with CloudMule.Enabled = true and MySql.Cloud pointing at the ace_cloud database Prepare-LocalAcceptanceCloudDatabase.ps1 just prepared, do that now." -ForegroundColor Yellow
+}
+
+& (Join-Path $scriptRoot "Test-AceWorldReadiness.ps1") -Settings $settings -TimeoutSeconds $AceLivenessTimeoutSeconds
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "Aborting: ACE is not deposit-ready. Fix the problems above before starting the web stack." -ForegroundColor Red
+    if ($processRecords.Count -gt 0) {
+        $processRecords | ConvertTo-Json -AsArray | Set-Content -Path $pidFile
+        Write-Host "The managed ACE.Server process is still running (pid recorded in $pidFile) -- run Stop-LocalAcceptance.ps1 to stop it." -ForegroundColor Yellow
+    }
+    exit 1
+}
+
 Write-Host "Starting the ACE Auth Bridge..." -ForegroundColor Cyan
 $processRecords += Start-BackgroundDotnetProject -ProjectPath (Join-Path $repoRoot "Source/ACE.Cloud.AuthBridge") -Name "AuthBridge" -EnvironmentOverrides @{
     Urls = $authBridgeOrigin
@@ -105,6 +131,8 @@ $processRecords += Start-BackgroundDotnetProject -ProjectPath (Join-Path $repoRo
     "CloudBackend__ActiveServiceKeySecret" = $settings.activeServiceKeySecret
     "CloudBackend__WorldBoundaryHealthEndpoint" = $settings.worldBoundaryHealthEndpoint
     "CloudBackend__AllowedOrigins__0" = $webUiOrigin
+    "CloudBackend__ExpectedAceExtensionVersion" = $settings.cloudAceExtensionVersion
+    "CloudBackend__ExpectedContractProtocolVersion" = $settings.cloudContractProtocolVersion
 }
 
 Write-Host "Starting ACE.Cloud.Worker..." -ForegroundColor Cyan
@@ -112,6 +140,8 @@ $processRecords += Start-BackgroundDotnetProject -ProjectPath (Join-Path $repoRo
     ASPNETCORE_URLS = "http://127.0.0.1:$($settings.workerHealthPort)"
     "CloudWorker__CloudConnectionString" = $cloudConnectionString
     "CloudWorker__WorldBoundaryHealthEndpoint" = $settings.worldBoundaryHealthEndpoint
+    "CloudWorker__ExpectedAceExtensionVersion" = $settings.cloudAceExtensionVersion
+    "CloudWorker__ExpectedContractProtocolVersion" = $settings.cloudContractProtocolVersion
 }
 
 Write-Host "Waiting for the Backend health endpoint..." -ForegroundColor Cyan
@@ -130,6 +160,7 @@ for ($i = 0; $i -lt 30; $i++) {
 }
 if (-not $backendReady) {
     Write-Host "Aborting: ACE.Cloud.Backend did not become ready at $backendOrigin/health/ready within 60s. Check logs in $runStateDir\logs." -ForegroundColor Red
+    $processRecords | ConvertTo-Json -AsArray | Set-Content -Path $pidFile
     exit 1
 }
 
@@ -172,6 +203,7 @@ for ($i = 0; $i -lt 15; $i++) {
 }
 if (-not $proxyReady) {
     Write-Host "Aborting: the same-origin proxy did not become ready at $webUiOrigin within 15s." -ForegroundColor Red
+    $processRecords | ConvertTo-Json -AsArray | Set-Content -Path $pidFile
     exit 1
 }
 

@@ -317,6 +317,9 @@ namespace ACE.Server
             log.Info("Initializing CloudCustodianManager...");
             CloudCustodianManager.Initialize();
 
+            log.Info("Starting CloudWorldBoundaryHealthHost...");
+            CloudWorldBoundaryHealthHost.Start();
+
             log.Info("Initializing EventManager...");
             EventManager.Initialize();
 
@@ -353,6 +356,8 @@ namespace ACE.Server
 
         private static void OnProcessExit(object sender, EventArgs e)
         {
+            CloudWorldBoundaryHealthHost.Stop();
+
             if (!IsRunningInContainer)
             {
                 if (!ServerManager.ShutdownInitiated)

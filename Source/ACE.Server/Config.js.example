@@ -259,6 +259,16 @@
     // An existing Vendor-type WeenieClassId in this server's ace_world database that Cloud Custodians
     // spawn from (only their visual/model appearance is reused; name and merchandise properties are
     // overridden). Cloud Custodians do not spawn while this is left at 0.
-    "CustodianBaseWeenieClassId": 0
+    "CustodianBaseWeenieClassId": 0,
+
+    // ACE's own loopback/private-bound world-boundary liveness endpoint (ARCH-008). Only starts while
+    // CloudMule.Enabled and HealthEndpoint.Enabled are both true. Never expose this beyond localhost /
+    // a private network -- it exists only for companion services and the disposable local acceptance
+    // launcher to detect whether this ACE process is up.
+    "HealthEndpoint": {
+      "Enabled": true,
+      "BindAddress": "127.0.0.1",
+      "Port": 9600
+    }
   }
 }

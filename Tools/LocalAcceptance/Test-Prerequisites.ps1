@@ -1,9 +1,16 @@
 #Requires -Version 7.0
 <#
 .SYNOPSIS
-    Validates local prerequisites for the disposable Phase 5 acceptance stack (issue #34) and reports
-    every problem it finds -- it never silently skips a check. Run directly for a quick diagnosis, or
-    let Start-LocalAcceptance.ps1 call it before doing anything else.
+    Validates local-machine prerequisites for the disposable Phase 5 acceptance stack (issue #34) and
+    reports every problem it finds -- it never silently skips a check. This covers tools, ports, and
+    acceptance.settings.json's shape only; it deliberately does NOT check the ACE test world's
+    liveness (see Test-AceWorldReadiness.ps1) because that check must run AFTER ace_cloud and its
+    CloudShardBinding are prepared (Prepare-LocalAcceptanceCloudDatabase.ps1), not before -- a
+    Cloud-enabled ACE process cannot become meaningfully ready until ace_cloud exists.
+
+.DESCRIPTION
+    Run directly for a quick diagnosis, or let Prepare-LocalAcceptanceCloudDatabase.ps1 /
+    Start-LocalAcceptance.ps1 call it automatically.
 #>
 
 [CmdletBinding()]
@@ -86,7 +93,9 @@ if (-not (Test-Path $settingsPath)) {
         $requiredFields = @(
             "webUiPort", "backendPort", "workerHealthPort", "authBridgePort", "dbPort",
             "dbRootPassword", "dbUser", "dbPassword", "worldBoundaryHealthEndpoint",
-            "aceAuthConnectionString", "shardId", "activeServiceKeyId", "activeServiceKeySecret"
+            "aceAuthConnectionString", "aceShardConnectionString", "aceWorldConnectionString",
+            "shardId", "activeServiceKeyId", "activeServiceKeySecret",
+            "cloudAceExtensionVersion", "cloudContractProtocolVersion"
         )
         foreach ($field in $requiredFields) {
             $value = $settings.$field
@@ -100,6 +109,7 @@ if (-not (Test-Path $settingsPath)) {
                 $problems.Add("acceptance.settings.json is missing a real value for testAccounts.$accountField.")
             }
         }
+        # aceServerProjectPath is optional (blank means "you manage your own ACE process"); no check needed.
     }
 }
 
@@ -107,20 +117,10 @@ if ($settings) {
     Test-PortFree -Port $settings.webUiPort -UsedFor "the web client's local proxy"
     Test-PortFree -Port $settings.backendPort -UsedFor "ACE.Cloud.Backend"
     Test-PortFree -Port $settings.dbPort -UsedFor "the disposable acceptance MariaDB container"
-
-    Write-Host "Checking the separately started ACE test world's health endpoint ($($settings.worldBoundaryHealthEndpoint))..." -ForegroundColor Cyan
-    try {
-        $response = Invoke-WebRequest -Uri $settings.worldBoundaryHealthEndpoint -UseBasicParsing -TimeoutSec 5
-        if ($response.StatusCode -ne 200) {
-            $problems.Add("The ACE test world's health endpoint returned HTTP $($response.StatusCode). Start your test world (built from this PR branch) before running the acceptance launcher.")
-        }
-    } catch {
-        $problems.Add("Could not reach the ACE test world's health endpoint at $($settings.worldBoundaryHealthEndpoint): $($_.Exception.Message). Start a separate ACE test world built from this PR branch first -- this launcher does not start or bootstrap ACE itself.")
-    }
 }
 
 if ($problems.Count -eq 0) {
-    Write-Host "All prerequisites are satisfied." -ForegroundColor Green
+    Write-Host "All local prerequisites are satisfied." -ForegroundColor Green
     exit 0
 }
 
