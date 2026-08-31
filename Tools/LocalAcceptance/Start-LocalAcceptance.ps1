@@ -85,7 +85,7 @@ New-Item -ItemType Directory -Path $logDir -Force | Out-Null
 New-Item -ItemType Directory -Path $protectedAssetStorageRoot -Force | Out-Null
 
 function Start-BackgroundDotnetProject {
-    param([string]$ProjectPath, [string]$Name, [hashtable]$EnvironmentOverrides)
+    param([string]$ProjectPath, [string]$Name, [hashtable]$EnvironmentOverrides, [switch]$NoBuild)
 
     foreach ($key in $EnvironmentOverrides.Keys) {
         Set-Item -Path "Env:$key" -Value ([string]$EnvironmentOverrides[$key])
@@ -93,7 +93,11 @@ function Start-BackgroundDotnetProject {
 
     $outLog = Join-Path $logDir "$Name.out.log"
     $errLog = Join-Path $logDir "$Name.err.log"
-    $process = Start-Process -FilePath "dotnet" -ArgumentList @("run", "--project", $ProjectPath, "--configuration", "Release") `
+    $arguments = @("run", "--project", $ProjectPath, "--configuration", "Release")
+    if ($NoBuild) {
+        $arguments = @("run", "--no-build", "--project", $ProjectPath, "--configuration", "Release")
+    }
+    $process = Start-Process -FilePath "dotnet" -ArgumentList $arguments `
         -PassThru -NoNewWindow -RedirectStandardOutput $outLog -RedirectStandardError $errLog
 
     foreach ($key in $EnvironmentOverrides.Keys) {
@@ -124,8 +128,20 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
+# These projects share ACE.Common/ACE.Entity outputs. Building them concurrently through three
+# `dotnet run` processes races on Windows DLL replacement, so compile sequentially and launch the
+# already-built outputs below.
+foreach ($project in @("Source/ACE.Cloud.AuthBridge", "Source/ACE.Cloud.Backend", "Source/ACE.Cloud.Worker")) {
+    Write-Host "Building $project..." -ForegroundColor Cyan
+    dotnet build (Join-Path $repoRoot $project) --configuration Release
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Aborting: $project failed to build." -ForegroundColor Red
+        exit 1
+    }
+}
+
 Write-Host "Starting the ACE Auth Bridge..." -ForegroundColor Cyan
-$processRecords += Start-BackgroundDotnetProject -ProjectPath (Join-Path $repoRoot "Source/ACE.Cloud.AuthBridge") -Name "AuthBridge" -EnvironmentOverrides @{
+$processRecords += Start-BackgroundDotnetProject -NoBuild -ProjectPath (Join-Path $repoRoot "Source/ACE.Cloud.AuthBridge") -Name "AuthBridge" -EnvironmentOverrides @{
     Urls = $authBridgeOrigin
     "AuthBridge__AceAuthConnectionString" = $settings.aceAuthConnectionString
     "AuthBridge__WorldBoundaryHealthEndpoint" = $settings.worldBoundaryHealthEndpoint
@@ -133,8 +149,28 @@ $processRecords += Start-BackgroundDotnetProject -ProjectPath (Join-Path $repoRo
     "AuthBridge__ActiveServiceKeySecret" = $settings.activeServiceKeySecret
 }
 
+Write-Host "Waiting for the ACE Auth Bridge health endpoint..." -ForegroundColor Cyan
+$authBridgeReady = $false
+for ($i = 0; $i -lt 30; $i++) {
+    Start-Sleep -Seconds 1
+    try {
+        $response = Invoke-WebRequest -Uri "$authBridgeOrigin/health/live" -UseBasicParsing -TimeoutSec 3
+        if ($response.StatusCode -eq 200) {
+            $authBridgeReady = $true
+            break
+        }
+    } catch {
+        # Expected while the process is still starting.
+    }
+}
+if (-not $authBridgeReady) {
+    Write-Host "Aborting: ACE.Cloud.AuthBridge did not become live at $authBridgeOrigin/health/live within 30s." -ForegroundColor Red
+    $processRecords | ConvertTo-Json -AsArray | Set-Content -Path $pidFile
+    exit 1
+}
+
 Write-Host "Starting ACE.Cloud.Backend..." -ForegroundColor Cyan
-$processRecords += Start-BackgroundDotnetProject -ProjectPath (Join-Path $repoRoot "Source/ACE.Cloud.Backend") -Name "Backend" -EnvironmentOverrides @{
+$processRecords += Start-BackgroundDotnetProject -NoBuild -ProjectPath (Join-Path $repoRoot "Source/ACE.Cloud.Backend") -Name "Backend" -EnvironmentOverrides @{
     ASPNETCORE_URLS = $backendOrigin
     "CloudBackend__CloudConnectionString" = $cloudConnectionString
     "CloudBackend__ShardId" = $settings.shardId
@@ -149,7 +185,7 @@ $processRecords += Start-BackgroundDotnetProject -ProjectPath (Join-Path $repoRo
 }
 
 Write-Host "Starting ACE.Cloud.Worker..." -ForegroundColor Cyan
-$processRecords += Start-BackgroundDotnetProject -ProjectPath (Join-Path $repoRoot "Source/ACE.Cloud.Worker") -Name "Worker" -EnvironmentOverrides @{
+$processRecords += Start-BackgroundDotnetProject -NoBuild -ProjectPath (Join-Path $repoRoot "Source/ACE.Cloud.Worker") -Name "Worker" -EnvironmentOverrides @{
     ASPNETCORE_URLS = "http://127.0.0.1:$($settings.workerHealthPort)"
     "CloudWorker__CloudConnectionString" = $cloudConnectionString
     "CloudWorker__WorldBoundaryHealthEndpoint" = $settings.worldBoundaryHealthEndpoint
