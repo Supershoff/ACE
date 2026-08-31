@@ -138,6 +138,7 @@ namespace ACE.Server.Managers
 
             await BackfillInventoryPropertiesAsync(shardId).ConfigureAwait(false);
             await BackfillIconCompositionInputsAsync(shardId).ConfigureAwait(false);
+            await BackfillAppraisalSnapshotAsync(shardId).ConfigureAwait(false);
 
             var marketplacePosition = ResolveMarketplacePosition();
             var mansions = ResolveMansionLocations();
@@ -281,6 +282,90 @@ namespace ACE.Server.Managers
             catch (Exception ex)
             {
                 log.Error("AC Cloud Mule: icon composition inputs backfill failed; a later reapply will retry it.", ex);
+            }
+        }
+
+        /// <summary>
+        /// Repairs missing <see cref="CloudAppraisalSnapshotProjection"/> rows from the authoritative
+        /// retained native biota (issue #34 human-acceptance correction, item 4: the maintainer's
+        /// 2026-08-31 human-acceptance pass found this backfill never existed, permanently stranding
+        /// any custody record deposited before the appraisal-snapshot capture landed -- or whose
+        /// deposit-time capture failed -- on <c>CloudInventoryEndpoints.HandleGetAppraisalAsync</c>'s
+        /// Name/Value/Burden-only fallback with no repair pass ever able to fix it, unlike every other
+        /// rebuildable Cloud projection in this same PR). Independent of
+        /// <see cref="BackfillInventoryPropertiesAsync"/> and <see cref="BackfillIconCompositionInputsAsync"/>
+        /// for the same reason those two are independent of each other: a custody record can have
+        /// either of those rows already while still having no appraisal snapshot row at all.
+        /// <see cref="Player.BuildAppraisalSnapshot(ACE.Database.Models.Shard.Biota)"/> reconstructs a
+        /// detached native WorldObject from the retained biota and appraises it with no live examiner,
+        /// so -- like the icon composition inputs backfill, and unlike the live deposit-time capture --
+        /// this can always run here, not only at deposit time.
+        /// </summary>
+        private static async Task BackfillAppraisalSnapshotAsync(string shardId, CancellationToken cancellationToken = default)
+        {
+            const int maxRowsPerPass = 500;
+
+            try
+            {
+                var options = CloudDbContextOptionsFactory.Create(BuildCloudConnectionString());
+                await using var context = new CloudDbContext(options);
+
+                var missing = await context.CloudCustodyRecords
+                    .AsNoTracking()
+                    .Where(record => record.ShardId == shardId)
+                    .Where(record => !context.CloudAppraisalSnapshotProjections.Any(row => row.BiotaId == record.BiotaId))
+                    .OrderBy(record => record.BiotaId)
+                    .Select(record => new { record.BiotaId, record.Version })
+                    .Take(maxRowsPerPass)
+                    .ToListAsync(cancellationToken)
+                    .ConfigureAwait(false);
+
+                var appraisalSnapshotGateway = new CloudAppraisalSnapshotGateway(context);
+                var applied = 0;
+
+                foreach (var candidate in missing)
+                {
+                    var biota = DatabaseManager.Shard.BaseDatabase.GetBiota(candidate.BiotaId, doNotAddToCache: true);
+                    if (biota is null)
+                    {
+                        log.Warn($"AC Cloud Mule: Cloud custody record 0x{candidate.BiotaId:X8} has no retained native biota; appraisal snapshot backfill skipped it.");
+                        continue;
+                    }
+
+                    CloudAppraisalRawItemSnapshot snapshot;
+                    try
+                    {
+                        snapshot = Player.BuildAppraisalSnapshot(biota);
+                    }
+                    catch (Exception ex)
+                    {
+                        log.Warn($"AC Cloud Mule: failed to build an appraisal snapshot for Cloud custody record 0x{candidate.BiotaId:X8}; a later reapply will retry it.", ex);
+                        continue;
+                    }
+
+                    if (snapshot is null)
+                    {
+                        log.Warn($"AC Cloud Mule: Cloud custody record 0x{candidate.BiotaId:X8} has no mapped WorldObject type; appraisal snapshot backfill skipped it.");
+                        continue;
+                    }
+
+                    var wasApplied = await appraisalSnapshotGateway.UpsertAsync(candidate.BiotaId, shardId, snapshot, candidate.Version, cancellationToken)
+                        .ConfigureAwait(false);
+
+                    if (wasApplied)
+                    {
+                        applied++;
+                    }
+                }
+
+                if (applied > 0)
+                {
+                    log.Info($"AC Cloud Mule: backfilled appraisal snapshots for {applied} Cloud custody record(s).");
+                }
+            }
+            catch (Exception ex)
+            {
+                log.Error("AC Cloud Mule: appraisal snapshot backfill failed; the Full Cloud Appraisal will fall back to its minimum fields until a later reapply retries it.", ex);
             }
         }
 

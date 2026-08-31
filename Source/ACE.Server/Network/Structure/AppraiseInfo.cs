@@ -58,7 +58,10 @@ namespace ACE.Server.Network.Structure
         }
 
         /// <summary>
-        /// Construct all of the info required for appraising any WorldObject
+        /// Construct all of the info required for appraising any WorldObject. <paramref name="examiner"/>
+        /// is null only for AC Cloud Mule's retained-biota appraisal snapshot backfill (issue #34:
+        /// <c>Player.BuildAppraisalSnapshot(Biota)</c>), which has no live examining Player -- every
+        /// live ID call site continues to pass a real, non-null Player exactly as before.
         /// </summary>
         public AppraiseInfo(WorldObject wo, Player examiner, bool success = true)
         {
@@ -84,7 +87,10 @@ namespace ACE.Server.Network.Structure
             if (allowedActivator > 0 && !PropertiesBool.ContainsKey(PropertyBool.AppraisalHasAllowedActivator))
                 PropertiesBool[PropertyBool.AppraisalHasAllowedActivator] = true;
 
-            if (PropertiesString.ContainsKey(PropertyString.ScribeAccount) && !examiner.IsAdmin && !examiner.IsSentinel && !examiner.IsEnvoy && !examiner.IsArch && !examiner.IsPsr)
+            // A null examiner (AC Cloud Mule retained-biota backfill, no live examining Player) is
+            // always treated as non-privileged, the same as any ordinary non-admin player.
+            var examinerIsPrivileged = examiner is not null && (examiner.IsAdmin || examiner.IsSentinel || examiner.IsEnvoy || examiner.IsArch || examiner.IsPsr);
+            if (PropertiesString.ContainsKey(PropertyString.ScribeAccount) && !examinerIsPrivileged)
                 PropertiesString.Remove(PropertyString.ScribeAccount);
 
             // not used
@@ -147,12 +153,18 @@ namespace ACE.Server.Network.Structure
                     {
                         PropertiesInt[PropertyInt.ResistLockpick] = (int)resistLockpick;
 
-                        var pickSkill = examiner.Skills[Skill.Lockpick].Current;
+                        // A null examiner (AC Cloud Mule retained-biota backfill) has no live Lockpick
+                        // skill to check against, so the success-percent hint is simply omitted rather
+                        // than computed against a placeholder skill value.
+                        if (examiner is not null)
+                        {
+                            var pickSkill = examiner.Skills[Skill.Lockpick].Current;
 
-                        var successChance = SkillCheck.GetSkillChance((int)pickSkill, (int)resistLockpick) * 100;
+                            var successChance = SkillCheck.GetSkillChance((int)pickSkill, (int)resistLockpick) * 100;
 
-                        if (!PropertiesInt.ContainsKey(PropertyInt.AppraisalLockpickSuccessPercent))
-                            PropertiesInt.Add(PropertyInt.AppraisalLockpickSuccessPercent, (int)successChance);
+                            if (!PropertiesInt.ContainsKey(PropertyInt.AppraisalLockpickSuccessPercent))
+                                PropertiesInt.Add(PropertyInt.AppraisalLockpickSuccessPercent, (int)successChance);
+                        }
                     }
                 }                
                 else

@@ -83,6 +83,42 @@ namespace ACE.Server.WorldObjects
             };
         }
 
+        /// <summary>
+        /// The startup/reapply backfill overload (<c>CloudCustodianManager.BackfillAppraisalSnapshotAsync</c>,
+        /// issue #34 human-acceptance correction: backfill was implemented for icon composition inputs
+        /// but never for the appraisal snapshot, permanently stranding pre-existing/failed-capture
+        /// custody rows on the Value/Burden-only fallback). Unlike the deposit-time capture in
+        /// <c>Player_CloudCustodian.CaptureAppraisalSnapshot</c>, backfill has no live examining Player,
+        /// so this reconstructs a detached native <see cref="WorldObject"/> from the retained custody
+        /// biota via <see cref="ACE.Server.Factories.WorldObjectFactory.CreateWorldObject(ACE.Database.Models.Shard.Biota)"/>
+        /// -- the same reconstruction <c>Player_CloudWithdrawal</c> already uses to rebuild a retained
+        /// custody item with no live session -- and appraises it with a null examiner. <see cref="AppraiseInfo"/>
+        /// treats a null examiner as always non-privileged (strips <c>ScribeAccount</c>, omits the
+        /// Lockpick success-percent hint), exactly as it already would for any ordinary non-admin
+        /// player, so this never needs its own privilege model. Returns null only when
+        /// <paramref name="biota"/>'s WeenieType has no mapped WorldObject type at all
+        /// (<c>WeenieType.Undef</c>).
+        /// </summary>
+        internal static CloudAppraisalRawItemSnapshot BuildAppraisalSnapshot(ACE.Database.Models.Shard.Biota biota)
+        {
+            ArgumentNullException.ThrowIfNull(biota);
+
+            var item = ACE.Server.Factories.WorldObjectFactory.CreateWorldObject(biota);
+            if (item is null)
+            {
+                return null;
+            }
+
+            var name = item.Name;
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                name = $"Item 0x{biota.Id:X8}";
+            }
+
+            var appraisal = new AppraiseInfo(item, examiner: null, success: true);
+            return BuildAppraisalSnapshot(new CloudItemId(biota.Id), name, appraisal);
+        }
+
         private static CloudAppraisalArmorProfile MapArmorProfile(ACE.Server.Network.Structure.ArmorProfile armor, int? armorLevel)
         {
             static CloudAppraisalStatValue Stat(double value) => CloudAppraisalStatValue.Plain(value);
