@@ -37,7 +37,7 @@ namespace ACE.Cloud.Persistence;
 /// <c>CloudAllegianceVaultTransactionGatewayTests</c> assert this directly rather than merely relying
 /// on it never having been wired up.
 /// </summary>
-public sealed class CloudAllegianceVaultTransactionGateway
+public sealed class CloudAllegianceVaultTransactionGateway : ICloudAllegianceVaultTransactionService
 {
     private const short MonarchPropertyType = 26; // PropertyInstanceId.Monarch
 

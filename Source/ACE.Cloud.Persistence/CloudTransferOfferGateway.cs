@@ -18,7 +18,7 @@ namespace ACE.Cloud.Persistence;
 /// <c>CloudWithdrawalReservation.Release</c>'s established rationale for the same situation). This
 /// class instead applies the identical precedence directly against <see cref="CloudTransferOfferRecord"/>.
 /// </summary>
-public sealed class CloudTransferOfferGateway
+public sealed class CloudTransferOfferGateway : ICloudTransferOfferService
 {
     /// <summary>XFER-002: "expires after seven days."</summary>
     public static readonly TimeSpan OfferDuration = TimeSpan.FromDays(7);

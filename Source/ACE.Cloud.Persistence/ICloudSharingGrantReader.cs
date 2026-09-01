@@ -32,6 +32,12 @@ public interface ICloudSharingGrantReader
     /// </summary>
     Task<IReadOnlyList<Guid>> GetAuthorizedGrantorOwnerIdsAsync(
         string shardId, uint viewerAccountId, CancellationToken cancellationToken = default);
+
+    /// <summary>Every explicit Sharing Grant <paramref name="ownerId"/> currently has on file as owner (grants given), most recently updated first.</summary>
+    Task<IReadOnlyList<CloudSharingGrantRecord>> GetGivenAsync(string shardId, Guid ownerId, CancellationToken cancellationToken = default);
+
+    /// <summary>Every explicit Sharing Grant naming <paramref name="granteeId"/> as grantee (grants received), most recently updated first.</summary>
+    Task<IReadOnlyList<CloudSharingGrantRecord>> GetReceivedAsync(string shardId, Guid granteeId, CancellationToken cancellationToken = default);
 }
 
 /// <summary>See <see cref="ICloudSharingGrantReader"/>.</summary>
@@ -104,6 +110,28 @@ public sealed class CloudSharingGrantReader : ICloudSharingGrantReader
         }
 
         return authorized.ToList();
+    }
+
+    public async Task<IReadOnlyList<CloudSharingGrantRecord>> GetGivenAsync(
+        string shardId, Guid ownerId, CancellationToken cancellationToken = default)
+    {
+        RequireShardId(shardId);
+
+        return await _context.CloudSharingGrants.AsNoTracking()
+            .Where(g => g.ShardId == shardId && g.OwnerId == ownerId)
+            .OrderByDescending(g => g.UpdatedAtUtc)
+            .ToListAsync(cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<CloudSharingGrantRecord>> GetReceivedAsync(
+        string shardId, Guid granteeId, CancellationToken cancellationToken = default)
+    {
+        RequireShardId(shardId);
+
+        return await _context.CloudSharingGrants.AsNoTracking()
+            .Where(g => g.ShardId == shardId && g.GranteeId == granteeId)
+            .OrderByDescending(g => g.UpdatedAtUtc)
+            .ToListAsync(cancellationToken);
     }
 
     /// <summary>

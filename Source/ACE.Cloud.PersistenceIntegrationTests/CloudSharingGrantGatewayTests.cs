@@ -318,6 +318,36 @@ public sealed class CloudSharingGrantGatewayTests
     }
 
     [TestMethod]
+    public async Task GetEffectiveAccessAsync_AfterTheGranteesCharacterIsDeletedOutOfBand_StillResolvesTheGrant()
+    {
+        // Issue #39's Red section scenario matrix: "rename/deletion" for a Sharing Grant. CONTEXT.md:
+        // "A Sharing Grant applies to the grantee's current Main and Linked Accounts and survives
+        // character deletion or rename" -- because SetAsync resolves the typed character name to its
+        // owning account's immutable owner Guid exactly once (SHARE-001) and every later read keys off
+        // that Guid, never the character, deleting the character afterward must never disturb the
+        // grant already on file.
+        var options = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
+        var granteeCharacterId = NextId();
+        await AceShardTestData.InsertCharacterAsync(_fixture.AceShardConnectionString, granteeCharacterId, GranteeAccountId, "Grantee");
+
+        await using (var context = new CloudDbContext(options))
+        {
+            var setOutcome = await new CloudSharingGrantGateway(context, new CloudAccountLinkGateway(context))
+                .SetAsync(ShardId, OwnerAccountId, "Grantee", CloudSharingGrantLevel.ViewAndWithdraw);
+            Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, setOutcome.Kind, setOutcome.Reason);
+        }
+
+        await AceShardTestData.DeleteCharacterRowAsync(_fixture.AceShardConnectionString, granteeCharacterId);
+
+        await using var readContext = new CloudDbContext(options);
+        var access = await new CloudSharingGrantReader(readContext).GetEffectiveAccessAsync(ShardId, OwnerAccountId, GranteeAccountId);
+
+        Assert.AreEqual(
+            CloudSharingAccessLevel.ViewAndWithdraw, access,
+            "Deleting the grantee's resolving character must never revoke or reset a grant already resolved to their account.");
+    }
+
+    [TestMethod]
     public async Task WhileFrozenMidTransaction_SetAsync_IsRejected_ProvingTheGateIsRevalidatedAfterTheTransactionOpens()
     {
         // Red -> Green regression test for issue #36's review [P1]: SetAsync used to resolve
@@ -501,6 +531,37 @@ public sealed class CloudSharingGrantGatewayTests
             var consumer = new CloudIdentityProjectionConsumer(consumerContext);
             await consumer.RunBatchAsync(ShardId, maxCount: 100);
         }
+    }
+
+    [TestMethod]
+    public async Task GetGivenAndGetReceivedAsync_ReturnOnlyEachSidesOwnGrants()
+    {
+        var options = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
+        var granteeCharacterId = NextId();
+        await AceShardTestData.InsertCharacterAsync(_fixture.AceShardConnectionString, granteeCharacterId, GranteeAccountId, "Grantee");
+
+        var ownerId = CloudOwnerIdentity.ForAccount(ShardId, OwnerAccountId);
+        var granteeId = CloudOwnerIdentity.ForAccount(ShardId, GranteeAccountId);
+
+        await using (var context = new CloudDbContext(options))
+        {
+            await new CloudSharingGrantGateway(context, new CloudAccountLinkGateway(context))
+                .SetAsync(ShardId, OwnerAccountId, "Grantee", CloudSharingGrantLevel.ViewOnly);
+        }
+
+        await using var readContext = new CloudDbContext(options);
+        var reader = new CloudSharingGrantReader(readContext);
+
+        var given = await reader.GetGivenAsync(ShardId, ownerId);
+        Assert.HasCount(1, given);
+        Assert.AreEqual(granteeId, given[0].GranteeId);
+
+        var received = await reader.GetReceivedAsync(ShardId, granteeId);
+        Assert.HasCount(1, received);
+        Assert.AreEqual(ownerId, received[0].OwnerId);
+
+        Assert.HasCount(0, await reader.GetGivenAsync(ShardId, granteeId), "The grantee must never see this grant under its own GetGivenAsync scope.");
+        Assert.HasCount(0, await reader.GetReceivedAsync(ShardId, ownerId), "The owner must never see this grant under its own GetReceivedAsync scope.");
     }
 
     private static uint NextId() => Interlocked.Increment(ref _nextId);

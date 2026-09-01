@@ -162,6 +162,9 @@ Open the printed URL and, using your synthetic test account(s):
 - [ ] Create a Withdrawal Token for at least one item; confirm it appears once in the Activity Ledger.
 - [ ] In a second tab logged into the same account, confirm the new Activity Ledger entry appears **without reloading** (the Live State Stream).
 - [ ] Open the Notification Center; confirm it opens/closes accessibly and the unread badge behaves.
+- [ ] Send a Transfer Offer to a second synthetic account's character; confirm the recipient sees it under Received and accepting it moves the item and notifies both sides.
+- [ ] Grant View & Withdraw to a second synthetic account's character; confirm the grantee's Sharing Grants page shows it, then set it back to None and confirm the grantee's already-open page updates to None **without reloading**.
+- [ ] With a character sworn to a live allegiance, select it as the Acting Character in Allegiance Vault, contribute an item, and confirm a second current member of the same allegiance can take it out.
 - [ ] Resize to a narrow/mobile viewport; confirm navigation and every above action still works.
 - [ ] Stop `ACE.Cloud.Backend` (e.g. `Stop-Process` on its pid from `.local-run/processes.json`, or kill its logged pid) and confirm the shell shows the stale Live State Stream notice, then restart it (`./Start-LocalAcceptance.ps1 -SkipWebBuild -SkipPrepare`) and confirm it reconnects and catches up without a manual reload.
 - [ ] Point `acceptance.settings.json`'s `worldBoundaryHealthEndpoint` at a stopped world (or stop your test world) and confirm the read-only banner appears while browsing/inventory activity keeps working and withdrawal creation is blocked with a clear message.
@@ -181,8 +184,16 @@ $env:ACE_ACCEPTANCE_MAIN_ACCOUNT_NAME = "..."                   # from acceptanc
 $env:ACE_ACCEPTANCE_MAIN_ACCOUNT_PASSWORD = "..."
 $env:ACE_ACCEPTANCE_LINKED_ACCOUNT_NAME = "..."
 $env:ACE_ACCEPTANCE_LINKED_ACCOUNT_PASSWORD = "..."
+$env:ACE_ACCEPTANCE_SECONDARY_ACCOUNT_NAME = "..."              # a second, independent Main Account (Transfer Offers/Sharing Grants recipient)
+$env:ACE_ACCEPTANCE_SECONDARY_ACCOUNT_PASSWORD = "..."
+$env:ACE_ACCEPTANCE_SECONDARY_ACCOUNT_CHARACTER_NAME = "..."    # that account's current character name, as typed into the offer/grant forms
 npm run test:e2e
 ```
+
+The Transfer Offer, Sharing Grant, and Allegiance Vault specs (`e2e/transferOffers.spec.ts`,
+`e2e/sharingGrants.spec.ts`, `e2e/allegianceVault.spec.ts`) additionally need the secondary account
+above, and the Allegiance Vault spec skips itself with an explicit reason unless the main test
+account already has a current character sworn to a live allegiance on your disposable test world.
 
 `@playwright/test` is deliberately not a committed `package.json`/lockfile dependency (see
 `vite.config.ts`'s test `include` comment) -- it is test tooling installed on demand, not a permanent

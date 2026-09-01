@@ -34,3 +34,20 @@ export function linkedAccount(): AcceptanceTestAccount {
     password: requireEnv("ACE_ACCEPTANCE_LINKED_ACCOUNT_PASSWORD"),
   };
 }
+
+/**
+ * A second, entirely independent Main Account (issue #39): Transfer Offers and Sharing Grants both
+ * require a genuinely separate ownership group, unlike `linkedAccount()`'s account, which is deliberately
+ * linked under the same Main Account and could never legally be an offer recipient or grantee.
+ */
+export function secondaryAccount(): AcceptanceTestAccount {
+  return {
+    accountName: requireEnv("ACE_ACCEPTANCE_SECONDARY_ACCOUNT_NAME"),
+    password: requireEnv("ACE_ACCEPTANCE_SECONDARY_ACCOUNT_PASSWORD"),
+  };
+}
+
+/** The current character name to type when addressing `secondaryAccount()` as a Transfer Offer recipient or Sharing Grant grantee. */
+export function secondaryAccountCharacterName(): string {
+  return requireEnv("ACE_ACCEPTANCE_SECONDARY_ACCOUNT_CHARACTER_NAME");
+}

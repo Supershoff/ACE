@@ -19,7 +19,7 @@ namespace ACE.Cloud.Persistence;
 /// notification side effects, when the requested level already matches), so a repeated identical
 /// request converges to the same committed state without needing a stored key to detect the replay.
 /// </summary>
-public sealed class CloudSharingGrantGateway
+public sealed class CloudSharingGrantGateway : ICloudSharingGrantService
 {
     private readonly CloudDbContext _context;
     private readonly ICloudAccountOwnershipResolver _ownershipResolver;

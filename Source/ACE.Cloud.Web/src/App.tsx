@@ -1,5 +1,8 @@
 import { Route, Routes } from "react-router-dom";
 import { ActivityLedgerPage } from "./activity/ActivityLedgerPage";
+import { AllegianceVaultPage } from "./collaboration/AllegianceVaultPage";
+import { SharingGrantsPage } from "./collaboration/SharingGrantsPage";
+import { TransferOffersPage } from "./collaboration/TransferOffersPage";
 import { LiveStreamStaleBanner } from "./design-system/primitives/LiveStreamStaleBanner";
 import { ReadOnlyBanner } from "./design-system/primitives/ReadOnlyBanner";
 import { Button } from "./design-system/primitives/Button";
@@ -20,6 +23,9 @@ const NAV_ITEMS = [
   { to: "/", label: "Marketplace" },
   { to: "/dashboard", label: "Dashboard" },
   { to: "/activity", label: "Activity" },
+  { to: "/transfer-offers", label: "Transfer Offers" },
+  { to: "/sharing-grants", label: "Sharing" },
+  { to: "/allegiance-vault", label: "Allegiance Vault" },
   { to: "/account", label: "Account" },
 ];
 
@@ -66,6 +72,36 @@ export function App() {
             element={
               <RequireAuth>
                 <ActivityLedgerPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/transfer-offers"
+            element={
+              <RequireAuth>
+                <RequireMainAccount>
+                  <TransferOffersPage />
+                </RequireMainAccount>
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/sharing-grants"
+            element={
+              <RequireAuth>
+                <RequireMainAccount>
+                  <SharingGrantsPage />
+                </RequireMainAccount>
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/allegiance-vault"
+            element={
+              <RequireAuth>
+                <RequireMainAccount>
+                  <AllegianceVaultPage />
+                </RequireMainAccount>
               </RequireAuth>
             }
           />
