@@ -90,4 +90,19 @@ public enum CloudBoundaryOperationType
     /// <see cref="WithdrawalReservationCancelled"/>, which this otherwise mirrors.
     /// </summary>
     WithdrawalReservationInvalidated,
+
+    /// <summary>
+    /// An Acting Character contributed a whole Cloud Item or Cloud Stack Lot from their own personal
+    /// Cloud Inventory into their currently authorized Allegiance Vault (issue #37, VAULT-001,
+    /// VAULT-003). Distinct from <see cref="OwnershipTransfer"/> so the Activity Ledger records the
+    /// direction of every vault movement precisely, matching <see cref="VaultAbsorption"/>'s own
+    /// established precedent of a vault-specific operation type.
+    /// </summary>
+    VaultContribution,
+
+    /// <summary>
+    /// An Acting Character took a whole Cloud Item or Cloud Stack Lot from their currently authorized
+    /// Allegiance Vault into their own personal Cloud Inventory (issue #37, VAULT-001, VAULT-003).
+    /// </summary>
+    VaultTake,
 }

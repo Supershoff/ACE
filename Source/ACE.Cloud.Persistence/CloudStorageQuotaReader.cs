@@ -24,4 +24,20 @@ public static class CloudStorageQuotaReader
 
         return row?.PersonalLimit;
     }
+
+    /// <summary>The independently limited Allegiance Vault Storage Quota scope (INV-004's <see cref="CloudStorageQuotaScope.AllegianceVault"/>).</summary>
+    public static async Task<int?> GetVaultLimitAsync(CloudDbContext context, string shardId, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+
+        if (string.IsNullOrWhiteSpace(shardId))
+        {
+            throw new ArgumentException("Reading Storage Quota limits requires a Cloud Shard ID.", nameof(shardId));
+        }
+
+        var row = await context.Set<CloudStorageQuotaLimitsRecord>().AsNoTracking()
+            .SingleOrDefaultAsync(r => r.ShardId == shardId, cancellationToken);
+
+        return row?.VaultLimit;
+    }
 }
