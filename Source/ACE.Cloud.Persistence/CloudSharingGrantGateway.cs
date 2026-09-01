@@ -196,13 +196,13 @@ public sealed class CloudSharingGrantGateway
                 }
 
                 _context.CloudActivityLedgerEvents.Add(new CloudActivityLedgerEvent(
-                    correlationId, grant.ShardId, CloudBoundaryOperationType.WithdrawalReservationInvalidatedByAuthorityLoss,
+                    correlationId, grant.ShardId, CloudBoundaryOperationType.WithdrawalReservationInvalidated,
                     biotaId.Value, reservation.OwnerId, CloudBoundaryOutcomeKind.Committed,
                     $"Sharing Grant {grant.Id} no longer authorizes this Withdrawal Token."));
             }
 
             await AddDirectNotificationAsync(
-                grant.ShardId, reservation.RedeemerOwnerId ?? reservation.OwnerId, CloudNotificationKind.SharingGrantWithdrawalInvalidated,
+                grant.ShardId, reservation.RedeemerOwnerId ?? reservation.OwnerId, CloudNotificationKind.SharingGrantWithdrawalLost,
                 "/account/withdrawal", correlationId, cancellationToken);
         }
     }

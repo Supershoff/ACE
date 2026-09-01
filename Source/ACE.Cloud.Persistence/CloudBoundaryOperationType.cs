@@ -89,5 +89,5 @@ public enum CloudBoundaryOperationType
     /// Grant that authorized it was downgraded/revoked (issue #36, SHARE-004). Ledger-only, like
     /// <see cref="WithdrawalReservationCancelled"/>, which this otherwise mirrors.
     /// </summary>
-    WithdrawalReservationInvalidatedByAuthorityLoss,
+    WithdrawalReservationInvalidated,
 }

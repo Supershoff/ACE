@@ -33,5 +33,5 @@ public enum CloudNotificationKind
     SharingGrantChanged,
 
     /// <summary>A grant-derived Withdrawal Reservation this grantee opened was invalidated by authority loss (grant downgrade or lost qualifying allegiance membership; SHARE-004).</summary>
-    SharingGrantWithdrawalInvalidated,
+    SharingGrantWithdrawalLost,
 }
