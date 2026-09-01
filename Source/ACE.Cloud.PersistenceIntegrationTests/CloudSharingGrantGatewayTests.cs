@@ -18,6 +18,8 @@ public sealed class CloudSharingGrantGatewayTests
     private const uint OwnerAccountId = 500;
     private const uint GranteeAccountId = 600;
     private const uint ThirdPartyAccountId = 700;
+    private const uint AdminAccessLevel = 5;
+    private const uint AdminAccountId = 999;
 
     private static CloudDatabaseFixture _fixture = null!;
     private static uint _nextId = 900_000;
@@ -313,6 +315,85 @@ public sealed class CloudSharingGrantGatewayTests
 
         // The Cloud Custody Record must remain in Cloud custody -- lost authority must never deliver.
         Assert.IsFalse(await AceShardTestData.HasContainerAsync(_fixture.AceShardConnectionString, biotaId));
+    }
+
+    [TestMethod]
+    public async Task WhileFrozenMidTransaction_SetAsync_IsRejected_ProvingTheGateIsRevalidatedAfterTheTransactionOpens()
+    {
+        // Red -> Green regression test for issue #36's review [P1]: SetAsync used to resolve
+        // CloudMutationGateReader.ResolveAsync and evaluate CloudSharingGrantPolicy.EvaluateSet
+        // *before* opening its own transaction (CloudSharingGrantGateway.cs:82 vs :94), so a Global
+        // Cloud Maintenance freeze entered in that window was never caught before commit -- unlike
+        // every sibling gateway that reads this same gate under its own locked transaction
+        // (transaction rule 9; see CloudAccountLinkGateway.LinkOnceAsync's own doc comment). This test
+        // forces the freeze to commit strictly inside that window by blocking SetAsync's own row lock
+        // acquisition on a concurrently held lock, mirroring CloudAccountLinkGatewayTests' own
+        // mid-transaction race style.
+        var options = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
+        var granteeCharacterId = NextId();
+        await AceShardTestData.InsertCharacterAsync(_fixture.AceShardConnectionString, granteeCharacterId, GranteeAccountId, "Grantee");
+
+        Guid grantId;
+        await using (var context = new CloudDbContext(options))
+        {
+            var setOutcome = await new CloudSharingGrantGateway(context, new CloudAccountLinkGateway(context))
+                .SetAsync(ShardId, OwnerAccountId, "Grantee", CloudSharingGrantLevel.ViewOnly);
+            Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, setOutcome.Kind);
+            grantId = setOutcome.Value!.Id;
+        }
+
+        await using var holdConnection = new MySqlConnection(_fixture.CloudConnectionString);
+        await holdConnection.OpenAsync();
+        await using var holdTransaction = await holdConnection.BeginTransactionAsync();
+
+        // Stands in for a concurrent in-flight change to this exact grant, already holding its row
+        // locked but not yet committed -- so SetAsync's own LockGrantAsync (FOR UPDATE) blocks here,
+        // giving this test a deterministic window in which to commit the freeze before releasing it.
+        await using (var holdCommand = holdConnection.CreateCommand())
+        {
+            holdCommand.Transaction = holdTransaction;
+            holdCommand.CommandText = "SELECT Id FROM CloudSharingGrant WHERE Id = @id FOR UPDATE;";
+            holdCommand.Parameters.AddWithValue("@id", grantId.ToString());
+            var lockedId = await holdCommand.ExecuteScalarAsync();
+            Assert.IsNotNull(lockedId);
+        }
+
+        var setTask = Task.Run(async () =>
+        {
+            await using var context = new CloudDbContext(options);
+            return await new CloudSharingGrantGateway(context, new CloudAccountLinkGateway(context))
+                .SetAsync(ShardId, OwnerAccountId, "Grantee", CloudSharingGrantLevel.ViewAndWithdraw);
+        });
+
+        var completedEarly = await Task.WhenAny(setTask, Task.Delay(TimeSpan.FromSeconds(2))) == setTask;
+        Assert.IsFalse(
+            completedEarly,
+            "SetAsync must block acquiring its own row lock instead of racing past a concurrent in-flight change to the same grant.");
+
+        await using (var maintenanceContext = new CloudDbContext(options))
+        {
+            var maintenanceBoundary = new CloudGlobalMaintenanceBoundary(maintenanceContext);
+            var initial = await maintenanceBoundary.GetCurrentAsync(ShardId);
+            Assert.AreEqual(
+                CloudBoundaryOutcomeKind.Committed,
+                (await maintenanceBoundary.EnterAsync(ShardId, "downtime", confirmed: true, AdminAccessLevel, AdminAccountId, initial.Version.Value)).Kind);
+        }
+
+        await holdTransaction.CommitAsync();
+
+        var outcome = await setTask;
+
+        Assert.AreEqual(
+            CloudBoundaryOutcomeKind.Conflict,
+            outcome.Kind,
+            "A Global Cloud Maintenance freeze entered after SetAsync started but before it committed must still block the change (transaction rule 9).");
+
+        var ownerId = CloudOwnerIdentity.ForAccount(ShardId, OwnerAccountId);
+        var granteeId = CloudOwnerIdentity.ForAccount(ShardId, GranteeAccountId);
+
+        await using var verifyContext = new CloudDbContext(options);
+        var stored = await verifyContext.CloudSharingGrants.AsNoTracking().SingleAsync(g => g.OwnerId == ownerId && g.GranteeId == granteeId);
+        Assert.AreEqual(CloudSharingGrantLevel.ViewOnly, stored.Level, "The frozen change must never persist.");
     }
 
     [TestMethod]

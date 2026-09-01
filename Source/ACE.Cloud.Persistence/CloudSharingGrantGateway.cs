@@ -96,6 +96,20 @@ public sealed class CloudSharingGrantGateway
         var nowUtc = await GetDatabaseUtcNowAsync(cancellationToken);
         var existing = await LockGrantAsync(shardId, ownerId, granteeId!.Value, cancellationToken);
 
+        // Transaction rule 9: re-resolve the mutation gate now that this grant's row is locked, so a
+        // Global Cloud Maintenance freeze entered after the pre-transaction check above but before
+        // this commit still blocks the change, matching every sibling Cloud Transaction Authority call
+        // site (CloudAccountLinkGateway.LinkOnceAsync, CloudTransferOfferGateway.CreateOnceAsync).
+        var commitTimeGateState = await CloudMutationGateReader.ResolveAsync(_context, shardId, cancellationToken);
+        var commitTimeRequest = new CloudSharingGrantSetRequest(
+            new CloudAccountId(ownerId), granteeFound, new CloudAccountId(granteeId.Value),
+            granteeIsCrossShard: false, requestedLevel, commitTimeGateState);
+        var commitTimePolicyResult = CloudSharingGrantPolicy.EvaluateSet(commitTimeRequest);
+        if (!commitTimePolicyResult.IsSuccess)
+        {
+            return CloudBoundaryOutcome<CloudSharingGrantRecord>.Conflict(commitTimePolicyResult.Reason!);
+        }
+
         if (existing is null)
         {
             var created = CloudSharingGrantRecord.Open(Guid.NewGuid(), shardId, ownerId, granteeId.Value, requestedLevel, nowUtc);
