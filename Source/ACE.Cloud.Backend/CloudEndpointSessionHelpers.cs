@@ -5,6 +5,8 @@ using Microsoft.AspNetCore.Http;
 
 namespace ACE.Cloud.Backend;
 
+public sealed record CloudAdminSessionResult(CloudWebSession Session, uint AccessLevel);
+
 /// <summary>
 /// The session-cookie lookup every authenticated Cloud backend endpoint needs, shared by the
 /// account identity/linking and Withdrawal Token endpoints added in issue #33. Mirrors
@@ -51,6 +53,34 @@ internal static class CloudEndpointSessionHelpers
         }
 
         return (session, null);
+    }
+
+    /// <summary>
+    /// ADM-001's "revalidate on every sensitive request; session claims alone are insufficient",
+    /// extracted here so every admin-only mutation endpoint (starting with issue #38's Allegiance
+    /// Vault recovery) shares the exact same fresh-Auth-Bridge-read discipline
+    /// <c>CloudActivityLedgerEndpoints</c> already established inline for its own admin-scoped read.
+    /// </summary>
+    public static async Task<(CloudAdminSessionResult? Result, IResult? Error)> TryRequireAdminSessionAsync(
+        HttpContext httpContext,
+        ICloudWebSessionStore sessionStore,
+        ICloudAuthBridgeClient authBridgeClient,
+        CloudBackendOptions options,
+        CancellationToken cancellationToken)
+    {
+        var session = await TryGetActiveSessionAsync(httpContext, sessionStore, options, cancellationToken);
+        if (session is null)
+        {
+            return (null, Results.Json(new { error = "unauthenticated" }, statusCode: StatusCodes.Status401Unauthorized));
+        }
+
+        var freshAccessLevel = await authBridgeClient.GetFreshAccessLevelAsync(session.AccountId, cancellationToken);
+        if (freshAccessLevel is null || !CloudAdminAccessRevalidationPolicy.Evaluate(freshAccessLevel.Value).IsAuthorized)
+        {
+            return (null, Results.Json(new { error = "forbidden" }, statusCode: StatusCodes.Status403Forbidden));
+        }
+
+        return (new CloudAdminSessionResult(session, freshAccessLevel.Value), null);
     }
 
     /// <summary>Matches <c>AuthSessionEndpoints.HandleLogoutAsync</c>'s own CSRF check for every state-changing request.</summary>

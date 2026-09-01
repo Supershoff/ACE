@@ -77,6 +77,8 @@ internal sealed class BackendTestFactory : WebApplicationFactory<Program>
 
     public FakeCloudLiveStreamReader LiveStreamReader { get; } = new();
 
+    public FakeCloudMonarchVaultRecoveryService MonarchVaultRecoveryService { get; } = new();
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.ConfigureServices(services =>
@@ -137,6 +139,12 @@ internal sealed class BackendTestFactory : WebApplicationFactory<Program>
 
             services.RemoveAll<ICloudLiveStreamReader>();
             services.AddSingleton<ICloudLiveStreamReader>(LiveStreamReader);
+
+            services.RemoveAll<ICloudMonarchVaultRecoveryDiagnosticReader>();
+            services.AddSingleton<ICloudMonarchVaultRecoveryDiagnosticReader>(MonarchVaultRecoveryService);
+
+            services.RemoveAll<ICloudMonarchVaultRecoveryService>();
+            services.AddSingleton<ICloudMonarchVaultRecoveryService>(MonarchVaultRecoveryService);
         });
     }
 }

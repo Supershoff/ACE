@@ -105,4 +105,12 @@ public enum CloudBoundaryOperationType
     /// Allegiance Vault into their own personal Cloud Inventory (issue #37, VAULT-001, VAULT-003).
     /// </summary>
     VaultTake,
+
+    /// <summary>
+    /// An administrator moved one whole-item Cloud Custody Record or Cloud Stack Lot out of an
+    /// orphaned Allegiance Vault (one whose monarch was deleted out-of-band) into an explicitly
+    /// chosen destination, as an audited VAULT-005 recovery (issue #38, ADM-002). Distinct from
+    /// <see cref="VaultAbsorption"/> because this is never automatic and never guesses a successor.
+    /// </summary>
+    AdminVaultRecovery,
 }

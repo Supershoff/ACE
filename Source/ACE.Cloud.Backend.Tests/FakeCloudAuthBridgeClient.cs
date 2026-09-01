@@ -8,6 +8,9 @@ internal sealed class FakeCloudAuthBridgeClient : ICloudAuthBridgeClient
 
     public uint? NextAccessLevel { get; set; }
 
+    /// <summary>Per-account overrides for <see cref="GetFreshAccessLevelAsync"/>, so a test can make one account ID (e.g. an admin-typed destination) report as nonexistent (null) while <see cref="NextAccessLevel"/> still answers for every other account, such as the caller's own session.</summary>
+    public Dictionary<uint, uint?> AccessLevelByAccountId { get; } = new();
+
     public int AccessLevelCallCount { get; private set; }
 
     public Task<CloudAuthBridgeGrantResult> IssueGrantAsync(
@@ -17,6 +20,6 @@ internal sealed class FakeCloudAuthBridgeClient : ICloudAuthBridgeClient
     public Task<uint?> GetFreshAccessLevelAsync(uint accountId, CancellationToken cancellationToken = default)
     {
         AccessLevelCallCount++;
-        return Task.FromResult(NextAccessLevel);
+        return Task.FromResult(AccessLevelByAccountId.TryGetValue(accountId, out var overridden) ? overridden : NextAccessLevel);
     }
 }

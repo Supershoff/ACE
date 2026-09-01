@@ -32,6 +32,10 @@ builder.Services.AddScoped<ICloudStackLotSplitService>(serviceProvider => new Cl
 builder.Services.AddScoped<ICloudServiceAvailabilityReader>(serviceProvider => new CloudServiceAvailabilityReader(serviceProvider.GetRequiredService<CloudStartupDiagnosticsService>()));
 builder.Services.AddScoped<ICloudActivityLedgerQueryReader>(serviceProvider => new CloudActivityLedgerQueryReader(serviceProvider.GetRequiredService<CloudDbContext>()));
 builder.Services.AddScoped<ICloudCharacterAllegianceVaultReader>(serviceProvider => new CloudCharacterAllegianceVaultReader(serviceProvider.GetRequiredService<CloudDbContext>()));
+builder.Services.AddScoped(serviceProvider => new CloudMonarchVaultRecoveryGateway(
+    serviceProvider.GetRequiredService<CloudDbContext>(), serviceProvider.GetRequiredService<ICloudAccountOwnershipResolver>()));
+builder.Services.AddScoped<ICloudMonarchVaultRecoveryDiagnosticReader>(serviceProvider => serviceProvider.GetRequiredService<CloudMonarchVaultRecoveryGateway>());
+builder.Services.AddScoped<ICloudMonarchVaultRecoveryService>(serviceProvider => serviceProvider.GetRequiredService<CloudMonarchVaultRecoveryGateway>());
 builder.Services.AddScoped(serviceProvider => new CloudNotificationGateway(serviceProvider.GetRequiredService<CloudDbContext>()));
 builder.Services.AddScoped<ICloudNotificationReader>(serviceProvider => serviceProvider.GetRequiredService<CloudNotificationGateway>());
 builder.Services.AddScoped<ICloudNotificationWriter>(serviceProvider => serviceProvider.GetRequiredService<CloudNotificationGateway>());
@@ -76,6 +80,7 @@ app.MapCloudWithdrawalEndpoints();
 app.MapCloudActivityLedgerEndpoints();
 app.MapCloudNotificationEndpoints();
 app.MapCloudLiveStreamEndpoints();
+app.MapCloudAdminVaultRecoveryEndpoints();
 
 app.Run();
 

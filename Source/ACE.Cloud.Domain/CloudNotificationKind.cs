@@ -34,4 +34,7 @@ public enum CloudNotificationKind
 
     /// <summary>A grant-derived Withdrawal Reservation this grantee opened was invalidated by authority loss (grant downgrade or lost qualifying allegiance membership; SHARE-004).</summary>
     SharingGrantWithdrawalLost,
+
+    /// <summary>An administrator recovered an orphaned Allegiance Vault (VAULT-005) into this owner's Cloud Inventory, with the administrator's reason available in the linked Activity Ledger entry (ADM-002).</summary>
+    AdminVaultRecoveryApplied,
 }
