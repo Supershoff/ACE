@@ -475,6 +475,18 @@ public sealed class CloudAllegianceVaultTransactionGatewayTests
         await AceShardTestData.GrantMonarchAsync(_fixture.AceShardConnectionString, characterId, monarchId);
         await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, biotaId);
 
+        // The item must already be in the Acting Character's personal Cloud Inventory before the
+        // freeze -- Deposit is itself blocked while frozen, so depositing after would leave no
+        // Cloud Custody Record and mask the "frozen" rejection this test is proving (CloudGlobalMaintenanceBoundaryTests.WhileFrozen_Deposit_IsRefused_ProvingTheRealGateBlocksTheDepositCallSite).
+        await using (var depositContext = new CloudDbContext(options))
+        {
+            var personalOwnerId = CloudOwnerIdentity.ForAccount(ShardId, accountId);
+            var custodyBoundary = new CloudCustodyBoundary(depositContext);
+            Assert.AreEqual(
+                CloudBoundaryOutcomeKind.Committed,
+                (await custodyBoundary.DepositAsync(biotaId, ShardId, personalOwnerId, Guid.NewGuid())).Kind);
+        }
+
         await using (var maintenanceContext = new CloudDbContext(options))
         {
             var maintenanceBoundary = new CloudGlobalMaintenanceBoundary(maintenanceContext);
@@ -485,10 +497,6 @@ public sealed class CloudAllegianceVaultTransactionGatewayTests
         }
 
         await using var context = new CloudDbContext(options);
-        var personalOwnerId = CloudOwnerIdentity.ForAccount(ShardId, accountId);
-        var custodyBoundary = new CloudCustodyBoundary(context);
-        await custodyBoundary.DepositAsync(biotaId, ShardId, personalOwnerId, Guid.NewGuid());
-
         var gateway = new CloudAllegianceVaultTransactionGateway(context, new CloudAccountLinkGateway(context));
         var outcome = await gateway.ContributeAsync(
             ShardId, accountId, characterId, CloudReservationTarget.ForItem(new CloudItemId(biotaId)), Guid.NewGuid());
