@@ -14,4 +14,5 @@ public sealed record CloudMonarchVaultRecoveryRequest(
     string? Reason,
     bool Confirmed,
     Guid SourceVaultOwnerId,
-    Guid DestinationOwnerId);
+    Guid DestinationOwnerId,
+    bool DestinationAccountExists);

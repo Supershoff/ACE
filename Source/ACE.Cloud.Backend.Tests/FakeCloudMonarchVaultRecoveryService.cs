@@ -26,6 +26,7 @@ internal sealed class FakeCloudMonarchVaultRecoveryService : ICloudMonarchVaultR
         Guid diagnosticId,
         uint adminAccountId,
         uint destinationAccountId,
+        bool destinationAccountExists,
         string? reason,
         bool confirmed,
         CancellationToken cancellationToken = default)
@@ -41,7 +42,8 @@ internal sealed class FakeCloudMonarchVaultRecoveryService : ICloudMonarchVaultR
             Reason: reason,
             Confirmed: confirmed,
             SourceVaultOwnerId: diagnostic?.VaultOwnerId ?? Guid.Empty,
-            DestinationOwnerId: destinationOwnerId));
+            DestinationOwnerId: destinationOwnerId,
+            DestinationAccountExists: destinationAccountExists));
 
         if (!policyResult.IsSuccess)
         {

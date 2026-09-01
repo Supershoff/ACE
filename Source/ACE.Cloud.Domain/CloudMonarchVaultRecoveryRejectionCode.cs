@@ -30,4 +30,12 @@ public enum CloudMonarchVaultRecoveryRejectionCode
 
     /// <summary>The administrator-chosen destination is missing or identical to the orphaned vault itself.</summary>
     InvalidDestination,
+
+    /// <summary>
+    /// The administrator-chosen destination account does not exist in <c>ace_auth.account</c>
+    /// (a fresh Auth Bridge lookup, ADM-001's own established pattern). A committed recovery can
+    /// never be re-applied once resolved, so a typo here would otherwise permanently reassign the
+    /// vault's contents to an owner identity with no real account behind it.
+    /// </summary>
+    DestinationAccountNotFound,
 }

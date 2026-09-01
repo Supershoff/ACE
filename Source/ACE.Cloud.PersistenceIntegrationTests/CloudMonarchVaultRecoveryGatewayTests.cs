@@ -52,7 +52,8 @@ public sealed class CloudMonarchVaultRecoveryGatewayTests
         var gateway = new CloudMonarchVaultRecoveryGateway(context, new CloudAccountLinkGateway(context));
 
         var outcome = await gateway.RecoverAsync(
-            ShardId, diagnostic.Id, AdminAccountId, destinationAccountId, "Monarch deleted directly in the database; sending to the designated successor.", confirmed: true);
+            ShardId, diagnostic.Id, AdminAccountId, destinationAccountId, destinationAccountExists: true,
+            "Monarch deleted directly in the database; sending to the designated successor.", confirmed: true);
 
         Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, outcome.Kind, outcome.Reason);
         Assert.AreEqual(1, outcome.Value!.CustodyRecordsMoved);
@@ -86,7 +87,8 @@ public sealed class CloudMonarchVaultRecoveryGatewayTests
         var gateway = new CloudMonarchVaultRecoveryGateway(context, new CloudAccountLinkGateway(context));
 
         var outcome = await gateway.RecoverAsync(
-            ShardId, diagnostic.Id, AdminAccountId, destinationAccountId, "Audited recovery reason.", confirmed: true);
+            ShardId, diagnostic.Id, AdminAccountId, destinationAccountId, destinationAccountExists: true,
+            "Audited recovery reason.", confirmed: true);
         Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, outcome.Kind, outcome.Reason);
 
         var ledgerEvents = await context.CloudActivityLedgerEvents.AsNoTracking()
@@ -115,13 +117,39 @@ public sealed class CloudMonarchVaultRecoveryGatewayTests
         var gateway = new CloudMonarchVaultRecoveryGateway(context, new CloudAccountLinkGateway(context));
 
         var outcome = await gateway.RecoverAsync(
-            ShardId, diagnostic.Id, AdminAccountId, destinationAccountId, "Audited recovery reason.", confirmed: true);
+            ShardId, diagnostic.Id, AdminAccountId, destinationAccountId, destinationAccountExists: true,
+            "Audited recovery reason.", confirmed: true);
         Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, outcome.Kind, outcome.Reason);
 
         var notification = await context.CloudNotifications.AsNoTracking()
             .SingleOrDefaultAsync(n => n.ShardId == ShardId && n.OwnerId == destinationOwnerId && n.Kind == CloudNotificationKind.AdminVaultRecoveryApplied);
 
         Assert.IsNotNull(notification, "ADM-002: 'Affected owners receive the administrator's intervention reason in an in-app notification.'");
+    }
+
+    [TestMethod]
+    public async Task RecoverAsync_DestinationAccountDoesNotExist_IsAConflict_AndDoesNotResolveOrMoveAnything()
+    {
+        // VAULT-005/ADM-002: a resolved diagnostic can never be re-applied, so an administrator typo
+        // in the destination account must be refused now rather than permanently stranding the
+        // vault's contents on an owner identity with no real account behind it.
+        var options = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
+        var (monarchId, diagnostic, wholeItemBiotaId, _) = await SeedDiagnosedOrphanedVaultAsync(options);
+
+        await using var context = new CloudDbContext(options);
+        var gateway = new CloudMonarchVaultRecoveryGateway(context, new CloudAccountLinkGateway(context));
+
+        var outcome = await gateway.RecoverAsync(
+            ShardId, diagnostic.Id, AdminAccountId, NextId(), destinationAccountExists: false,
+            "A real reason.", confirmed: true);
+
+        Assert.AreEqual(CloudBoundaryOutcomeKind.Conflict, outcome.Kind);
+
+        var persistedDiagnostic = await context.CloudMonarchDeletionDiagnostics.AsNoTracking().SingleAsync(d => d.Id == diagnostic.Id);
+        Assert.IsFalse(persistedDiagnostic.IsResolved, "A recovery to a nonexistent destination account must never be committed.");
+
+        var custodyRecord = await context.CloudCustodyRecords.AsNoTracking().SingleAsync(r => r.BiotaId == wholeItemBiotaId);
+        Assert.AreEqual(diagnostic.VaultOwnerId, custodyRecord.OwnerId, "A refused recovery must not move anything.");
     }
 
     [TestMethod]
@@ -133,7 +161,7 @@ public sealed class CloudMonarchVaultRecoveryGatewayTests
         await using var context = new CloudDbContext(options);
         var gateway = new CloudMonarchVaultRecoveryGateway(context, new CloudAccountLinkGateway(context));
 
-        var outcome = await gateway.RecoverAsync(ShardId, diagnostic.Id, AdminAccountId, NextId(), reason: null, confirmed: true);
+        var outcome = await gateway.RecoverAsync(ShardId, diagnostic.Id, AdminAccountId, NextId(), destinationAccountExists: true, reason: null, confirmed: true);
 
         Assert.AreEqual(CloudBoundaryOutcomeKind.Conflict, outcome.Kind);
 
@@ -153,7 +181,7 @@ public sealed class CloudMonarchVaultRecoveryGatewayTests
         await using var context = new CloudDbContext(options);
         var gateway = new CloudMonarchVaultRecoveryGateway(context, new CloudAccountLinkGateway(context));
 
-        var outcome = await gateway.RecoverAsync(ShardId, diagnostic.Id, AdminAccountId, NextId(), "A real reason.", confirmed: false);
+        var outcome = await gateway.RecoverAsync(ShardId, diagnostic.Id, AdminAccountId, NextId(), destinationAccountExists: true, "A real reason.", confirmed: false);
 
         Assert.AreEqual(CloudBoundaryOutcomeKind.Conflict, outcome.Kind);
 
@@ -168,7 +196,7 @@ public sealed class CloudMonarchVaultRecoveryGatewayTests
         await using var context = new CloudDbContext(options);
         var gateway = new CloudMonarchVaultRecoveryGateway(context, new CloudAccountLinkGateway(context));
 
-        var outcome = await gateway.RecoverAsync(ShardId, Guid.NewGuid(), AdminAccountId, NextId(), "A real reason.", confirmed: true);
+        var outcome = await gateway.RecoverAsync(ShardId, Guid.NewGuid(), AdminAccountId, NextId(), destinationAccountExists: true, "A real reason.", confirmed: true);
 
         Assert.AreEqual(CloudBoundaryOutcomeKind.Conflict, outcome.Kind);
     }
@@ -185,14 +213,16 @@ public sealed class CloudMonarchVaultRecoveryGatewayTests
         var gateway = new CloudMonarchVaultRecoveryGateway(context, new CloudAccountLinkGateway(context));
 
         var firstOutcome = await gateway.RecoverAsync(
-            ShardId, diagnostic.Id, AdminAccountId, firstDestinationAccountId, "First administrator decision.", confirmed: true);
+            ShardId, diagnostic.Id, AdminAccountId, firstDestinationAccountId, destinationAccountExists: true,
+            "First administrator decision.", confirmed: true);
         Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, firstOutcome.Kind, firstOutcome.Reason);
 
         // A retried/duplicate request -- proving both "retry/crash" safety and that a committed
         // transfer can never be overridden by a later attempt with a different destination.
         var secondDestinationAccountId = NextId();
         var secondOutcome = await gateway.RecoverAsync(
-            ShardId, diagnostic.Id, AdminAccountId, secondDestinationAccountId, "A different, later reason.", confirmed: true);
+            ShardId, diagnostic.Id, AdminAccountId, secondDestinationAccountId, destinationAccountExists: true,
+            "A different, later reason.", confirmed: true);
 
         Assert.AreEqual(CloudBoundaryOutcomeKind.Conflict, secondOutcome.Kind);
 
@@ -217,8 +247,8 @@ public sealed class CloudMonarchVaultRecoveryGatewayTests
         var gatewayA = new CloudMonarchVaultRecoveryGateway(contextA, new CloudAccountLinkGateway(contextA));
         var gatewayB = new CloudMonarchVaultRecoveryGateway(contextB, new CloudAccountLinkGateway(contextB));
 
-        var taskA = gatewayA.RecoverAsync(ShardId, diagnostic.Id, AdminAccountId, destinationAccountIdA, "Concurrent attempt A.", confirmed: true);
-        var taskB = gatewayB.RecoverAsync(ShardId, diagnostic.Id, AdminAccountId, destinationAccountIdB, "Concurrent attempt B.", confirmed: true);
+        var taskA = gatewayA.RecoverAsync(ShardId, diagnostic.Id, AdminAccountId, destinationAccountIdA, destinationAccountExists: true, "Concurrent attempt A.", confirmed: true);
+        var taskB = gatewayB.RecoverAsync(ShardId, diagnostic.Id, AdminAccountId, destinationAccountIdB, destinationAccountExists: true, "Concurrent attempt B.", confirmed: true);
         var results = await Task.WhenAll(taskA, taskB);
 
         Assert.HasCount(1, results.Where(r => r.Kind == CloudBoundaryOutcomeKind.Committed), "Exactly one concurrent recovery attempt for the same diagnostic must commit.");
@@ -248,7 +278,7 @@ public sealed class CloudMonarchVaultRecoveryGatewayTests
         await using var context = new CloudDbContext(options);
         var gateway = new CloudMonarchVaultRecoveryGateway(context, new CloudAccountLinkGateway(context));
 
-        var outcome = await gateway.RecoverAsync(ShardId, diagnostic.Id, AdminAccountId, NextId(), "A real reason.", confirmed: true);
+        var outcome = await gateway.RecoverAsync(ShardId, diagnostic.Id, AdminAccountId, NextId(), destinationAccountExists: true, "A real reason.", confirmed: true);
 
         Assert.AreEqual(CloudBoundaryOutcomeKind.Conflict, outcome.Kind);
         StringAssert.Contains(outcome.Reason, "frozen");
@@ -274,7 +304,8 @@ public sealed class CloudMonarchVaultRecoveryGatewayTests
         var gateway = new CloudMonarchVaultRecoveryGateway(context, new CloudAccountLinkGateway(context));
 
         var outcome = await gateway.RecoverAsync(
-            ShardId, diagnostic.Id, AdminAccountId, destinationAccountId, "Recovering only the named diagnostic.", confirmed: true);
+            ShardId, diagnostic.Id, AdminAccountId, destinationAccountId, destinationAccountExists: true,
+            "Recovering only the named diagnostic.", confirmed: true);
         Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, outcome.Kind, outcome.Reason);
 
         var recoveredRecord = await context.CloudCustodyRecords.AsNoTracking().SingleAsync(r => r.BiotaId == wholeItemBiotaId);

@@ -26,6 +26,7 @@ public interface ICloudMonarchVaultRecoveryService
         Guid diagnosticId,
         uint adminAccountId,
         uint destinationAccountId,
+        bool destinationAccountExists,
         string? reason,
         bool confirmed,
         CancellationToken cancellationToken = default);
@@ -82,13 +83,18 @@ public sealed class CloudMonarchVaultRecoveryGateway : ICloudMonarchVaultRecover
     /// own personal Cloud Inventory and records the administrator's decision. Callers must have
     /// already revalidated <paramref name="adminAccountId"/> as accessLevel 5 for this exact request
     /// (ADM-001) before calling this -- see the resulting <see cref="CloudBoundaryOutcome{T}.Reason"/>
-    /// when they have not, since this itself also refuses without a fresh revalidation.
+    /// when they have not, since this itself also refuses without a fresh revalidation. Likewise,
+    /// <paramref name="destinationAccountExists"/> must be a fresh Auth Bridge existence check for
+    /// <paramref name="destinationAccountId"/> (mirroring the same ADM-001 discipline): this refuses
+    /// rather than commits when it is false, since a committed recovery can never be re-applied and a
+    /// typo'd destination would otherwise permanently strand the vault's contents.
     /// </summary>
     public async Task<CloudBoundaryOutcome<CloudMonarchVaultRecoveryTransferResult>> RecoverAsync(
         string shardId,
         Guid diagnosticId,
         uint adminAccountId,
         uint destinationAccountId,
+        bool destinationAccountExists,
         string? reason,
         bool confirmed,
         CancellationToken cancellationToken = default)
@@ -131,7 +137,8 @@ public sealed class CloudMonarchVaultRecoveryGateway : ICloudMonarchVaultRecover
             Reason: reason,
             Confirmed: confirmed,
             SourceVaultOwnerId: diagnostic?.VaultOwnerId ?? Guid.Empty,
-            DestinationOwnerId: destinationOwnerId));
+            DestinationOwnerId: destinationOwnerId,
+            DestinationAccountExists: destinationAccountExists));
 
         if (!policyResult.IsSuccess)
         {

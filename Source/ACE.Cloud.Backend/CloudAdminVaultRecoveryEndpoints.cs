@@ -93,8 +93,15 @@ public static class CloudAdminVaultRecoveryEndpoints
             return Results.Json(new { error = "invalid_request" }, statusCode: StatusCodes.Status400BadRequest);
         }
 
+        // A fresh Auth Bridge existence check for the administrator-typed destination (ADM-001's own
+        // discipline applied to the destination, not just the caller): a resolved diagnostic can
+        // never be re-applied, so a typo here must be refused now rather than permanently stranding
+        // the vault's contents on an owner identity with no real account behind it.
+        var destinationAccountExists = await authBridgeClient.GetFreshAccessLevelAsync(request.DestinationAccountId, cancellationToken) is not null;
+
         var outcome = await recoveryService.RecoverAsync(
-            options.ShardId, diagnosticId, admin.Session.AccountId, request.DestinationAccountId, request.Reason, request.Confirm, cancellationToken);
+            options.ShardId, diagnosticId, admin.Session.AccountId, request.DestinationAccountId, destinationAccountExists,
+            request.Reason, request.Confirm, cancellationToken);
 
         return outcome.Kind switch
         {

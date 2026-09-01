@@ -5,11 +5,14 @@ namespace ACE.Cloud.Domain;
 /// deletion (CONTEXT.md line 407: "An out-of-band monarch deletion leaves the vault available only
 /// for audited administrator recovery") together with ADM-002's own general administrator
 /// intervention contract ("requires a written reason and delayed confirmation"). This never chooses
-/// -- or validates the plausibility of -- a destination itself (VAULT-005: "do not guess a successor
-/// vault"): the destination is always whatever the administrator explicitly typed, and this policy
-/// only ever refuses an obviously-empty or self-referential one. The actual item-by-item transfer is
-/// the persistence layer's job, exactly like <see cref="CloudAllegianceVaultAbsorptionPolicy"/>, whose
-/// precedence order (authorization/gate first, then request-shape facts) this mirrors.
+/// -- or suggests -- a destination itself (VAULT-005: "do not guess a successor vault"): the
+/// destination is always whatever the administrator explicitly typed. It does still refuse an
+/// obviously-empty or self-referential destination, and one that does not correspond to a real ACE
+/// account (<see cref="CloudMonarchVaultRecoveryRejectionCode.DestinationAccountNotFound"/>) --
+/// otherwise a single typo would permanently and irreversibly reassign the vault's contents, since a
+/// committed recovery can never be re-applied. The actual item-by-item transfer is the persistence
+/// layer's job, exactly like <see cref="CloudAllegianceVaultAbsorptionPolicy"/>, whose precedence
+/// order (authorization/gate first, then request-shape facts) this mirrors.
 /// </summary>
 public static class CloudMonarchVaultRecoveryPolicy
 {
@@ -64,6 +67,13 @@ public static class CloudMonarchVaultRecoveryPolicy
             return CloudMonarchVaultRecoveryResult.Failure(
                 CloudMonarchVaultRecoveryRejectionCode.InvalidDestination,
                 "An administrator Allegiance Vault recovery requires a real destination different from the orphaned vault itself.");
+        }
+
+        if (!request.DestinationAccountExists)
+        {
+            return CloudMonarchVaultRecoveryResult.Failure(
+                CloudMonarchVaultRecoveryRejectionCode.DestinationAccountNotFound,
+                "The administrator-chosen destination account does not exist.");
         }
 
         return CloudMonarchVaultRecoveryResult.Success();

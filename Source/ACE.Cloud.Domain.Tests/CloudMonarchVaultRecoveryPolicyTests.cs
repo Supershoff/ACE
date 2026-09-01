@@ -20,7 +20,8 @@ public sealed class CloudMonarchVaultRecoveryPolicyTests
         Reason: "Monarch character was deleted directly against the database outside ACE's guarded path; reassigning to the guild's designated successor account.",
         Confirmed: true,
         SourceVaultOwnerId: SourceVaultOwnerId,
-        DestinationOwnerId: DestinationOwnerId);
+        DestinationOwnerId: DestinationOwnerId,
+        DestinationAccountExists: true);
 
     [TestMethod]
     public void Authorize_EveryPreconditionSatisfied_Succeeds()
@@ -122,6 +123,19 @@ public sealed class CloudMonarchVaultRecoveryPolicyTests
     }
 
     [TestMethod]
+    public void Authorize_DestinationAccountDoesNotExist_Fails_AndNeverSilentlyReassignsToAnUnownedIdentity()
+    {
+        // An administrator typo in the destination account ID must never be committed: a resolved
+        // diagnostic can never be re-applied, so this is the only chance to refuse it.
+        var request = ValidRequest() with { DestinationAccountExists = false };
+
+        var result = CloudMonarchVaultRecoveryPolicy.Authorize(request);
+
+        Assert.IsFalse(result.IsSuccess);
+        Assert.AreEqual(CloudMonarchVaultRecoveryRejectionCode.DestinationAccountNotFound, result.RejectionCode);
+    }
+
+    [TestMethod]
     public void Authorize_ChecksAuthorizationBeforeLeakingAnyOtherState()
     {
         // Even when every other precondition is also violated, an unauthorized caller must only
@@ -135,7 +149,8 @@ public sealed class CloudMonarchVaultRecoveryPolicyTests
             Reason: null,
             Confirmed: false,
             SourceVaultOwnerId: SourceVaultOwnerId,
-            DestinationOwnerId: SourceVaultOwnerId);
+            DestinationOwnerId: SourceVaultOwnerId,
+            DestinationAccountExists: false);
 
         var result = CloudMonarchVaultRecoveryPolicy.Authorize(request);
 

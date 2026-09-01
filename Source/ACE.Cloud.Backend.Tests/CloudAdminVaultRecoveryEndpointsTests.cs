@@ -138,6 +138,26 @@ public sealed class CloudAdminVaultRecoveryEndpointsTests
     }
 
     [TestMethod]
+    public async Task Recover_DestinationAccountDoesNotExist_ReturnsConflict_AndDoesNotResolve()
+    {
+        await using var factory = new BackendTestFactory();
+        factory.AuthBridgeClient.NextAccessLevel = 5;
+        // The admin's own session revalidates fine (NextAccessLevel), but the destination account the
+        // admin typed does not exist in ace_auth.account -- an override targeted at that account ID
+        // specifically, since GetFreshAccessLevelAsync is also used to revalidate the caller.
+        factory.AuthBridgeClient.AccessLevelByAccountId[DestinationAccountId] = null;
+        var diagnostic = SeedDiagnostic(factory, monarchCharacterId: 100);
+        using var client = await AuthenticatedClientAsync(factory, AdminAccountId);
+
+        using var response = await client.PostAsJsonAsync(
+            $"/admin/vault-recovery/{diagnostic.Id}/recover",
+            new CloudRecoverVaultRequestBody(DestinationAccountId, "A real reason.", true));
+
+        Assert.AreEqual(HttpStatusCode.Conflict, response.StatusCode);
+        Assert.IsFalse(diagnostic.IsResolved, "A destination account that does not exist must never be committed -- a resolved diagnostic can never be re-applied.");
+    }
+
+    [TestMethod]
     public async Task Recover_UnknownDiagnosticId_ReturnsConflict()
     {
         await using var factory = new BackendTestFactory();
