@@ -13,4 +13,19 @@ public enum CloudNotificationKind
 {
     /// <summary>An immediate whole-item Cloud ownership transfer landed in this owner's inventory (the persistence layer's "OwnershipTransfer" boundary operation).</summary>
     OwnershipReceived,
+
+    /// <summary>A new Transfer Offer is pending this owner's decision as recipient (XFER-001, XFER-002).</summary>
+    TransferOfferReceived,
+
+    /// <summary>A Transfer Offer this owner sent was accepted by its recipient (XFER-002).</summary>
+    TransferOfferAccepted,
+
+    /// <summary>A Transfer Offer this owner sent was declined by its recipient (XFER-002).</summary>
+    TransferOfferDeclined,
+
+    /// <summary>A Transfer Offer this owner received was cancelled by its sender before acceptance (XFER-002).</summary>
+    TransferOfferCancelled,
+
+    /// <summary>A Transfer Offer this owner sent expired after seven days unresolved (XFER-002).</summary>
+    TransferOfferExpired,
 }

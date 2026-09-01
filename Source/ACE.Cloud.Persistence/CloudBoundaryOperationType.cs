@@ -67,4 +67,20 @@ public enum CloudBoundaryOperationType
     /// (<see cref="CloudOwnershipTransferAuthority"/>).
     /// </summary>
     OwnershipTransfer,
+
+    /// <summary>
+    /// A Transfer Offer was opened (XFER-001, XFER-002), one ledger event per offered target sharing
+    /// one correlation ID. Ledger-only: unlike <see cref="OwnershipTransfer"/> this never reaches the
+    /// Custody Outbox, since no custody or ownership changes until the offer is later accepted.
+    /// </summary>
+    TransferOfferCreated,
+
+    /// <summary>The sender cancelled a pending Transfer Offer before acceptance (XFER-002). Ledger-only, like <see cref="TransferOfferCreated"/>.</summary>
+    TransferOfferCancelled,
+
+    /// <summary>The recipient declined a pending Transfer Offer (XFER-002). Ledger-only, like <see cref="TransferOfferCreated"/>.</summary>
+    TransferOfferDeclined,
+
+    /// <summary>A pending Transfer Offer's seven-day deadline passed unresolved (XFER-002). Ledger-only, like <see cref="TransferOfferCreated"/>.</summary>
+    TransferOfferExpired,
 }

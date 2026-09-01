@@ -45,4 +45,10 @@ public sealed class CloudWorkerOptions
 
     /// <summary>The maximum number of items the icon composition worker composes per poll tick.</summary>
     public int IconCompositionBatchSize { get; init; } = 50;
+
+    /// <summary>How often the Transfer Offer expiry worker polls for offers past their seven-day deadline (issue #35, XFER-002).</summary>
+    public TimeSpan TransferOfferExpiryPollInterval { get; init; } = TimeSpan.FromMinutes(1);
+
+    /// <summary>The maximum number of Transfer Offers the expiry worker expires per poll tick.</summary>
+    public int TransferOfferExpiryBatchSize { get; init; } = 200;
 }

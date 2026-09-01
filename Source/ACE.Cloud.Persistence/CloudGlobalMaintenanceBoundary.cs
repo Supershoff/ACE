@@ -159,9 +159,9 @@ public sealed class CloudGlobalMaintenanceBoundary
 
         // ADM-004: "resume by shifting deadlines exactly" -- never cancel or unlock, only shift the
         // still-open expiry forward by exactly the duration mutations were frozen for. Withdrawal
-        // Reservation is the only persisted reservation kind today (see
-        // CloudOwnershipTransferAuthority's own doc comment); a future Listing/Offer/BidEscrow
-        // reservation table joins this same bulk shift once it exists.
+        // Reservation and Transfer Offer (issue #35) are the persisted reservation-shaped kinds with
+        // their own expiry clock today; a future Listing/BidEscrow reservation table joins this same
+        // bulk shift once it exists.
         var frozenDurationSeconds = (long)result.FrozenDuration!.Value.TotalSeconds;
         if (frozenDurationSeconds > 0)
         {
@@ -170,6 +170,14 @@ public sealed class CloudGlobalMaintenanceBoundary
                 UPDATE CloudWithdrawalReservation
                 SET ExpiresAtUtc = DATE_ADD(ExpiresAtUtc, INTERVAL {frozenDurationSeconds} SECOND), Version = Version + 1
                 WHERE ShardId = {shardId} AND Status = 'Active'
+                """,
+                cancellationToken);
+
+            await _context.Database.ExecuteSqlInterpolatedAsync(
+                $"""
+                UPDATE CloudTransferOffer
+                SET ExpiresAtUtc = DATE_ADD(ExpiresAtUtc, INTERVAL {frozenDurationSeconds} SECOND), Version = Version + 1
+                WHERE ShardId = {shardId} AND Status = 'Pending'
                 """,
                 cancellationToken);
         }
