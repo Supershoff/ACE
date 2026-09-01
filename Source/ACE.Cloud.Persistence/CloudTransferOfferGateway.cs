@@ -343,9 +343,21 @@ public sealed class CloudTransferOfferGateway
             return CloudBoundaryOutcome<CloudTransferOfferRecord>.Conflict($"Transfer Offer {offerId} expired at {offer.ExpiresAtUtc:O} and can no longer be accepted.");
         }
 
-        var targets = await _context.Set<CloudTransferOfferTargetRecord>().AsNoTracking()
+        var fetchedTargets = await _context.Set<CloudTransferOfferTargetRecord>().AsNoTracking()
             .Where(t => t.OfferId == offerId)
             .ToListAsync(cancellationToken);
+
+        // Deterministic multi-target lock order (transaction rule 2), the exact same
+        // targetsByPolicyTarget/orderedPolicyTargets shape TryCreateOnceAsync and
+        // TryRedeemWithdrawalReservationOnceAsync already use: a plain DB-return order here would let
+        // this resolution acquire CloudCustodyRecord/CloudStackLot locks in a different relative order
+        // than a concurrent overlapping CreateAsync/ReserveForWithdrawalAsync call computes
+        // independently for the same targets, which is a genuine two-transaction deadlock, not merely
+        // a theoretical one.
+        var targetsByPolicyTarget = fetchedTargets.ToDictionary(t => t.ToPolicyTarget());
+        var targets = CloudReservationTargetOrdering.Order(targetsByPolicyTarget.Keys)
+            .Select(policyTarget => targetsByPolicyTarget[policyTarget])
+            .ToList();
 
         offer.Resolve(targetStatus, nowUtc);
         _context.Set<CloudTransferOfferRecord>().Update(offer);
@@ -496,9 +508,16 @@ public sealed class CloudTransferOfferGateway
             return CloudBoundaryOutcome<CloudTransferOfferRecord>.Conflict($"Transfer Offer {offerId} has not yet reached its expiry.");
         }
 
-        var targets = await _context.Set<CloudTransferOfferTargetRecord>().AsNoTracking()
+        var fetchedTargets = await _context.Set<CloudTransferOfferTargetRecord>().AsNoTracking()
             .Where(t => t.OfferId == offerId)
             .ToListAsync(cancellationToken);
+
+        // Deterministic multi-target lock order (transaction rule 2); see TryResolveOnceAsync's
+        // matching comment.
+        var targetsByPolicyTarget = fetchedTargets.ToDictionary(t => t.ToPolicyTarget());
+        var targets = CloudReservationTargetOrdering.Order(targetsByPolicyTarget.Keys)
+            .Select(policyTarget => targetsByPolicyTarget[policyTarget])
+            .ToList();
 
         offer.Resolve(CloudTransferOfferStatus.Expired, nowUtc);
         _context.Set<CloudTransferOfferRecord>().Update(offer);
@@ -605,13 +624,27 @@ public sealed class CloudTransferOfferGateway
     private async Task<(bool Found, uint AccountId)> TryResolveCurrentCharacterAccountAsync(string characterName, CancellationToken cancellationToken)
     {
         var connection = _context.Database.GetDbConnection();
-        await using var command = connection.CreateCommand();
-        command.Transaction = _context.Database.CurrentTransaction?.GetDbTransaction();
-        command.CommandText = "SELECT account_Id FROM ace_shard.character WHERE name = @name AND is_Deleted = 0 LIMIT 1;";
-        CloudRawSqlHelpers.AddParameter(command, "@name", characterName);
 
-        var result = await command.ExecuteScalarAsync(cancellationToken);
-        return result is null or DBNull ? (false, 0) : (true, Convert.ToUInt32(result));
+        // This runs before TryCreateOnceAsync's own transaction begins (transaction rule 9's
+        // revalidation happens later, once every target is locked), so nothing else guarantees the
+        // underlying connection is still open here -- mirrors
+        // CloudAllegianceVaultGateway.CharacterExistsAndIsNotDeletedAsync's own established
+        // OpenConnectionAsync/CloseConnectionAsync bracket for the exact same cross-schema reach.
+        await _context.Database.OpenConnectionAsync(cancellationToken);
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.Transaction = _context.Database.CurrentTransaction?.GetDbTransaction();
+            command.CommandText = "SELECT account_Id FROM ace_shard.character WHERE name = @name AND is_Deleted = 0 LIMIT 1;";
+            CloudRawSqlHelpers.AddParameter(command, "@name", characterName);
+
+            var result = await command.ExecuteScalarAsync(cancellationToken);
+            return result is null or DBNull ? (false, 0) : (true, Convert.ToUInt32(result));
+        }
+        finally
+        {
+            await _context.Database.CloseConnectionAsync();
+        }
     }
 
     private async Task AddDirectNotificationAsync(
@@ -709,10 +742,23 @@ public sealed class CloudTransferOfferGateway
     private async Task<DateTime> GetDatabaseUtcNowAsync(CancellationToken cancellationToken)
     {
         var connection = _context.Database.GetDbConnection();
-        await using var command = connection.CreateCommand();
-        command.Transaction = _context.Database.CurrentTransaction?.GetDbTransaction();
-        command.CommandText = "SELECT UTC_TIMESTAMP(6);";
-        var result = await command.ExecuteScalarAsync(cancellationToken);
-        return DateTime.SpecifyKind(Convert.ToDateTime(result), DateTimeKind.Utc);
+
+        // Every other call site runs this after BeginTransactionAsync has already opened the
+        // connection, but ExpireDueOffersAsync's own top-level call happens before any transaction --
+        // EF Core's OpenConnectionAsync/CloseConnectionAsync are reference-counted, so bracketing here
+        // is a harmless no-op for the already-open callers and a real fix for that one.
+        await _context.Database.OpenConnectionAsync(cancellationToken);
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.Transaction = _context.Database.CurrentTransaction?.GetDbTransaction();
+            command.CommandText = "SELECT UTC_TIMESTAMP(6);";
+            var result = await command.ExecuteScalarAsync(cancellationToken);
+            return DateTime.SpecifyKind(Convert.ToDateTime(result), DateTimeKind.Utc);
+        }
+        finally
+        {
+            await _context.Database.CloseConnectionAsync();
+        }
     }
 }
