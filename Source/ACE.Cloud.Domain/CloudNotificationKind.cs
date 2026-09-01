@@ -28,4 +28,10 @@ public enum CloudNotificationKind
 
     /// <summary>A Transfer Offer this owner sent expired after seven days unresolved (XFER-002).</summary>
     TransferOfferExpired,
+
+    /// <summary>Another Main Account changed (or explicitly revoked) a personal Sharing Grant naming this owner's group as grantee (SHARE-001..004).</summary>
+    SharingGrantChanged,
+
+    /// <summary>A grant-derived Withdrawal Reservation this grantee opened was invalidated by authority loss (grant downgrade or lost qualifying allegiance membership; SHARE-004).</summary>
+    SharingGrantWithdrawalInvalidated,
 }

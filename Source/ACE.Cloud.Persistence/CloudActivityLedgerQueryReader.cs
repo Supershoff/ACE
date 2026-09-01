@@ -95,6 +95,7 @@ public sealed class CloudActivityLedgerQueryReader : ICloudActivityLedgerQueryRe
         candidates.AddRange(await ReadAccountLinkCandidatesAsync(shardId, candidateWindow, cancellationToken));
         candidates.AddRange(await ReadGlobalMaintenanceCandidatesAsync(shardId, candidateWindow, cancellationToken));
         candidates.AddRange(await ReadAssetImportCandidatesAsync(shardId, candidateWindow, cancellationToken));
+        candidates.AddRange(await ReadSharingGrantCandidatesAsync(shardId, candidateWindow, cancellationToken));
 
         var authorized = CloudActivityLedgerQueryEngine.Authorize(candidates, viewer);
         return CloudActivityLedgerQueryEngine.Paginate(authorized, pageNumber, pageSize);
@@ -213,6 +214,27 @@ public sealed class CloudActivityLedgerQueryReader : ICloudActivityLedgerQueryRe
             evt.CorrelationId,
             evt.ShardId,
             CloudActivityLedgerCategory.AssetImport,
+            evt.EventType.ToString(),
+            OwnerId: null,
+            ItemBiotaId: null,
+            Outcome: null,
+            evt.Reason,
+            evt.OccurredAtUtc));
+    }
+
+    private async Task<List<CloudActivityLedgerEntry>> ReadSharingGrantCandidatesAsync(string shardId, int candidateWindow, CancellationToken cancellationToken)
+    {
+        var rows = await _context.CloudSharingGrantLedgerEvents.AsNoTracking()
+            .Where(evt => evt.ShardId == shardId)
+            .OrderByDescending(evt => evt.OccurredAtUtc)
+            .Take(candidateWindow)
+            .ToListAsync(cancellationToken);
+
+        return rows.ConvertAll(evt => new CloudActivityLedgerEntry(
+            evt.Id,
+            evt.CorrelationId,
+            evt.ShardId,
+            CloudActivityLedgerCategory.SharingGrant,
             evt.EventType.ToString(),
             OwnerId: null,
             ItemBiotaId: null,

@@ -23,6 +23,7 @@ public sealed class CloudActivityLedgerImmutabilitySurfaceTests
         typeof(CloudAccountLinkLedgerEvent),
         typeof(CloudGlobalMaintenanceLedgerEvent),
         typeof(CloudAssetImportLedgerEvent),
+        typeof(CloudSharingGrantLedgerEvent),
     ];
 
     private static readonly string[] ForbiddenMutatorNameFragments = ["Update", "Set", "Edit", "Delete", "Remove", "Replace"];

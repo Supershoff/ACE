@@ -36,7 +36,9 @@ public sealed class CloudWithdrawalReservation
         int version,
         DateTime createdAtUtc,
         DateTime expiresAtUtc,
-        DateTime? releasedAtUtc)
+        DateTime? releasedAtUtc,
+        Guid? redeemerOwnerId,
+        Guid? sharingGrantId)
     {
         Id = id;
         ShardId = shardId;
@@ -49,6 +51,8 @@ public sealed class CloudWithdrawalReservation
         CreatedAtUtc = createdAtUtc;
         ExpiresAtUtc = expiresAtUtc;
         ReleasedAtUtc = releasedAtUtc;
+        RedeemerOwnerId = redeemerOwnerId;
+        SharingGrantId = sharingGrantId;
     }
 
     /// <summary>
@@ -60,7 +64,30 @@ public sealed class CloudWithdrawalReservation
     /// referencing the <see cref="Id"/> this call returns.
     /// </summary>
     public static CloudWithdrawalReservation Open(
-        string shardId, Guid ownerId, string tokenHash, Guid openIdempotencyKey, DateTime createdAtUtc, DateTime expiresAtUtc)
+        string shardId, Guid ownerId, string tokenHash, Guid openIdempotencyKey, DateTime createdAtUtc, DateTime expiresAtUtc) =>
+        Open(shardId, ownerId, tokenHash, openIdempotencyKey, createdAtUtc, expiresAtUtc, redeemerOwnerId: null, sharingGrantId: null);
+
+    /// <summary>
+    /// Opens a reservation whose redeemer identity differs from the asset owner (SHARE-003's
+    /// grant-derived Withdrawal Token: "bind grant-derived Withdrawal Tokens to the grantee's current
+    /// group"). <paramref name="ownerId"/> remains the asset owner every locked custody/lot check
+    /// validates targets against; <paramref name="redeemerOwnerId"/> is the identity
+    /// <c>Player.BelongsToRedeemersOwnershipGroup</c> checks the redeeming character's own current
+    /// Main/Linked group against (WDR-002), and <paramref name="sharingGrantId"/> is the exact grant
+    /// whose authority this token was minted under (SHARE-003: "exact grant/authorization
+    /// provenance"), revalidated at redemption time and on the grant's own later change (SHARE-004).
+    /// A self-withdrawal (the ordinary case) passes null for both, in which case redemption checks the
+    /// asset owner's own group, exactly as before this overload existed.
+    /// </summary>
+    public static CloudWithdrawalReservation Open(
+        string shardId,
+        Guid ownerId,
+        string tokenHash,
+        Guid openIdempotencyKey,
+        DateTime createdAtUtc,
+        DateTime expiresAtUtc,
+        Guid? redeemerOwnerId,
+        Guid? sharingGrantId)
     {
         if (string.IsNullOrWhiteSpace(shardId))
         {
@@ -87,9 +114,20 @@ public sealed class CloudWithdrawalReservation
             throw new ArgumentOutOfRangeException(nameof(expiresAtUtc), "A Withdrawal Reservation's expiry must be after its creation time.");
         }
 
+        if (redeemerOwnerId == Guid.Empty)
+        {
+            throw new ArgumentException("A grant-derived Withdrawal Reservation's redeemer identity cannot be empty.", nameof(redeemerOwnerId));
+        }
+
+        if (sharingGrantId == Guid.Empty)
+        {
+            throw new ArgumentException("A grant-derived Withdrawal Reservation's Sharing Grant ID cannot be empty.", nameof(sharingGrantId));
+        }
+
         return new CloudWithdrawalReservation(
             Guid.NewGuid(), shardId, ownerId, tokenHash, openIdempotencyKey,
-            CloudReservationStatus.Active, releaseReason: null, version: 1, createdAtUtc, expiresAtUtc, releasedAtUtc: null);
+            CloudReservationStatus.Active, releaseReason: null, version: 1, createdAtUtc, expiresAtUtc, releasedAtUtc: null,
+            redeemerOwnerId, sharingGrantId);
     }
 
     public Guid Id { get; private set; }
@@ -118,6 +156,22 @@ public sealed class CloudWithdrawalReservation
     public DateTime ExpiresAtUtc { get; private set; }
 
     public DateTime? ReleasedAtUtc { get; private set; }
+
+    /// <summary>
+    /// The identity a redeeming character's own current Main/Linked ownership group is checked
+    /// against (WDR-002). Null for an ordinary self-withdrawal, in which case callers fall back to
+    /// <see cref="OwnerId"/> -- see the two-argument-shorter <see cref="Open(string, Guid, string, Guid, DateTime, DateTime)"/>
+    /// overload's own doc comment.
+    /// </summary>
+    public Guid? RedeemerOwnerId { get; private set; }
+
+    /// <summary>
+    /// The exact Sharing Grant this reservation's Withdrawal Token was minted under (SHARE-003), or
+    /// null for an ordinary self-withdrawal. Revalidated at redemption time and used to locate this
+    /// reservation for proactive release if that grant is later downgraded or its derived allegiance
+    /// authority is lost (SHARE-004).
+    /// </summary>
+    public Guid? SharingGrantId { get; private set; }
 
     /// <summary>
     /// True at or after <see cref="ExpiresAtUtc"/>. Matches <c>CloudReservation.IsExpiredAt</c>:

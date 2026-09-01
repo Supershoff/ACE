@@ -8,8 +8,10 @@ namespace ACE.Cloud.Domain;
 /// after it left the database -- the same "no update/delete path" guarantee the underlying
 /// append-only ledger tables already provide at the storage layer (see
 /// <see cref="ACE.Cloud.RepositoryPolicyTests"/>'s immutability surface tests). <see cref="OwnerId"/>
-/// is null for the three admin-only categories (<see cref="CloudActivityLedgerCategory.AccountLink"/>
-/// uses a raw ACE account ID instead of a Cloud owner GUID; <see cref="CloudActivityLedgerCategory.GlobalMaintenance"/>/
+/// is null for the four admin-only categories (<see cref="CloudActivityLedgerCategory.AccountLink"/>
+/// and <see cref="CloudActivityLedgerCategory.SharingGrant"/> use raw ACE account IDs/opaque owner
+/// GUIDs on the underlying row but expose neither party through this single-<see cref="OwnerId"/>
+/// shape -- see each category's own doc comment for why; <see cref="CloudActivityLedgerCategory.GlobalMaintenance"/>/
 /// <see cref="CloudActivityLedgerCategory.AssetImport"/> have no per-account owner at all), matching
 /// why those categories are never included in an Owner/Shared/Vault-scoped query
 /// (<see cref="CloudActivityLedgerQueryEngine.Authorize"/>).

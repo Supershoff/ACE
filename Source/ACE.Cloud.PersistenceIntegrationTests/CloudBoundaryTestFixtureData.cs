@@ -31,6 +31,8 @@ internal static class CloudBoundaryTestFixtureData
         "CloudCustodianConfiguration",
         "CloudTransferOfferTarget",
         "CloudTransferOffer",
+        "CloudSharingGrantLedgerEvent",
+        "CloudSharingGrant",
         "CloudWithdrawalReservationTarget",
         "CloudWithdrawalReservation",
         "CloudWithdrawalNamedLandblock",
