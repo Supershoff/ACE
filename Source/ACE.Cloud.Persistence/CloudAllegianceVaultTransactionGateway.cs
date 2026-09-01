@@ -153,17 +153,15 @@ public sealed class CloudAllegianceVaultTransactionGateway : ICloudAllegianceVau
 
         await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
 
-        // ARCH-006 / transaction rule 4: a concurrent identical request may have committed between
-        // the unlocked check above and this transaction's start; re-check now that a serialized writer
-        // would have already committed (mirrors CloudOwnershipTransferAuthority.TryTransferOnceAsync's
-        // own established double-check rationale).
-        var existingByKeyAfterOpen = await FindIdempotencyRecordAsync(idempotencyKey, cancellationToken);
-        if (existingByKeyAfterOpen is not null)
-        {
-            await transaction.RollbackAsync(cancellationToken);
-            return await ReplayAsync(existingByKeyAfterOpen, isContribute, cancellationToken);
-        }
-
+        // Deterministic single-row lock (transaction rule 9), acquired *before* any plain
+        // (non-locking) read in this transaction -- see CloudCustodyBoundary.TryDepositOnceAsync's
+        // matching comment for why the order matters under MariaDB's default REPEATABLE READ: a
+        // plain SELECT establishes this transaction's whole consistent-read snapshot at its *first*
+        // such read, so a plain idempotency recheck here, before this lock, would let every later
+        // plain read in this method (including FindActiveReservationAllocationAsync below) run
+        // against a snapshot taken before this transaction ever waited on the target's row lock --
+        // silently missing a Transfer Offer/Withdrawal Reservation that committed on this exact
+        // target while this transaction was blocked waiting for that same lock.
         CloudCustodyRecord? record;
         CloudStackLot? lot = null;
         uint biotaId;
@@ -203,6 +201,17 @@ public sealed class CloudAllegianceVaultTransactionGateway : ICloudAllegianceVau
             }
 
             biotaId = record.BiotaId;
+        }
+
+        // ARCH-006 / transaction rule 4: a concurrent identical request may have committed between
+        // the unlocked check above and this transaction's start; re-check now that a serialized writer
+        // would have already committed (mirrors CloudOwnershipTransferAuthority.TryTransferOnceAsync's
+        // own established double-check rationale).
+        var existingByKeyAfterOpen = await FindIdempotencyRecordAsync(idempotencyKey, cancellationToken);
+        if (existingByKeyAfterOpen is not null)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return await ReplayAsync(existingByKeyAfterOpen, isContribute, cancellationToken);
         }
 
         // Transaction rule 9: revalidate the Acting Character's live membership again now that the
