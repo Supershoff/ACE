@@ -47,6 +47,9 @@ public sealed class CloudAllegianceVaultTransactionGatewayTests
         var biotaId = NextId();
 
         await AceShardTestData.InsertCharacterAsync(_fixture.AceShardConnectionString, characterId, accountId, "Vassal");
+        // biota_properties_i_i_d.object_Id has a foreign key to biota.id, so the character's own
+        // Monarch instance property (granted below) requires its own biota row to exist too.
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, characterId);
         await AceShardTestData.GrantMonarchAsync(_fixture.AceShardConnectionString, characterId, monarchId);
         await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, biotaId);
 
@@ -84,6 +87,9 @@ public sealed class CloudAllegianceVaultTransactionGatewayTests
         var biotaId = NextId();
 
         await AceShardTestData.InsertCharacterAsync(_fixture.AceShardConnectionString, characterId, accountId, "Vassal");
+        // biota_properties_i_i_d.object_Id has a foreign key to biota.id, so the character's own
+        // Monarch instance property (granted below) requires its own biota row to exist too.
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, characterId);
         await AceShardTestData.GrantMonarchAsync(_fixture.AceShardConnectionString, characterId, monarchId);
         await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, biotaId);
 
@@ -114,6 +120,9 @@ public sealed class CloudAllegianceVaultTransactionGatewayTests
         var biotaId = NextId();
 
         await AceShardTestData.InsertCharacterAsync(_fixture.AceShardConnectionString, characterId, accountId, "Vassal");
+        // biota_properties_i_i_d.object_Id has a foreign key to biota.id, so the character's own
+        // Monarch instance property (granted below) requires its own biota row to exist too.
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, characterId);
         await AceShardTestData.GrantMonarchAsync(_fixture.AceShardConnectionString, characterId, monarchId);
         await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, biotaId);
 
@@ -148,6 +157,9 @@ public sealed class CloudAllegianceVaultTransactionGatewayTests
         var idempotencyKey = Guid.NewGuid();
 
         await AceShardTestData.InsertCharacterAsync(_fixture.AceShardConnectionString, characterId, accountId, "Vassal");
+        // biota_properties_i_i_d.object_Id has a foreign key to biota.id, so the character's own
+        // Monarch instance property (granted below) requires its own biota row to exist too.
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, characterId);
         await AceShardTestData.GrantMonarchAsync(_fixture.AceShardConnectionString, characterId, monarchId);
         await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, biotaId);
 
@@ -205,6 +217,9 @@ public sealed class CloudAllegianceVaultTransactionGatewayTests
         var biotaId = NextId();
 
         await AceShardTestData.InsertCharacterAsync(_fixture.AceShardConnectionString, characterId, accountId, "Deleted", isDeleted: true);
+        // biota_properties_i_i_d.object_Id has a foreign key to biota.id, so the character's own
+        // Monarch instance property (granted below) requires its own biota row to exist too.
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, characterId);
         await AceShardTestData.GrantMonarchAsync(_fixture.AceShardConnectionString, characterId, monarchId);
         await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, biotaId);
 
@@ -231,6 +246,9 @@ public sealed class CloudAllegianceVaultTransactionGatewayTests
         var biotaId = NextId();
 
         await AceShardTestData.InsertCharacterAsync(_fixture.AceShardConnectionString, unrelatedCharacterId, unrelatedAccountId, "NotMine");
+        // biota_properties_i_i_d.object_Id has a foreign key to biota.id, so the character's own
+        // Monarch instance property (granted below) requires its own biota row to exist too.
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, unrelatedCharacterId);
         await AceShardTestData.GrantMonarchAsync(_fixture.AceShardConnectionString, unrelatedCharacterId, monarchId);
         await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, biotaId);
 
@@ -261,6 +279,9 @@ public sealed class CloudAllegianceVaultTransactionGatewayTests
         var biotaId = NextId();
 
         await AceShardTestData.InsertCharacterAsync(_fixture.AceShardConnectionString, characterId, accountId, "Vassal");
+        // biota_properties_i_i_d.object_Id has a foreign key to biota.id, so the character's own
+        // Monarch instance property (granted below) requires its own biota row to exist too.
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, characterId);
         await AceShardTestData.GrantMonarchAsync(_fixture.AceShardConnectionString, characterId, ownMonarchId);
         await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, biotaId);
 
@@ -290,9 +311,13 @@ public sealed class CloudAllegianceVaultTransactionGatewayTests
         var firstBiotaId = NextId();
         var secondBiotaId = NextId();
 
+        // biota_properties_i_i_d.object_Id has a foreign key to biota.id, so each character's own
+        // Monarch instance property (granted below) requires its own biota row to exist too.
         await AceShardTestData.InsertCharacterAsync(_fixture.AceShardConnectionString, firstCharacterId, firstAccountId, "First");
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, firstCharacterId);
         await AceShardTestData.GrantMonarchAsync(_fixture.AceShardConnectionString, firstCharacterId, monarchId);
         await AceShardTestData.InsertCharacterAsync(_fixture.AceShardConnectionString, secondCharacterId, secondAccountId, "Second");
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, secondCharacterId);
         await AceShardTestData.GrantMonarchAsync(_fixture.AceShardConnectionString, secondCharacterId, monarchId);
         await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, firstBiotaId);
         await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, secondBiotaId);
@@ -335,6 +360,9 @@ public sealed class CloudAllegianceVaultTransactionGatewayTests
         var biotaId = NextId();
 
         await AceShardTestData.InsertCharacterAsync(_fixture.AceShardConnectionString, characterId, accountId, "Vassal");
+        // biota_properties_i_i_d.object_Id has a foreign key to biota.id, so the character's own
+        // Monarch instance property (granted below) requires its own biota row to exist too.
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, characterId);
         await AceShardTestData.GrantMonarchAsync(_fixture.AceShardConnectionString, characterId, monarchId);
         await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, biotaId);
 
@@ -372,6 +400,9 @@ public sealed class CloudAllegianceVaultTransactionGatewayTests
 
         await AceShardTestData.InsertCharacterAsync(_fixture.AceShardConnectionString, monarchCharacterId, monarchAccountId, "Monarch");
         await AceShardTestData.InsertCharacterAsync(_fixture.AceShardConnectionString, vassalCharacterId, NextId(), "Vassal");
+        // biota_properties_i_i_d.object_Id has a foreign key to biota.id, so the vassal's own
+        // Monarch instance property (granted below) requires its own biota row to exist too.
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, vassalCharacterId);
         await AceShardTestData.GrantMonarchAsync(_fixture.AceShardConnectionString, vassalCharacterId, monarchCharacterId);
         await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, biotaId);
 
@@ -402,6 +433,9 @@ public sealed class CloudAllegianceVaultTransactionGatewayTests
         var candidateBiotaId = NextId();
 
         await AceShardTestData.InsertCharacterAsync(_fixture.AceShardConnectionString, characterId, accountId, "Vassal");
+        // biota_properties_i_i_d.object_Id has a foreign key to biota.id, so the character's own
+        // Monarch instance property (granted below) requires its own biota row to exist too.
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, characterId);
         await AceShardTestData.GrantMonarchAsync(_fixture.AceShardConnectionString, characterId, monarchId);
         await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, alreadyInVaultBiotaId);
         await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, candidateBiotaId);
@@ -435,6 +469,9 @@ public sealed class CloudAllegianceVaultTransactionGatewayTests
         var biotaId = NextId();
 
         await AceShardTestData.InsertCharacterAsync(_fixture.AceShardConnectionString, characterId, accountId, "Vassal");
+        // biota_properties_i_i_d.object_Id has a foreign key to biota.id, so the character's own
+        // Monarch instance property (granted below) requires its own biota row to exist too.
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, characterId);
         await AceShardTestData.GrantMonarchAsync(_fixture.AceShardConnectionString, characterId, monarchId);
         await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, biotaId);
 
@@ -473,6 +510,9 @@ public sealed class CloudAllegianceVaultTransactionGatewayTests
         var biotaId = NextId();
 
         await AceShardTestData.InsertCharacterAsync(_fixture.AceShardConnectionString, characterId, accountId, "Vassal");
+        // biota_properties_i_i_d.object_Id has a foreign key to biota.id, so the character's own
+        // Monarch instance property (granted below) requires its own biota row to exist too.
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, characterId);
         await AceShardTestData.GrantMonarchAsync(_fixture.AceShardConnectionString, characterId, monarchId);
         await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, biotaId);
 
