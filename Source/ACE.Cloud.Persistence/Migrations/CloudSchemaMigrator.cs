@@ -48,6 +48,7 @@ public static class CloudSchemaMigrator
         new AddIconCompositionSharedOverlayDids(),
         new AddCloudTransferOffers(),
         new AddCloudSharingGrants(),
+        new AddMonarchVaultRecovery(),
     ];
 
     /// <summary>

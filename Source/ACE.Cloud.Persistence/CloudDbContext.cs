@@ -828,6 +828,10 @@ public sealed class CloudDbContext : DbContext
                 .IsRequired()
                 .ValueGeneratedOnAdd()
                 .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+            entity.Property(diagnostic => diagnostic.IsResolved).IsRequired();
+            entity.Property(diagnostic => diagnostic.ResolutionReason).HasMaxLength(512);
+            entity.HasIndex(diagnostic => new { diagnostic.ShardId, diagnostic.IsResolved });
         });
 
         modelBuilder.Entity<CloudAuthGrantConsumption>(entity =>

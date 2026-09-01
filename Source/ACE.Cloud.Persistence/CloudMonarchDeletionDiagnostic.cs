@@ -55,4 +55,62 @@ public sealed class CloudMonarchDeletionDiagnostic
     public string Reason { get; private set; } = null!;
 
     public DateTime DetectedAtUtc { get; private set; }
+
+    /// <summary>
+    /// Whether an administrator has already recorded a recovery decision for this diagnostic
+    /// (ADM-002, VAULT-005). Once true, this diagnostic's committed transfer can never be
+    /// overridden by a later recovery attempt -- see <see cref="Resolve"/>.
+    /// </summary>
+    public bool IsResolved { get; private set; }
+
+    public DateTime? ResolvedAtUtc { get; private set; }
+
+    /// <summary>The ACE account ID of the administrator who recorded this decision.</summary>
+    public uint? ResolvedByAdminAccountId { get; private set; }
+
+    /// <summary>The administrator's own written reason for this exact recovery decision (ADM-002).</summary>
+    public string? ResolutionReason { get; private set; }
+
+    /// <summary>
+    /// The administrator-chosen destination owner the vault's contents were moved into. Always an
+    /// explicit administrator decision, never a guessed successor (VAULT-005).
+    /// </summary>
+    public Guid? DestinationOwnerId { get; private set; }
+
+    /// <summary>
+    /// Records the administrator's recovery decision for this diagnostic (ADM-002: "requires a
+    /// written reason and delayed confirmation"). Callers must check <see cref="IsResolved"/> under
+    /// a row lock before calling this -- it throws rather than silently overwriting an earlier
+    /// decision, since a committed recovery can never be overridden (VAULT-005).
+    /// </summary>
+    public void Resolve(uint adminAccountId, string reason, Guid destinationOwnerId)
+    {
+        if (IsResolved)
+        {
+            throw new InvalidOperationException(
+                $"Allegiance Vault recovery diagnostic {Id} was already resolved and cannot be overridden.");
+        }
+
+        if (adminAccountId == 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(adminAccountId), "Resolving a monarch deletion diagnostic requires a real administrator account ID.");
+        }
+
+        if (string.IsNullOrWhiteSpace(reason))
+        {
+            throw new ArgumentException("Resolving a monarch deletion diagnostic requires a written reason.", nameof(reason));
+        }
+
+        if (destinationOwnerId == Guid.Empty || destinationOwnerId == VaultOwnerId)
+        {
+            throw new ArgumentException(
+                "Resolving a monarch deletion diagnostic requires a real destination different from the orphaned vault itself.", nameof(destinationOwnerId));
+        }
+
+        IsResolved = true;
+        ResolvedAtUtc = DateTime.UtcNow;
+        ResolvedByAdminAccountId = adminAccountId;
+        ResolutionReason = reason;
+        DestinationOwnerId = destinationOwnerId;
+    }
 }
