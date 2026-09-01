@@ -135,6 +135,10 @@ public sealed class CloudDbContext : DbContext
 
     public DbSet<CloudTransferOfferTargetRecord> CloudTransferOfferTargets => Set<CloudTransferOfferTargetRecord>();
 
+    public DbSet<CloudSharingGrantRecord> CloudSharingGrants => Set<CloudSharingGrantRecord>();
+
+    public DbSet<CloudSharingGrantLedgerEvent> CloudSharingGrantLedgerEvents => Set<CloudSharingGrantLedgerEvent>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<CloudShardBinding>(entity =>
@@ -346,6 +350,14 @@ public sealed class CloudDbContext : DbContext
 
             entity.Property(reservation => reservation.ExpiresAtUtc).IsRequired();
             entity.Property(reservation => reservation.ReleasedAtUtc);
+
+            // Issue #36: a grant-derived reservation's redeemer identity differs from its asset owner
+            // (SHARE-003); both are indexed so a Sharing Grant change can locate every reservation it
+            // authorized (CloudSharingGrantGateway's proactive-release path).
+            entity.Property(reservation => reservation.RedeemerOwnerId);
+            entity.HasIndex(reservation => reservation.RedeemerOwnerId);
+            entity.Property(reservation => reservation.SharingGrantId);
+            entity.HasIndex(reservation => reservation.SharingGrantId);
         });
 
         modelBuilder.Entity<CloudWithdrawalReservationTarget>(entity =>
@@ -1839,6 +1851,69 @@ public sealed class CloudDbContext : DbContext
             entity.Property(target => target.StackLotId);
             entity.HasIndex(target => target.StackLotId);
             entity.Property(target => target.Quantity);
+        });
+
+        modelBuilder.Entity<CloudSharingGrantRecord>(entity =>
+        {
+            entity.ToTable("CloudSharingGrant");
+
+            entity.HasKey(grant => grant.Id);
+            entity.Property(grant => grant.Id).ValueGeneratedNever();
+
+            entity.Property(grant => grant.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(grant => grant.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(grant => grant.OwnerId).IsRequired();
+            entity.Property(grant => grant.GranteeId).IsRequired();
+
+            // SHARE-001: "set" is always an idempotent upsert against exactly one row per owner/grantee
+            // pair, never an ever-growing history.
+            entity.HasIndex(grant => new { grant.ShardId, grant.OwnerId, grant.GranteeId }).IsUnique();
+            entity.HasIndex(grant => new { grant.ShardId, grant.GranteeId });
+
+            entity.Property(grant => grant.Level).IsRequired().HasConversion<string>().HasMaxLength(16);
+            entity.Property(grant => grant.Version).IsRequired();
+
+            entity.Property(grant => grant.CreatedAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAdd()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+            entity.Property(grant => grant.UpdatedAtUtc).IsRequired();
+        });
+
+        modelBuilder.Entity<CloudSharingGrantLedgerEvent>(entity =>
+        {
+            entity.ToTable("CloudSharingGrantLedgerEvent");
+
+            entity.HasKey(evt => evt.Id);
+            entity.Property(evt => evt.Id).ValueGeneratedNever();
+
+            entity.Property(evt => evt.CorrelationId).IsRequired();
+            entity.HasIndex(evt => evt.CorrelationId);
+
+            entity.Property(evt => evt.ShardId).IsRequired().HasMaxLength(64);
+            entity.HasOne<CloudShardBinding>()
+                .WithMany()
+                .HasForeignKey(evt => evt.ShardId)
+                .HasPrincipalKey(binding => binding.ShardId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(evt => evt.EventType).IsRequired().HasConversion<string>().HasMaxLength(32);
+            entity.Property(evt => evt.OwnerId).IsRequired();
+            entity.HasIndex(evt => evt.OwnerId);
+            entity.Property(evt => evt.GranteeId).IsRequired();
+            entity.HasIndex(evt => evt.GranteeId);
+            entity.Property(evt => evt.Reason).HasMaxLength(512);
+
+            entity.Property(evt => evt.OccurredAtUtc)
+                .IsRequired()
+                .ValueGeneratedOnAdd()
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
         });
     }
 }

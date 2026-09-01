@@ -49,6 +49,43 @@ internal sealed class FakeCloudWithdrawalReservationService : ICloudWithdrawalRe
         return Task.FromResult(CloudBoundaryOutcome<CloudWithdrawalReservation>.Committed(reservation));
     }
 
+    public Task<CloudBoundaryOutcome<CloudWithdrawalReservation>> ReserveForWithdrawalAsync(
+        IReadOnlyList<CloudWithdrawalReservationRequestTarget> targets,
+        string shardId,
+        Guid ownerId,
+        Guid redeemerOwnerId,
+        Guid sharingGrantId,
+        string tokenHash,
+        TimeSpan timeToLive,
+        Guid idempotencyKey,
+        CancellationToken cancellationToken = default)
+    {
+        var keys = targets.Select(TargetKey).ToList();
+        if (keys.Any(_activeTargetKeys.Contains))
+        {
+            return Task.FromResult(CloudBoundaryOutcome<CloudWithdrawalReservation>.Conflict(
+                "One or more requested targets already have an active Withdrawal Reservation."));
+        }
+
+        var nowUtc = DateTime.UtcNow;
+        var reservation = CloudWithdrawalReservation.Open(
+            shardId, ownerId, tokenHash, idempotencyKey, nowUtc, nowUtc + timeToLive, redeemerOwnerId, sharingGrantId);
+
+        _reservationsById[reservation.Id] = reservation;
+        _targetsByReservationId[reservation.Id] = targets
+            .Select(target => target.Kind == CloudWithdrawalReservationTargetKind.Item
+                ? CloudWithdrawalReservationTarget.ForItem(reservation.Id, target.ItemBiotaId)
+                : CloudWithdrawalReservationTarget.ForStackLot(reservation.Id, target.StackLotId, quantity: 1))
+            .ToList();
+
+        foreach (var key in keys)
+        {
+            _activeTargetKeys.Add(key);
+        }
+
+        return Task.FromResult(CloudBoundaryOutcome<CloudWithdrawalReservation>.Committed(reservation));
+    }
+
     public Task<CloudBoundaryOutcome<CloudWithdrawalReservation>> CancelWithdrawalReservationAsync(
         Guid reservationId, int expectedVersion, CancellationToken cancellationToken = default)
     {

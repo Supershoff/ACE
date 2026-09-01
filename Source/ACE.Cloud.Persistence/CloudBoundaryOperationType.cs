@@ -83,4 +83,11 @@ public enum CloudBoundaryOperationType
 
     /// <summary>A pending Transfer Offer's seven-day deadline passed unresolved (XFER-002). Ledger-only, like <see cref="TransferOfferCreated"/>.</summary>
     TransferOfferExpired,
+
+    /// <summary>
+    /// A grant-derived Withdrawal Reservation was released before redemption because the Sharing
+    /// Grant that authorized it was downgraded/revoked (issue #36, SHARE-004). Ledger-only, like
+    /// <see cref="WithdrawalReservationCancelled"/>, which this otherwise mirrors.
+    /// </summary>
+    WithdrawalReservationInvalidated,
 }

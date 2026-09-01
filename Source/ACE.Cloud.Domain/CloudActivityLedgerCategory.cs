@@ -20,4 +20,11 @@ public enum CloudActivityLedgerCategory
 
     /// <summary>An Asset Import outcome (admin-scoped only: DAT import has no per-account owner).</summary>
     AssetImport,
+
+    /// <summary>
+    /// A personal Sharing Grant lifecycle event (admin-scoped only, mirroring <see cref="AccountLink"/>'s
+    /// own rationale: a grant has two parties -- owner and grantee -- rather than one biota-scoped
+    /// owner). See <c>ACE.Cloud.Persistence.CloudSharingGrantLedgerEvent</c>'s own doc comment.
+    /// </summary>
+    SharingGrant,
 }

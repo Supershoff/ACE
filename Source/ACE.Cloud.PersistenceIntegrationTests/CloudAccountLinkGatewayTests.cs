@@ -565,6 +565,62 @@ public sealed class CloudAccountLinkGatewayTests
         CollectionAssert.AreEquivalent(new[] { MainAccountId, SourceAccountId }, groupFromLinked.ToArray());
     }
 
+    [TestMethod]
+    public async Task LinkAsync_RevokesEveryIncomingAndOutgoingSharingGrantForTheSourceAccount_ButLeavesTheMainAccountsGrantsUnchanged()
+    {
+        // AUTH-008 (issue #36): "Linking revokes every incoming and outgoing personal Sharing Grant
+        // associated with the source account while leaving the destination Main Account's grants
+        // unchanged."
+        var options = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
+        const uint outsiderAccountId = 950;
+
+        var sourceCharacterId = NextId();
+        var mainCharacterId = NextId();
+        var outsiderCharacterId = NextId();
+        await AceShardTestData.InsertCharacterAsync(_fixture.AceShardConnectionString, sourceCharacterId, SourceAccountId, "SourceChar");
+        await AceShardTestData.InsertCharacterAsync(_fixture.AceShardConnectionString, mainCharacterId, MainAccountId, "MainChar");
+        await AceShardTestData.InsertCharacterAsync(_fixture.AceShardConnectionString, outsiderCharacterId, outsiderAccountId, "OutsiderChar");
+
+        Guid outgoingGrantId;
+        Guid incomingGrantId;
+        Guid mainOwnGrantId;
+        await using (var context = new CloudDbContext(options))
+        {
+            var sharingGateway = new CloudSharingGrantGateway(context, new CloudAccountLinkGateway(context));
+
+            // Source (as owner) grants an outsider -- an "outgoing" grant from the source's perspective.
+            var outgoing = await sharingGateway.SetAsync(ShardId, SourceAccountId, "OutsiderChar", CloudSharingGrantLevel.ViewOnly);
+            Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, outgoing.Kind, outgoing.Reason);
+            outgoingGrantId = outgoing.Value!.Id;
+
+            // Outsider (as owner) grants the source -- an "incoming" grant from the source's perspective.
+            var incoming = await sharingGateway.SetAsync(ShardId, outsiderAccountId, "SourceChar", CloudSharingGrantLevel.ViewAndWithdraw);
+            Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, incoming.Kind, incoming.Reason);
+            incomingGrantId = incoming.Value!.Id;
+
+            // The destination Main Account's own unrelated grant must survive linking untouched.
+            var mainOwn = await sharingGateway.SetAsync(ShardId, MainAccountId, "OutsiderChar", CloudSharingGrantLevel.ViewOnly);
+            Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, mainOwn.Kind, mainOwn.Reason);
+            mainOwnGrantId = mainOwn.Value!.Id;
+        }
+
+        await using (var linkContext = new CloudDbContext(options))
+        {
+            var linkOutcome = await new CloudAccountLinkGateway(linkContext).LinkAsync(ShardId, MainAccountId, SourceAccountId, Guid.NewGuid());
+            Assert.IsTrue(linkOutcome.IsApproved, "Linking a standalone source with no pending obligations must be approved.");
+        }
+
+        await using var verifyContext = new CloudDbContext(options);
+        var outgoingGrant = await verifyContext.CloudSharingGrants.AsNoTracking().SingleAsync(g => g.Id == outgoingGrantId);
+        Assert.AreEqual(CloudSharingGrantLevel.None, outgoingGrant.Level, "The source's outgoing grant must be revoked by linking.");
+
+        var incomingGrant = await verifyContext.CloudSharingGrants.AsNoTracking().SingleAsync(g => g.Id == incomingGrantId);
+        Assert.AreEqual(CloudSharingGrantLevel.None, incomingGrant.Level, "The source's incoming grant must be revoked by linking.");
+
+        var mainOwnGrant = await verifyContext.CloudSharingGrants.AsNoTracking().SingleAsync(g => g.Id == mainOwnGrantId);
+        Assert.AreEqual(CloudSharingGrantLevel.ViewOnly, mainOwnGrant.Level, "The Main Account's own grants must remain unchanged.");
+    }
+
     private static uint NextId() => Interlocked.Increment(ref _nextId);
 
     private static async Task LockCustodyRecordRowAsync(MySqlConnection connection, MySqlTransaction transaction, uint biotaId)

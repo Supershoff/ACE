@@ -17,4 +17,12 @@ public enum CloudReservationReleaseReason
 
     /// <summary>An audited administrator intervention ended the reservation.</summary>
     AdminIntervention,
+
+    /// <summary>
+    /// A grant-derived Withdrawal Reservation was released because the Sharing Grant that authorized
+    /// it was downgraded/revoked, or the grantee's qualifying allegiance membership that derived it
+    /// ended (SHARE-004: "Loss of qualifying guild membership immediately revokes derived access and
+    /// invalidates unredeemed Withdrawal Tokens created through it").
+    /// </summary>
+    SharingGrantAuthorityLost,
 }

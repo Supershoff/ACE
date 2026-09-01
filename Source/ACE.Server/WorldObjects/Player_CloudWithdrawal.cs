@@ -150,8 +150,12 @@ namespace ACE.Server.WorldObjects
             // identity, since a reservation opened under either the Main Account's or a Linked
             // Account's identity must remain redeemable by any character in that same group once the
             // two are linked.
+            // Issue #36 (SHARE-003): a grant-derived reservation's redemption authority belongs to
+            // its grantee's own current Main/Linked group, not the asset owner's -- RedeemerOwnerId
+            // carries that distinct identity; an ordinary self-withdrawal reservation leaves it null,
+            // in which case redemption falls back to the asset owner exactly as before this existed.
             var groupAccountIds = await new CloudAccountLinkGateway(context).GetOwnershipGroupAccountIdsAsync(shardId, Session.AccountId);
-            if (!BelongsToRedeemersOwnershipGroup(shardId, reservation.OwnerId, groupAccountIds))
+            if (!BelongsToRedeemersOwnershipGroup(shardId, reservation.RedeemerOwnerId ?? reservation.OwnerId, groupAccountIds))
             {
                 SendTransientError("That Withdrawal Token does not belong to your account.");
                 return;

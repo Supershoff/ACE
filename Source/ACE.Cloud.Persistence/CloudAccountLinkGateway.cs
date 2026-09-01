@@ -17,15 +17,14 @@ namespace ACE.Cloud.Persistence;
 /// <see cref="CloudMutationGateReader"/> under the same locked transaction that decides the link/unlink
 /// (transaction rule 9), matching every other Cloud Transaction Authority call site.
 ///
-/// Known gap, documented rather than silently omitted: AUTH-008's "Linking revokes every personal
-/// Sharing Grant associated with the source account" cannot be implemented yet because no
-/// SharingGrant table exists in this schema (SHARE-001..004 land in a later issue). Once it does,
-/// its revocation must be added to <see cref="LinkAsync"/>'s same transaction. Likewise, AUTH-009's
-/// active-auction self-dealing check and the "pending obligations" check below only inspect
-/// obligation types that already exist in this schema (Withdrawal Tokens); listings, bids,
-/// settlements, and Transfer Offers (MKT-*, XFER-*) do not exist yet and so can never block a link
-/// today -- <paramref name="wouldCreateActiveAuctionConflict"/> on <see cref="LinkAsync"/> exists so
-/// a future marketplace-aware caller can wire in that check without changing this method's shape.
+/// Issue #36 closed a previously documented gap: AUTH-008's "Linking revokes every personal Sharing
+/// Grant associated with the source account" is now applied inside <see cref="LinkOnceAsync"/>'s own
+/// transaction via <see cref="CloudSharingGrantGateway.RevokeAllForAccountWithinCallersTransactionAsync"/>.
+/// Likewise, AUTH-009's active-auction self-dealing check and the "pending obligations" check below
+/// only inspect obligation types that already exist in this schema (Withdrawal Tokens); listings,
+/// bids, settlements, and Transfer Offers (MKT-*, XFER-*) do not exist yet and so can never block a
+/// link today -- <paramref name="wouldCreateActiveAuctionConflict"/> on <see cref="LinkAsync"/> exists
+/// so a future marketplace-aware caller can wire in that check without changing this method's shape.
 /// </summary>
 public sealed class CloudAccountLinkGateway : ICloudAccountOwnershipResolver, ICloudAccountLinkAdministration
 {
@@ -194,6 +193,14 @@ public sealed class CloudAccountLinkGateway : ICloudAccountOwnershipResolver, IC
         var sourceOwnerId = CloudOwnerIdentity.ForAccount(shardId, sourceAccountId);
         var mainOwnerId = CloudOwnerIdentity.ForAccount(shardId, mainAccountId);
         await ReassignCloudOwnershipAsync(sourceOwnerId, mainOwnerId, cancellationToken);
+
+        // AUTH-008: "Linking revokes every incoming and outgoing personal Sharing Grant associated
+        // with the source account" -- run in this same transaction so it commits or rolls back
+        // atomically with the link itself, closing the gap this class's own doc comment previously
+        // documented as unimplemented. The Main Account's own grants are deliberately untouched
+        // (AUTH-008: "Main Account grants remain").
+        await new CloudSharingGrantGateway(_context, this)
+            .RevokeAllForAccountWithinCallersTransactionAsync(shardId, sourceOwnerId, correlationId, nowUtc, cancellationToken);
 
         _context.Add(new CloudAccountLinkLedgerEvent(
             correlationId, shardId, CloudAccountLinkLedgerEventType.Linked, mainAccountId, sourceAccountId, reason: null));

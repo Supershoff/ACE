@@ -46,19 +46,65 @@ public sealed partial class CloudCustodyBoundary : ICloudWithdrawalReservationSe
         TimeSpan timeToLive,
         Guid idempotencyKey,
         CancellationToken cancellationToken = default) =>
-        ReserveForWithdrawalAsync(targets, shardId, ownerId, tokenHash, timeToLive, idempotencyKey, faultInjector: null, cancellationToken);
+        ReserveForWithdrawalAsync(
+            targets, shardId, ownerId, redeemerOwnerId: null, sharingGrantId: null, tokenHash, timeToLive, idempotencyKey,
+            faultInjector: null, cancellationToken);
+
+    /// <summary>
+    /// See <see cref="ICloudWithdrawalReservationService"/>'s grant-derived overload doc comment.
+    /// </summary>
+    public Task<CloudBoundaryOutcome<CloudWithdrawalReservation>> ReserveForWithdrawalAsync(
+        IReadOnlyList<CloudWithdrawalReservationRequestTarget> targets,
+        string shardId,
+        Guid ownerId,
+        Guid redeemerOwnerId,
+        Guid sharingGrantId,
+        string tokenHash,
+        TimeSpan timeToLive,
+        Guid idempotencyKey,
+        CancellationToken cancellationToken = default)
+    {
+        if (redeemerOwnerId == Guid.Empty)
+        {
+            throw new ArgumentException("A grant-derived Withdrawal Reservation requires a redeemer identity.", nameof(redeemerOwnerId));
+        }
+
+        if (sharingGrantId == Guid.Empty)
+        {
+            throw new ArgumentException("A grant-derived Withdrawal Reservation requires a Sharing Grant ID.", nameof(sharingGrantId));
+        }
+
+        return ReserveForWithdrawalAsync(
+            targets, shardId, ownerId, redeemerOwnerId, sharingGrantId, tokenHash, timeToLive, idempotencyKey,
+            faultInjector: null, cancellationToken);
+    }
 
     /// <summary>
     /// Test-only overload: <paramref name="faultInjector"/> is invoked at every named
     /// <see cref="CloudBoundaryFaultPoint"/> so fault-injection tests can simulate a crash at each
     /// boundary of a multi-target reservation open. Internal and reachable only from
-    /// ACE.Cloud.PersistenceIntegrationTests (AssemblyInfo.cs); production callers always use the
-    /// public overload above.
+    /// ACE.Cloud.PersistenceIntegrationTests (AssemblyInfo.cs); production callers always use one of
+    /// the public overloads above.
     /// </summary>
     internal Task<CloudBoundaryOutcome<CloudWithdrawalReservation>> ReserveForWithdrawalAsync(
         IReadOnlyList<CloudWithdrawalReservationRequestTarget> targets,
         string shardId,
         Guid ownerId,
+        string tokenHash,
+        TimeSpan timeToLive,
+        Guid idempotencyKey,
+        Func<CloudBoundaryFaultPoint, Task>? faultInjector,
+        CancellationToken cancellationToken) =>
+        ReserveForWithdrawalAsync(
+            targets, shardId, ownerId, redeemerOwnerId: null, sharingGrantId: null, tokenHash, timeToLive, idempotencyKey,
+            faultInjector, cancellationToken);
+
+    private Task<CloudBoundaryOutcome<CloudWithdrawalReservation>> ReserveForWithdrawalAsync(
+        IReadOnlyList<CloudWithdrawalReservationRequestTarget> targets,
+        string shardId,
+        Guid ownerId,
+        Guid? redeemerOwnerId,
+        Guid? sharingGrantId,
         string tokenHash,
         TimeSpan timeToLive,
         Guid idempotencyKey,
@@ -84,7 +130,8 @@ public sealed partial class CloudCustodyBoundary : ICloudWithdrawalReservationSe
         }
 
         return CloudBoundaryRetry.ExecuteAsync(
-            () => TryReserveForWithdrawalOnceAsync(targets, shardId, ownerId, tokenHash, timeToLive, idempotencyKey, faultInjector, cancellationToken),
+            () => TryReserveForWithdrawalOnceAsync(
+                targets, shardId, ownerId, redeemerOwnerId, sharingGrantId, tokenHash, timeToLive, idempotencyKey, faultInjector, cancellationToken),
             cancellationToken: cancellationToken);
     }
 
@@ -278,6 +325,8 @@ public sealed partial class CloudCustodyBoundary : ICloudWithdrawalReservationSe
         IReadOnlyList<CloudWithdrawalReservationRequestTarget> requestedTargets,
         string shardId,
         Guid ownerId,
+        Guid? redeemerOwnerId,
+        Guid? sharingGrantId,
         string tokenHash,
         TimeSpan timeToLive,
         Guid idempotencyKey,
@@ -460,7 +509,8 @@ public sealed partial class CloudCustodyBoundary : ICloudWithdrawalReservationSe
 
         var reservation = CloudWithdrawalReservation.Open(
             shardId, ownerId, tokenHash, idempotencyKey,
-            policyResult.Reservation!.CreatedAtUtc.UtcDateTime, policyResult.Reservation!.ExpiresAtUtc!.Value.UtcDateTime);
+            policyResult.Reservation!.CreatedAtUtc.UtcDateTime, policyResult.Reservation!.ExpiresAtUtc!.Value.UtcDateTime,
+            redeemerOwnerId, sharingGrantId);
         _context.CloudWithdrawalReservations.Add(reservation);
 
         var targetRows = new List<CloudWithdrawalReservationTarget>(orderedPolicyTargets.Count);
@@ -637,6 +687,26 @@ public sealed partial class CloudCustodyBoundary : ICloudWithdrawalReservationSe
         {
             await transaction.RollbackAsync(cancellationToken);
             return frozen;
+        }
+
+        // SHARE-003/SHARE-004: a grant-derived reservation's authority is revalidated again here,
+        // under this same lock, in case its Sharing Grant was downgraded/revoked between issuance and
+        // redemption faster than CloudSharingGrantGateway's own proactive release could reach it (or
+        // during a web outage, where the grant is only ACE-locally knowable through this exact check --
+        // WDR-008). A missing or non-View & Withdraw grant refuses redemption and releases the
+        // reservation rather than delivering on lost authority.
+        if (reservation.SharingGrantId is { } sharingGrantId)
+        {
+            var grant = await _context.CloudSharingGrants.AsNoTracking().SingleOrDefaultAsync(g => g.Id == sharingGrantId, cancellationToken);
+            if (grant is null || grant.Level != CloudSharingGrantLevel.ViewAndWithdraw)
+            {
+                reservation.Release(nowUtc, CloudReservationReleaseReason.SharingGrantAuthorityLost);
+                _context.CloudWithdrawalReservations.Update(reservation);
+                await _context.SaveChangesAsync(cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+                return CloudBoundaryOutcome<CloudMultiWithdrawalResult>.Conflict(
+                    $"Withdrawal Reservation {reservation.Id}'s Sharing Grant no longer authorizes withdrawal; it has been released.");
+            }
         }
 
         await InvokeFaultInjectorAsync(faultInjector, CloudBoundaryFaultPoint.AfterValidation);
