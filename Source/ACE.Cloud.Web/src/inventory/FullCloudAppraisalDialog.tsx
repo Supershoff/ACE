@@ -1,4 +1,4 @@
-import { useEffect, useId } from "react";
+import { useEffect, useId, type ReactNode } from "react";
 import { appraisalColorTokens, appraisalLayoutTokens } from "../design-system/inventoryFidelityTokens";
 import { Button } from "../design-system/primitives/Button";
 import { LoadingState } from "../design-system/primitives/LoadingState";
@@ -13,6 +13,13 @@ export interface FullCloudAppraisalDialogProps {
   readonly isLoading: boolean;
   readonly error: string | null;
   readonly onRetry: () => void;
+  /**
+   * Contextual actions (Transfer, Withdraw, ...) for the currently appraised item, rendered next
+   * to the close button. This component makes no decision about which actions apply -- the caller
+   * supplies them, matching its own "makes no examiner-skill or Display Character decision"
+   * doc comment above.
+   */
+  readonly actionsMenu?: ReactNode;
 }
 
 const textStyleColor: Record<CloudAppraisalTextStyle, string> = {
@@ -79,6 +86,7 @@ export function FullCloudAppraisalDialog({
   isLoading,
   error,
   onRetry,
+  actionsMenu,
 }: FullCloudAppraisalDialogProps) {
   const titleId = useId();
 
@@ -101,9 +109,12 @@ export function FullCloudAppraisalDialog({
       className="full-cloud-appraisal-panel"
       style={dialogStyle}
     >
-      <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+      <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: appraisalLayoutTokens.sectionSpacing }}>
         <h2 id={titleId} style={dialogTitleStyle}>{itemName}</h2>
-        <Button variant="secondary" onClick={onClose} aria-label="Close appraisal">×</Button>
+        <div style={{ display: "flex", alignItems: "center", gap: appraisalLayoutTokens.sectionSpacing }}>
+          {actionsMenu}
+          <Button variant="secondary" onClick={onClose} aria-label="Close appraisal">×</Button>
+        </div>
       </header>
       <div className="full-cloud-appraisal" style={bodyStyle}>
         {isLoading ? <LoadingState label="Appraising…" /> : null}

@@ -18,5 +18,6 @@ public sealed class CloudAllegianceEventConsumptionInvariantSuiteTests
         new InMemoryEventConsumptionHarness<CloudAllegianceEventPayload>();
 
     protected override CloudAllegianceEventPayload CreatePayload(int step) =>
-        new(characterId: 0x80000001, CloudIdentityEventType.AllegianceSworn, monarchId: (uint)(0x80000000 + step), priorMonarchId: null);
+        new(characterId: 0x80000001, CloudIdentityEventType.AllegianceSworn, monarchId: (uint)(0x80000000 + step), priorMonarchId: null,
+            accountId: 1, characterName: "Vassal", totalLogins: 1);
 }

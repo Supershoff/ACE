@@ -521,9 +521,11 @@ public sealed class CloudSharingGrantGatewayTests
             await gateway.PublishCharacterIdentityEventAsync(
                 ShardId, CloudIdentityEventType.CharacterRenamed, secondCharacterId, secondAccountId, "GranteeChar", totalLogins: 1, Guid.NewGuid());
             await gateway.PublishAllegianceEventAsync(
-                ShardId, CloudIdentityEventType.AllegianceSworn, firstCharacterId, monarchId, priorMonarchId: null, Guid.NewGuid());
+                ShardId, CloudIdentityEventType.AllegianceSworn, firstCharacterId, monarchId, priorMonarchId: null,
+                firstAccountId, "OwnerChar", totalLogins: 1, Guid.NewGuid());
             await gateway.PublishAllegianceEventAsync(
-                ShardId, CloudIdentityEventType.AllegianceSworn, secondCharacterId, monarchId, priorMonarchId: null, Guid.NewGuid());
+                ShardId, CloudIdentityEventType.AllegianceSworn, secondCharacterId, monarchId, priorMonarchId: null,
+                secondAccountId, "GranteeChar", totalLogins: 1, Guid.NewGuid());
         }
 
         await using (var consumerContext = new CloudDbContext(options))

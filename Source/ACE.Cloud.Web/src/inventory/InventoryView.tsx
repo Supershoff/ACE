@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { createHttpClient } from "../api/httpClient";
 import { createInventoryApi, type InventoryApi } from "../api/inventoryApi";
+import { createTransferOfferApi, type TransferOfferApi } from "../api/transferOfferApi";
+import { createWithdrawalApi, type WithdrawalApi } from "../api/withdrawalApi";
 import type {
   CloudAppraisalPanel,
   CloudInventoryCategory,
@@ -13,18 +15,24 @@ import { Button } from "../design-system/primitives/Button";
 import { EmptyState } from "../design-system/primitives/EmptyState";
 import { ErrorState } from "../design-system/primitives/ErrorState";
 import { LoadingState } from "../design-system/primitives/LoadingState";
+import { Menu } from "../design-system/primitives/Menu";
 import { useSession } from "../session/SessionContext";
 import { useIsNarrowViewport } from "../shell/useIsNarrowViewport";
 import { appraisalLayoutTokens, iconGridTokens } from "../design-system/inventoryFidelityTokens";
 import { FullCloudAppraisalDialog } from "./FullCloudAppraisalDialog";
 import { InventoryQuantityControl } from "./InventoryQuantityControl";
 import { InventorySpreadsheet } from "./InventorySpreadsheet";
+import { ItemActionDialog, type ItemActionKind } from "./ItemActionDialog";
 import { MulePageGrid } from "./MulePageGrid";
 import { inventoryItemKey } from "./selection";
 
 export interface InventoryViewProps {
   /** Overridable for tests; production code lets this default to the real Cloud backend client. */
   readonly inventoryApi?: InventoryApi;
+  /** Overridable for tests; production code lets this default to the real Cloud backend client. */
+  readonly transferOfferApi?: TransferOfferApi;
+  /** Overridable for tests; production code lets this default to the real Cloud backend client. */
+  readonly withdrawalApi?: WithdrawalApi;
 }
 
 const CATEGORIES: readonly CloudInventoryCategory[] = [
@@ -93,14 +101,32 @@ function appraisalErrorMessage(status: number): string {
  * desktop grid at narrow widths without changing page membership (UI-002/UI-003), and opens a
  * complete, character-independent Full Cloud Appraisal on click/right-click/keyboard/touch (UI-004).
  */
-export function InventoryView({ inventoryApi }: InventoryViewProps) {
-  const { status, subscribeLiveStream } = useSession();
+export function InventoryView({ inventoryApi, transferOfferApi, withdrawalApi }: InventoryViewProps) {
+  const { status, accountKind, csrfToken, subscribeLiveStream } = useSession();
+  const csrfTokenRef = useRef<string | null>(null);
+  csrfTokenRef.current = csrfToken;
 
   const defaultApiRef = useRef<InventoryApi | null>(null);
   if (!defaultApiRef.current) {
     defaultApiRef.current = createInventoryApi(createHttpClient({ baseUrl: "", getCsrfToken: () => null }));
   }
   const api = inventoryApi ?? defaultApiRef.current;
+
+  const defaultTransferOfferApiRef = useRef<TransferOfferApi | null>(null);
+  if (!defaultTransferOfferApiRef.current) {
+    defaultTransferOfferApiRef.current = createTransferOfferApi(
+      createHttpClient({ baseUrl: "", getCsrfToken: () => csrfTokenRef.current }),
+    );
+  }
+  const resolvedTransferOfferApi = transferOfferApi ?? defaultTransferOfferApiRef.current;
+
+  const defaultWithdrawalApiRef = useRef<WithdrawalApi | null>(null);
+  if (!defaultWithdrawalApiRef.current) {
+    defaultWithdrawalApiRef.current = createWithdrawalApi(
+      createHttpClient({ baseUrl: "", getCsrfToken: () => csrfTokenRef.current }),
+    );
+  }
+  const resolvedWithdrawalApi = withdrawalApi ?? defaultWithdrawalApiRef.current;
 
   const isNarrow = useIsNarrowViewport();
   const columns = isNarrow ? NARROW_COLUMNS : iconGridTokens.desktopColumns;
@@ -120,6 +146,7 @@ export function InventoryView({ inventoryApi }: InventoryViewProps) {
   const [quantities, setQuantities] = useState<ReadonlyMap<string, number>>(new Map());
 
   const [appraisal, setAppraisal] = useState<AppraisalDialogState>(CLOSED_APPRAISAL_STATE);
+  const [itemActionKind, setItemActionKind] = useState<ItemActionKind | null>(null);
 
   const categorySelectId = useId();
 
@@ -206,6 +233,28 @@ export function InventoryView({ inventoryApi }: InventoryViewProps) {
 
   const selectedStackItems = items.filter((item) => selectedKeys.has(inventoryItemKey(item)) && item.quantity > 1);
 
+  const activeItem = items.find((item) => inventoryItemKey(item) === activeKey) ?? null;
+
+  const contextualActionItems = activeItem
+    ? [
+        activeItem.permittedActions.canTransfer ? { id: "transfer", label: "Send Transfer Offer…" } : null,
+        activeItem.permittedActions.canWithdraw ? { id: "withdraw", label: "Create Withdrawal Token…" } : null,
+      ].filter((entry): entry is { id: string; label: string } => entry !== null)
+    : [];
+
+  // AUTH-004/XFER-001/WDR-001: only a Main Account may create Transfer Offers or Withdrawal Tokens.
+  // A Linked Account (or an unresolved "Unknown" session) sees no contextual action affordance at
+  // all, matching RequireMainAccount's own fail-closed default rather than exposing a control that
+  // would only fail server-side.
+  const actionsMenu =
+    accountKind === "Main" && contextualActionItems.length > 0 ? (
+      <Menu
+        label="Actions"
+        items={contextualActionItems}
+        onSelect={(id) => setItemActionKind(id as ItemActionKind)}
+      />
+    ) : null;
+
   return (
     <section className="inventory-view">
       <h2>Cloud Inventory</h2>
@@ -270,7 +319,18 @@ export function InventoryView({ inventoryApi }: InventoryViewProps) {
             const reopenItem = items.find((item) => item.itemId === appraisal.itemId);
             if (reopenItem) openAppraisal(reopenItem);
           }}
+          actionsMenu={actionsMenu}
         />
+        {itemActionKind && activeItem ? (
+          <ItemActionDialog
+            kind={itemActionKind}
+            item={activeItem}
+            transferOfferApi={resolvedTransferOfferApi}
+            withdrawalApi={resolvedWithdrawalApi}
+            onClose={() => setItemActionKind(null)}
+            onCompleted={load}
+          />
+        ) : null}
         <div className="inventory-view__inventory-pane" style={{ minWidth: 0 }}>
 
       {isLoading ? <LoadingState label="Loading your Cloud Inventory…" /> : null}

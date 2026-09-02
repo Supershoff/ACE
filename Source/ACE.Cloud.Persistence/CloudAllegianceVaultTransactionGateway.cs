@@ -442,6 +442,10 @@ public sealed class CloudAllegianceVaultTransactionGateway : ICloudAllegianceVau
                 return new CloudActingCharacterMembership(Found: true, accountId, vassalCount > 0 ? characterId : null);
             }
         }
+        catch (MySqlConnector.MySqlException ex) when (CloudRawSqlHelpers.IsAccessDenied(ex))
+        {
+            throw new CloudDatabasePrivilegeException();
+        }
         finally
         {
             await _context.Database.CloseConnectionAsync();

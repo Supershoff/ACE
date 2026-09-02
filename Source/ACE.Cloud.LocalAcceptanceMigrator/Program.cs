@@ -23,7 +23,11 @@ using System.Text.RegularExpressions;
 //
 //   prepare-colocated     Creates disposable ace_cloud beside the disposable ace_shard schema,
 //                         migrates it with the local admin identity, bootstraps CloudShardBinding,
-//                         and grants a separate runtime identity access only to ace_cloud.
+//                         and grants a separate runtime identity full access to ace_cloud plus narrow
+//                         read-only SELECT on exactly ace_shard.character and
+//                         ace_shard.biota_properties_i_i_d (issue #39): the collaboration name-
+//                         resolution and live allegiance readers need those two tables and nothing
+//                         else in ace_shard; this is not a broad ace_shard.* grant.
 //
 //   purge-colocated       Drops only the known Cloud Mule triggers from ace_shard and the disposable
 //                         ace_cloud schema. Used exclusively by Stop-LocalAcceptance.ps1 -Purge.
@@ -207,6 +211,16 @@ static async Task<int> PrepareColocatedAsync()
     {
         await admin.OpenAsync();
         await ExecuteAsync(admin, $"GRANT SELECT, INSERT, UPDATE, DELETE ON ace_cloud.* TO {runtimeAccount};");
+
+        // Issue #39: the collaboration name-resolution (CloudSharingGrantGateway,
+        // CloudTransferOfferGateway) and live allegiance readers (CloudAllegianceVaultTransactionGateway,
+        // CloudAllegianceVaultGateway) reach across the custody boundary for narrow, read-only lookups
+        // against exactly these two ace_shard tables -- character name/account resolution and the live
+        // Monarch instance property. Grant only these two tables, never `ace_shard.*`: ARCH-004 forbids
+        // native-biota write privileges, not this kind of scoped read, and a schema-wide grant would
+        // reopen the exact custody-authority boundary ARCH-004/CloudCompanionPrivilegeTests protects.
+        await ExecuteAsync(admin, $"GRANT SELECT ON ace_shard.character TO {runtimeAccount};");
+        await ExecuteAsync(admin, $"GRANT SELECT ON ace_shard.biota_properties_i_i_d TO {runtimeAccount};");
     }
 
     await using (var runtime = new MySqlConnection(runtimeBuilder.ConnectionString))

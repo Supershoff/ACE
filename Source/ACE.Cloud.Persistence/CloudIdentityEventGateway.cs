@@ -48,13 +48,21 @@ public sealed class CloudIdentityEventGateway
         return evt;
     }
 
-    /// <summary>Publishes an allegiance swear/break/monarch-change event (VAULT-001).</summary>
+    /// <summary>
+    /// Publishes an allegiance swear/break/monarch-change event (VAULT-001). Issue #39's oath-first
+    /// fix: <paramref name="accountId"/>/<paramref name="characterName"/>/<paramref name="totalLogins"/>
+    /// are the character's authoritative snapshot at this moment, carried on every allegiance event so
+    /// the resulting projection is account-associated even when no prior character event exists.
+    /// </summary>
     public async Task<CloudIdentityOutboxEvent> PublishAllegianceEventAsync(
         string shardId,
         CloudIdentityEventType eventType,
         uint characterId,
         uint? monarchId,
         uint? priorMonarchId,
+        uint accountId,
+        string characterName,
+        int totalLogins,
         Guid correlationId,
         CancellationToken cancellationToken = default)
     {
@@ -64,7 +72,39 @@ public sealed class CloudIdentityEventGateway
 
         var sequenceNumber = await ReserveNextSequenceNumberAsync(cancellationToken);
         var evt = CloudIdentityOutboxEvent.ForAllegianceEvent(
-            correlationId, shardId, eventType, characterId, monarchId, priorMonarchId, sequenceNumber);
+            correlationId, shardId, eventType, characterId, monarchId, priorMonarchId, accountId, characterName, totalLogins, sequenceNumber);
+        _context.CloudIdentityOutboxEvents.Add(evt);
+        await _context.SaveChangesAsync(cancellationToken);
+
+        await transaction.CommitAsync(cancellationToken);
+        return evt;
+    }
+
+    /// <summary>
+    /// Publishes a character-login-observed snapshot event (issue #39's self-heal fix): the ACE login
+    /// seam calls this on every successful world login while AC Cloud Mule is enabled, so a character
+    /// whose identity/allegiance projection was left degraded by a pre-oath-first-fix allegiance event
+    /// (or is otherwise stale) is repaired the next time they log in -- without requiring their
+    /// allegiance to actually change, since ordinary login otherwise publishes no identity/allegiance
+    /// event at all.
+    /// </summary>
+    public async Task<CloudIdentityOutboxEvent> PublishCharacterLoginObservedEventAsync(
+        string shardId,
+        uint characterId,
+        uint? monarchId,
+        uint accountId,
+        string characterName,
+        int totalLogins,
+        Guid correlationId,
+        CancellationToken cancellationToken = default)
+    {
+        _context.ChangeTracker.Clear();
+
+        await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+
+        var sequenceNumber = await ReserveNextSequenceNumberAsync(cancellationToken);
+        var evt = CloudIdentityOutboxEvent.ForCharacterLoginObservedEvent(
+            correlationId, shardId, characterId, monarchId, accountId, characterName, totalLogins, sequenceNumber);
         _context.CloudIdentityOutboxEvents.Add(evt);
         await _context.SaveChangesAsync(cancellationToken);
 

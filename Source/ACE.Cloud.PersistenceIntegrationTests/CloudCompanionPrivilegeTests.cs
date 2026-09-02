@@ -65,8 +65,15 @@ public sealed class CloudCompanionPrivilegeTests
             "ARCH-004: the companion database identity must be refused by MariaDB itself when it touches a native ace_shard table, not merely by application-level convention.");
     }
 
+    /// <summary>
+    /// Issue #39 narrowed this from a blanket "denied everywhere in ace_shard" assertion: the
+    /// companion identity now holds two narrow, explicit SELECT grants (see
+    /// <see cref="CompanionIdentity_CanSelectFromTheTwoTablesCollaborationReadersNeed_ButNothingElseInAceShard"/>),
+    /// but every other ace_shard table -- including <c>biota</c>, the native custody surface ARCH-002
+    /// reserves exclusively to ACE -- remains denied by MariaDB itself.
+    /// </summary>
     [TestMethod]
-    public async Task CompanionIdentity_CannotEvenSelectFromNativeAceShardTables()
+    public async Task CompanionIdentity_CannotSelectFromUngrantedAceShardTables()
     {
         var username = "cloud_web_" + Guid.NewGuid().ToString("N")[..12];
         var password = Guid.NewGuid().ToString("N");
@@ -81,6 +88,69 @@ public sealed class CloudCompanionPrivilegeTests
         var deniedAccess = await Assert.ThrowsExactlyAsync<MySqlException>(() => readAceShard.ExecuteScalarAsync());
 
         Assert.AreEqual(MySqlErrorCode.TableAccessDenied, deniedAccess.ErrorCode);
+    }
+
+    /// <summary>
+    /// PR #157 blocking human-acceptance feedback #2 (issue #39): the local acceptance migrator's
+    /// companion identity previously had no ace_shard access at all, so
+    /// <c>CloudSharingGrantGateway.TryResolveCurrentCharacterAccountAsync</c> and the live allegiance
+    /// readers (<see cref="ACE.Cloud.Persistence.CloudAllegianceVaultTransactionGateway"/>,
+    /// <see cref="ACE.Cloud.Persistence.CloudAllegianceVaultGateway"/>) failed with an unhandled MySQL
+    /// access-denied error. This proves the fix grants exactly -- not more than -- the two tables those
+    /// readers use, and that the grant is read-only: writes to either table remain refused.
+    /// </summary>
+    [TestMethod]
+    public async Task CompanionIdentity_CanSelectFromTheTwoTablesCollaborationReadersNeed_ButNothingElseInAceShard()
+    {
+        var username = "cloud_web_" + Guid.NewGuid().ToString("N")[..12];
+        var password = Guid.NewGuid().ToString("N");
+        var companionConnectionString = await _fixture.CreateRestrictedCompanionConnectionStringAsync(username, password);
+
+        await using var companionConnection = new MySqlConnection(companionConnectionString);
+        await companionConnection.OpenAsync();
+
+        await using (var readCharacter = companionConnection.CreateCommand())
+        {
+            readCharacter.CommandText = "SELECT COUNT(*) FROM ace_shard.character;";
+            await readCharacter.ExecuteScalarAsync();
+        }
+
+        await using (var readMonarchProperty = companionConnection.CreateCommand())
+        {
+            readMonarchProperty.CommandText = "SELECT COUNT(*) FROM ace_shard.biota_properties_i_i_d;";
+            await readMonarchProperty.ExecuteScalarAsync();
+        }
+
+        await using (var readUngrantedTable = companionConnection.CreateCommand())
+        {
+            readUngrantedTable.CommandText = "SELECT COUNT(*) FROM ace_shard.biota_properties_position;";
+            var deniedRead = await Assert.ThrowsExactlyAsync<MySqlException>(() => readUngrantedTable.ExecuteScalarAsync());
+            Assert.AreEqual(MySqlErrorCode.TableAccessDenied, deniedRead.ErrorCode,
+                "Issue #39: the fix must not widen into a broad ace_shard.* grant.");
+        }
+
+        var biotaId = 1_000_101u;
+        await AceShardTestData.InsertBiotaAsync(_fixture.AceShardConnectionString, biotaId);
+
+        await using (var writeCharacterTable = companionConnection.CreateCommand())
+        {
+            writeCharacterTable.CommandText = "UPDATE ace_shard.character SET name = 'Hijacked' WHERE id = @id;";
+            writeCharacterTable.Parameters.AddWithValue("@id", biotaId);
+            var deniedWrite = await Assert.ThrowsExactlyAsync<MySqlException>(() => writeCharacterTable.ExecuteNonQueryAsync());
+            Assert.AreEqual(MySqlErrorCode.TableAccessDenied, deniedWrite.ErrorCode,
+                "ARCH-004: SELECT on ace_shard.character must not imply write access.");
+        }
+
+        await using (var writeMonarchProperty = companionConnection.CreateCommand())
+        {
+            writeMonarchProperty.CommandText =
+                "INSERT INTO ace_shard.biota_properties_i_i_d (object_Id, type, value) VALUES (@objectId, 26, @monarchId);";
+            writeMonarchProperty.Parameters.AddWithValue("@objectId", biotaId);
+            writeMonarchProperty.Parameters.AddWithValue("@monarchId", biotaId);
+            var deniedWrite = await Assert.ThrowsExactlyAsync<MySqlException>(() => writeMonarchProperty.ExecuteNonQueryAsync());
+            Assert.AreEqual(MySqlErrorCode.TableAccessDenied, deniedWrite.ErrorCode,
+                "ARCH-004: SELECT on ace_shard.biota_properties_i_i_d must not imply write access.");
+        }
     }
 
     /// <summary>

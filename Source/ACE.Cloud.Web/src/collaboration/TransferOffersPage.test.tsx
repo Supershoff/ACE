@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { axe } from "jest-axe";
+import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { TransferOffersPage } from "./TransferOffersPage";
 import type { TransferOfferApi, CloudTransferOfferListResponse, CloudTransferOfferSummary } from "../api/transferOfferApi";
@@ -48,7 +49,9 @@ function fakeApi(overrides: Partial<TransferOfferApi> = {}): TransferOfferApi {
 function renderPage(transferOfferApi: TransferOfferApi) {
   return render(
     <SessionContext.Provider value={baseSession()}>
-      <TransferOffersPage transferOfferApi={transferOfferApi} />
+      <MemoryRouter>
+        <TransferOffersPage transferOfferApi={transferOfferApi} />
+      </MemoryRouter>
     </SessionContext.Provider>,
   );
 }
@@ -72,17 +75,15 @@ describe("TransferOffersPage", () => {
     expect(api.accept).toHaveBeenCalledWith(receivedOffer.id, receivedOffer.version);
   });
 
-  it("sending a new offer calls create with the typed recipient and item", async () => {
-    const user = userEvent.setup();
-    const api = fakeApi();
-    renderPage(api);
+  it("points the user at the Inventory's contextual action instead of offering a raw item-ID form", async () => {
+    renderPage(fakeApi());
     await screen.findByText(/Pending/);
 
-    await user.type(screen.getByLabelText("Recipient character name"), "SomeCharacter");
-    await user.type(screen.getByLabelText("Item ID"), "999");
-    await user.click(screen.getByRole("button", { name: "Send offer" }));
-
-    expect(api.create).toHaveBeenCalledWith("SomeCharacter", [{ kind: "Item", itemBiotaId: 999 }]);
+    // PR #157's blocking human-acceptance feedback: users must never type or know an internal item
+    // ID. Offer creation is a contextual action on the selected Inventory item, not a form here.
+    expect(screen.queryByLabelText(/item id/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Send offer" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Inventory" })).toHaveAttribute("href", "/inventory");
   });
 
   it("has no detectable axe violations", async () => {

@@ -71,8 +71,21 @@ namespace ACE.Server.Managers
         public static void PublishCharacterDeleted(uint characterId, uint accountId, string characterName, int totalLogins) =>
             PublishCharacterEvent(CloudIdentityEventType.CharacterDeleted, characterId, accountId, characterName, totalLogins);
 
-        /// <summary>VAULT-001: publishes an allegiance swear/break/monarch-change event.</summary>
-        public static void PublishAllegianceEvent(uint characterId, CloudIdentityEventType eventType, uint? monarchId, uint? priorMonarchId)
+        /// <summary>
+        /// VAULT-001: publishes an allegiance swear/break/monarch-change event. Issue #39's oath-first
+        /// fix: callers must pass the character's own authoritative account/name/login snapshot
+        /// (readily available from the in-memory <c>Character</c> at every allegiance call site) so the
+        /// resulting projection is account-associated even when this is the character's first-ever
+        /// identity/allegiance event in a fresh Cloud database.
+        /// </summary>
+        public static void PublishAllegianceEvent(
+            uint characterId,
+            CloudIdentityEventType eventType,
+            uint? monarchId,
+            uint? priorMonarchId,
+            uint accountId,
+            string characterName,
+            int totalLogins)
         {
             if (!TryGetShardId(out var shardId))
             {
@@ -84,12 +97,45 @@ namespace ACE.Server.Managers
                 var options = CloudDbContextOptionsFactory.Create(CloudCustodianManager.BuildCloudConnectionString());
                 using var context = new CloudDbContext(options);
                 var identityGateway = new CloudIdentityEventGateway(context);
-                identityGateway.PublishAllegianceEventAsync(shardId, eventType, characterId, monarchId, priorMonarchId, Guid.NewGuid())
+                identityGateway.PublishAllegianceEventAsync(
+                        shardId, eventType, characterId, monarchId, priorMonarchId, accountId, characterName, totalLogins, Guid.NewGuid())
                     .GetAwaiter().GetResult();
             }
             catch (Exception ex)
             {
                 log.Error($"AC Cloud Mule: failed to publish {eventType} for character 0x{characterId:X8}.", ex);
+            }
+        }
+
+        /// <summary>
+        /// Issue #39's self-heal fix: publishes an authoritative character-observed/login snapshot at
+        /// every successful world login, carrying this character's current account/name/login/monarch
+        /// snapshot. Unlike <see cref="PublishAllegianceEvent"/>, this is never a swear/break/monarch-
+        /// change -- it is an idempotent per-login observation, published whether or not anything about
+        /// the character's allegiance actually changed this session. It exists specifically so a
+        /// character whose only prior Cloud identity/allegiance event predates the oath-first fix (and
+        /// so left a projection row with a null account/name association, or an otherwise stale monarch
+        /// pointer) is repaired the next time they log in, since ordinary login otherwise publishes no
+        /// identity/allegiance event at all.
+        /// </summary>
+        public static void PublishCharacterLoginObserved(uint characterId, uint accountId, string characterName, int totalLogins, uint? monarchId)
+        {
+            if (!TryGetShardId(out var shardId))
+            {
+                return;
+            }
+
+            try
+            {
+                var options = CloudDbContextOptionsFactory.Create(CloudCustodianManager.BuildCloudConnectionString());
+                using var context = new CloudDbContext(options);
+                var identityGateway = new CloudIdentityEventGateway(context);
+                identityGateway.PublishCharacterLoginObservedEventAsync(shardId, characterId, monarchId, accountId, characterName, totalLogins, Guid.NewGuid())
+                    .GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                log.Error($"AC Cloud Mule: failed to publish CharacterLoginObserved for character 0x{characterId:X8}.", ex);
             }
         }
 

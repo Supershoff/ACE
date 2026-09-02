@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { createTransferOfferApi, type TransferOfferApi, type CloudTransferOfferSummary } from "../api/transferOfferApi";
 import { createHttpClient } from "../api/httpClient";
 import { Button } from "../design-system/primitives/Button";
 import { ErrorState } from "../design-system/primitives/ErrorState";
 import { LoadingState } from "../design-system/primitives/LoadingState";
-import { touchTargetStyle } from "../design-system/touchTarget";
 import { useSession } from "../session/SessionContext";
 
 export interface TransferOffersPageProps {
@@ -13,10 +13,13 @@ export interface TransferOffersPageProps {
 }
 
 /**
- * The Transfer Offer web surface (issue #39, XFER-001, XFER-002): sending an offer by typed
- * recipient character name, and the recipient/sender resolving a pending offer (accept, decline,
- * cancel). Progressive Interface: the send form is the only persistently visible control; per-offer
- * actions appear only on the offer they apply to, and only for the side authorized to take them.
+ * The Transfer Offer Sent/Received management surface (issue #39, XFER-001, XFER-002): accepting,
+ * declining, or cancelling a pending offer. Creating an offer is no longer done here -- it is a
+ * contextual action on the currently selected Inventory item (`ItemActionDialog`, opened from
+ * `InventoryView`/`FullCloudAppraisalDialog`'s Actions menu), so the item ID always comes from
+ * application state and is never typed by the user (PR #157's blocking human-acceptance feedback).
+ * Progressive Interface: per-offer actions appear only on the offer they apply to, and only for the
+ * side authorized to take them.
  */
 export function TransferOffersPage({ transferOfferApi }: TransferOffersPageProps) {
   const { csrfToken, status, subscribeLiveStream } = useSession();
@@ -34,9 +37,6 @@ export function TransferOffersPage({ transferOfferApi }: TransferOffersPageProps
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-
-  const [recipientCharacterName, setRecipientCharacterName] = useState("");
-  const [itemBiotaId, setItemBiotaId] = useState("");
 
   const load = useCallback(async () => {
     setIsLoading(true);
@@ -66,25 +66,6 @@ export function TransferOffersPage({ transferOfferApi }: TransferOffersPageProps
     return subscribeLiveStream("custody", load);
   }, [status, subscribeLiveStream, load]);
 
-  async function handleSend(event: React.FormEvent) {
-    event.preventDefault();
-    setActionError(null);
-    const biotaId = Number(itemBiotaId);
-    if (!recipientCharacterName.trim() || !Number.isInteger(biotaId) || biotaId <= 0) {
-      setActionError("Enter a recipient character name and a valid item ID.");
-      return;
-    }
-
-    const result = await resolvedApi.create(recipientCharacterName.trim(), [{ kind: "Item", itemBiotaId: biotaId }]);
-    if (result.ok) {
-      setRecipientCharacterName("");
-      setItemBiotaId("");
-      await load();
-    } else {
-      setActionError("That offer could not be sent. Check the recipient name and try again.");
-    }
-  }
-
   async function handleResolve(offer: CloudTransferOfferSummary, action: "accept" | "decline" | "cancel") {
     setActionError(null);
     const result = await resolvedApi[action](offer.id, offer.version);
@@ -98,24 +79,11 @@ export function TransferOffersPage({ transferOfferApi }: TransferOffersPageProps
   return (
     <section>
       <h1>Transfer Offers</h1>
-
-      <form onSubmit={handleSend}>
-        <h2>Send an offer</h2>
-        <label>
-          Recipient character name
-          <input
-            value={recipientCharacterName}
-            onChange={(event) => setRecipientCharacterName(event.target.value)}
-            style={touchTargetStyle}
-          />
-        </label>
-        <label>
-          Item ID
-          <input value={itemBiotaId} onChange={(event) => setItemBiotaId(event.target.value)} style={touchTargetStyle} />
-        </label>
-        <Button type="submit">Send offer</Button>
-        {actionError ? <p role="alert">{actionError}</p> : null}
-      </form>
+      <p>
+        To send a new offer, select an item in your <Link to="/inventory">Inventory</Link> and choose{" "}
+        <strong>Send Transfer Offer…</strong> from its Actions menu.
+      </p>
+      {actionError ? <p role="alert">{actionError}</p> : null}
 
       {isLoading ? <LoadingState label="Loading Transfer Offers…" /> : null}
       {!isLoading && loadError ? <ErrorState title="Transfer Offers unavailable" description={loadError} onRetry={load} /> : null}

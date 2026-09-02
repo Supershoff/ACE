@@ -359,6 +359,10 @@ public sealed class CloudAllegianceVaultGateway
             var count = Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken));
             return count > 0;
         }
+        catch (MySqlConnector.MySqlException ex) when (CloudRawSqlHelpers.IsAccessDenied(ex))
+        {
+            throw new CloudDatabasePrivilegeException();
+        }
         finally
         {
             await _context.Database.CloseConnectionAsync();
@@ -395,6 +399,10 @@ public sealed class CloudAllegianceVaultGateway
             }
 
             return Convert.ToUInt32(result) == characterId;
+        }
+        catch (MySqlConnector.MySqlException ex) when (CloudRawSqlHelpers.IsAccessDenied(ex))
+        {
+            throw new CloudDatabasePrivilegeException();
         }
         finally
         {

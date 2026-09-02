@@ -36,14 +36,19 @@ describe("App routing", () => {
     expect(screen.getByRole("heading", { name: /marketplace/i })).toBeInTheDocument();
   });
 
-  it("redirects an unauthenticated visitor away from the authenticated dashboard", () => {
-    renderApp(baseSessionValue({ status: "unauthenticated" }), "/dashboard");
+  it("redirects an unauthenticated visitor away from the authenticated Inventory page", () => {
+    renderApp(baseSessionValue({ status: "unauthenticated" }), "/inventory");
     expect(screen.getByRole("heading", { name: /log in/i })).toBeInTheDocument();
   });
 
-  it("renders the dashboard for an authenticated visitor", () => {
+  it("renders the Inventory page for an authenticated visitor", () => {
+    renderApp(baseSessionValue({ status: "authenticated" }), "/inventory");
+    expect(screen.getByRole("heading", { name: /^inventory$/i })).toBeInTheDocument();
+  });
+
+  it("redirects the old /dashboard bookmark to /inventory", () => {
     renderApp(baseSessionValue({ status: "authenticated" }), "/dashboard");
-    expect(screen.getByRole("heading", { name: /dashboard/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /^inventory$/i })).toBeInTheDocument();
   });
 
   it("blocks a Linked account from the Main-only account overview route", () => {
@@ -58,7 +63,7 @@ describe("App routing", () => {
 
   it("shows an authenticated-only logout control and invokes the session logout", () => {
     const logout = vi.fn(async () => {});
-    const { rerender } = renderApp(baseSessionValue({ status: "authenticated", logout }), "/dashboard");
+    const { rerender } = renderApp(baseSessionValue({ status: "authenticated", logout }), "/inventory");
 
     screen.getByRole("button", { name: "Log out" }).click();
     expect(logout).toHaveBeenCalledOnce();

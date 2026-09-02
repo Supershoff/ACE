@@ -2,7 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { InventoryView } from "./InventoryView";
-import { fakeInventoryApi, makeInventoryItem, makeQueryResponse } from "./testFakes";
+import { fakeInventoryApi, fakeTransferOfferApi, fakeWithdrawalApi, makeInventoryItem, makeQueryResponse } from "./testFakes";
 import { SessionContext, type SessionContextValue } from "../session/SessionContext";
 
 function baseSession(overrides: Partial<SessionContextValue> = {}): SessionContextValue {
@@ -139,6 +139,73 @@ describe("InventoryView", () => {
     await waitFor(() =>
       expect(api.queryPages).toHaveBeenLastCalledWith(expect.objectContaining({ category: "Currency", page: 1 })),
     );
+  });
+
+  it("offers Transfer/Withdraw contextual actions for a Main Account with permitted actions, and supplies the item ID from state, never a typed value", async () => {
+    const api = fakeInventoryApi();
+    const transferOfferApi = fakeTransferOfferApi();
+    const withdrawalApi = fakeWithdrawalApi();
+    const user = userEvent.setup();
+    render(
+      <SessionContext.Provider value={baseSession()}>
+        <InventoryView inventoryApi={api} transferOfferApi={transferOfferApi} withdrawalApi={withdrawalApi} />
+      </SessionContext.Provider>,
+    );
+
+    await waitFor(() => screen.getByRole("option", { name: "Ivory Buckler" }));
+    await user.click(screen.getByRole("option", { name: "Ivory Buckler" }));
+    await waitFor(() => expect(screen.getByRole("dialog")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    await user.click(screen.getByRole("menuitem", { name: "Send Transfer Offer…" }));
+
+    expect(screen.queryByLabelText(/item id/i)).not.toBeInTheDocument();
+    await user.type(screen.getByLabelText("Recipient character name"), "Aluvia");
+    await user.click(screen.getByRole("button", { name: "Send offer" }));
+
+    expect(transferOfferApi.create).toHaveBeenCalledWith("Aluvia", [{ kind: "Item", itemBiotaId: 1 }]);
+  });
+
+  it("hides contextual Transfer/Withdraw actions entirely for a Linked account, even with an item selected", async () => {
+    const api = fakeInventoryApi();
+    const user = userEvent.setup();
+    render(
+      <SessionContext.Provider value={baseSession({ accountKind: "Linked" })}>
+        <InventoryView inventoryApi={api} />
+      </SessionContext.Provider>,
+    );
+
+    await waitFor(() => screen.getByRole("option", { name: "Ivory Buckler" }));
+    await user.click(screen.getByRole("option", { name: "Ivory Buckler" }));
+    await waitFor(() => expect(screen.getByRole("dialog")).toBeInTheDocument());
+
+    expect(screen.queryByRole("button", { name: "Actions" })).not.toBeInTheDocument();
+  });
+
+  it("only offers the action(s) the item's own permittedActions allow", async () => {
+    const api = fakeInventoryApi({
+      queryPages: vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        data: makeQueryResponse([
+          makeInventoryItem({ permittedActions: { canWithdraw: false, canList: true, canTransfer: true, canShare: true } }),
+        ]),
+      })),
+    });
+    const user = userEvent.setup();
+    render(
+      <SessionContext.Provider value={baseSession()}>
+        <InventoryView inventoryApi={api} />
+      </SessionContext.Provider>,
+    );
+
+    await waitFor(() => screen.getByRole("option", { name: "Ivory Buckler" }));
+    await user.click(screen.getByRole("option", { name: "Ivory Buckler" }));
+    await waitFor(() => expect(screen.getByRole("dialog")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menuitem", { name: "Send Transfer Offer…" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Create Withdrawal Token…" })).not.toBeInTheDocument();
   });
 
   it("disables Previous page on the first page and Next page on the last page", async () => {

@@ -6,7 +6,7 @@
   "workerHealthPort": 5290,
   "authBridgePort": 5098,
 
-  "_databaseComment": "ace_cloud is created beside this disposable test world's ace_shard schema because custody invariants require cross-schema triggers. aceShardConnectionString supplies the local admin identity for migrations; dbUser/dbPassword define the restricted companion-service identity granted access only to ace_cloud.",
+  "_databaseComment": "ace_cloud is created beside this disposable test world's ace_shard schema because custody invariants require cross-schema triggers. aceShardConnectionString supplies the local admin identity for migrations; dbUser/dbPassword define the restricted companion-service identity, granted full access to ace_cloud plus narrow read-only SELECT on exactly ace_shard.character and ace_shard.biota_properties_i_i_d for character/allegiance name resolution -- never broad ace_shard.* access.",
   "dbUser": "cloud_acceptance",
   "dbPassword": "CHANGE_ME_DISPOSABLE_PASSWORD",
 

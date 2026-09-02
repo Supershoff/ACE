@@ -641,6 +641,10 @@ public sealed class CloudTransferOfferGateway : ICloudTransferOfferService
             var result = await command.ExecuteScalarAsync(cancellationToken);
             return result is null or DBNull ? (false, 0) : (true, Convert.ToUInt32(result));
         }
+        catch (MySqlConnector.MySqlException ex) when (CloudRawSqlHelpers.IsAccessDenied(ex))
+        {
+            throw new CloudDatabasePrivilegeException();
+        }
         finally
         {
             await _context.Database.CloseConnectionAsync();

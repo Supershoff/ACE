@@ -56,7 +56,8 @@ public sealed class CloudIdentityProjectionConsumerTests
         {
             var gateway = new CloudIdentityEventGateway(context);
             await gateway.PublishAllegianceEventAsync(
-                ShardId, CloudIdentityEventType.AllegianceSworn, characterId, monarchId: 999, priorMonarchId: null, Guid.NewGuid());
+                ShardId, CloudIdentityEventType.AllegianceSworn, characterId, monarchId: 999, priorMonarchId: null,
+                accountId: 1, characterName: "Aluvia", totalLogins: 5, Guid.NewGuid());
         }
 
         await using var consumerContext = new CloudDbContext(options);
@@ -71,6 +72,225 @@ public sealed class CloudIdentityProjectionConsumerTests
         Assert.AreEqual("Aluvia", row.CharacterName);
         Assert.AreEqual(5, row.TotalLogins);
         Assert.AreEqual(999u, row.MonarchId);
+    }
+
+    /// <summary>
+    /// Issue #39's blocking oath-first regression: in a fresh/rebuilt Cloud database, AllegianceSworn
+    /// can be the very first identity event a character ever produces (no prior rename/login event).
+    /// The resulting projection row must still carry the character's AccountId/CharacterName so
+    /// <see cref="CloudActingCharacterReader"/> does not filter it out for its own account.
+    /// </summary>
+    [TestMethod]
+    public async Task RunBatchAsync_OathFirstAllegianceEvent_WithNoPriorCharacterEvent_StillPopulatesAccountAndName()
+    {
+        var options = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
+        var characterId = NextCharacterId();
+        var monarchId = NextCharacterId();
+
+        await using (var context = new CloudDbContext(options))
+        {
+            var gateway = new CloudIdentityEventGateway(context);
+            await gateway.PublishAllegianceEventAsync(
+                ShardId, CloudIdentityEventType.AllegianceSworn, characterId, monarchId, priorMonarchId: null,
+                accountId: 7, characterName: "OathFirst", totalLogins: 1, Guid.NewGuid());
+        }
+
+        await using var consumerContext = new CloudDbContext(options);
+        var consumer = new CloudIdentityProjectionConsumer(consumerContext);
+        var outcome = await consumer.RunBatchAsync(ShardId, maxCount: 100);
+
+        Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, outcome.Kind);
+        Assert.AreEqual(1, outcome.Value!.EventsApplied);
+
+        await using var verifyContext = new CloudDbContext(options);
+        var row = await verifyContext.CloudCharacterIdentityReadProjections.SingleAsync(r => r.CharacterId == characterId);
+        Assert.AreEqual(7u, row.AccountId);
+        Assert.AreEqual("OathFirst", row.CharacterName);
+        Assert.AreEqual(monarchId, row.MonarchId);
+    }
+
+    /// <summary>
+    /// Issue #39: an AllegianceBroken event following an oath-first swear must clear the monarch
+    /// pointer while the account/name snapshot -- carried on every allegiance event now, not only the
+    /// first -- remains populated.
+    /// </summary>
+    [TestMethod]
+    public async Task RunBatchAsync_AllegianceBrokenAfterOathFirstSwear_ClearsMonarch_ButKeepsAccountAssociation()
+    {
+        var options = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
+        var characterId = NextCharacterId();
+        var monarchId = NextCharacterId();
+
+        await using (var context = new CloudDbContext(options))
+        {
+            var gateway = new CloudIdentityEventGateway(context);
+            await gateway.PublishAllegianceEventAsync(
+                ShardId, CloudIdentityEventType.AllegianceSworn, characterId, monarchId, priorMonarchId: null,
+                accountId: 9, characterName: "BreaksAway", totalLogins: 2, Guid.NewGuid());
+            await gateway.PublishAllegianceEventAsync(
+                ShardId, CloudIdentityEventType.AllegianceBroken, characterId, monarchId: null, priorMonarchId: monarchId,
+                accountId: 9, characterName: "BreaksAway", totalLogins: 2, Guid.NewGuid());
+        }
+
+        await using var consumerContext = new CloudDbContext(options);
+        var outcome = await new CloudIdentityProjectionConsumer(consumerContext).RunBatchAsync(ShardId, maxCount: 100);
+        Assert.AreEqual(2, outcome.Value!.EventsApplied);
+
+        await using var verifyContext = new CloudDbContext(options);
+        var row = await verifyContext.CloudCharacterIdentityReadProjections.SingleAsync(r => r.CharacterId == characterId);
+        Assert.AreEqual(9u, row.AccountId);
+        Assert.AreEqual("BreaksAway", row.CharacterName);
+        Assert.IsNull(row.MonarchId);
+    }
+
+    /// <summary>
+    /// Issue #39's blocking upgrade-path regression (independent review): a retained Cloud database
+    /// from before the oath-first fix can already contain an AllegianceSworn-derived projection row
+    /// with a null account/name association -- this seeds exactly that degraded row directly (the
+    /// oath-first fix's own event-shape validation now forbids ever producing one through the gateway
+    /// again, so a raw insert is the only way to reproduce a row a pre-fix build actually left behind).
+    /// A character-login-observed snapshot (issue #39's self-heal fix) is the only event ordinary login
+    /// publishes, and must fully repair the row -- including replacing a stale cached monarch with the
+    /// character's actual current one -- without any allegiance mutation happening first.
+    /// </summary>
+    [TestMethod]
+    public async Task RunBatchAsync_LegacyDegradedAllegianceRow_IsRepairedByTheNextLoginObservation()
+    {
+        var options = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
+        var characterId = NextCharacterId();
+        var staleMonarchId = NextCharacterId();
+        var currentMonarchId = NextCharacterId();
+
+        await using (var connection = new MySqlConnection(_fixture.CloudConnectionString))
+        {
+            await connection.OpenAsync();
+
+            await using var insertDegradedRow = connection.CreateCommand();
+            insertDegradedRow.CommandText = """
+                INSERT INTO CloudCharacterIdentityReadProjection
+                    (CharacterId, ShardId, AccountId, CharacterName, TotalLogins, MonarchId, LastAppliedSequenceNumber)
+                VALUES (@characterId, @shardId, NULL, NULL, NULL, @staleMonarchId, 1);
+                """;
+            insertDegradedRow.Parameters.AddWithValue("@characterId", characterId);
+            insertDegradedRow.Parameters.AddWithValue("@shardId", ShardId);
+            insertDegradedRow.Parameters.AddWithValue("@staleMonarchId", staleMonarchId);
+            await insertDegradedRow.ExecuteNonQueryAsync();
+
+            // The pre-fix row's own (never-replayed-here) AllegianceSworn event already occupies
+            // sequence 1; the next real event this character produces -- their next login -- must
+            // reserve a strictly higher sequence number for CloudProjectionSequenceGuard to apply it.
+            await using var bumpSequence = connection.CreateCommand();
+            bumpSequence.CommandText = "UPDATE CloudIdentityOutboxSequence SET NextValue = 2 WHERE Id = 1;";
+            await bumpSequence.ExecuteNonQueryAsync();
+        }
+
+        await using (var context = new CloudDbContext(options))
+        {
+            var gateway = new CloudIdentityEventGateway(context);
+            await gateway.PublishCharacterLoginObservedEventAsync(
+                ShardId, characterId, currentMonarchId, accountId: 11, characterName: "Repaired", totalLogins: 4, Guid.NewGuid());
+        }
+
+        await using var consumerContext = new CloudDbContext(options);
+        var outcome = await new CloudIdentityProjectionConsumer(consumerContext).RunBatchAsync(ShardId, maxCount: 100);
+        Assert.AreEqual(CloudBoundaryOutcomeKind.Committed, outcome.Kind, outcome.Reason);
+        Assert.AreEqual(1, outcome.Value!.EventsApplied);
+
+        await using var verifyContext = new CloudDbContext(options);
+        var row = await verifyContext.CloudCharacterIdentityReadProjections.SingleAsync(r => r.CharacterId == characterId);
+        Assert.AreEqual(11u, row.AccountId, "The login observation must repair the null AccountId a pre-oath-first-fix row was left with.");
+        Assert.AreEqual("Repaired", row.CharacterName);
+        Assert.AreEqual(4, row.TotalLogins);
+        Assert.AreEqual(currentMonarchId, row.MonarchId, "The repair must reflect the character's actual current monarch, not the stale cached one.");
+    }
+
+    /// <summary>
+    /// Issue #39's self-heal fix: an unaffiliated character's login observation carries a null monarch,
+    /// and the projection must faithfully report that -- not merely leave a previous value untouched.
+    /// </summary>
+    [TestMethod]
+    public async Task RunBatchAsync_CharacterLoginObserved_UnaffiliatedCharacter_LeavesMonarchNull()
+    {
+        var options = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
+        var characterId = NextCharacterId();
+
+        await using (var context = new CloudDbContext(options))
+        {
+            var gateway = new CloudIdentityEventGateway(context);
+            await gateway.PublishCharacterLoginObservedEventAsync(
+                ShardId, characterId, monarchId: null, accountId: 21, characterName: "Solo", totalLogins: 1, Guid.NewGuid());
+        }
+
+        await using var consumerContext = new CloudDbContext(options);
+        var outcome = await new CloudIdentityProjectionConsumer(consumerContext).RunBatchAsync(ShardId, maxCount: 100);
+        Assert.AreEqual(1, outcome.Value!.EventsApplied);
+
+        await using var verifyContext = new CloudDbContext(options);
+        var row = await verifyContext.CloudCharacterIdentityReadProjections.SingleAsync(r => r.CharacterId == characterId);
+        Assert.AreEqual(21u, row.AccountId);
+        Assert.AreEqual("Solo", row.CharacterName);
+        Assert.IsNull(row.MonarchId);
+    }
+
+    /// <summary>
+    /// Issue #39: mirrors <see cref="RunBatchAsync_AfterCheckpointLoss_RedeliveryNeverRegressesTheProjection"/>
+    /// for the new character-login-observed event type -- a checkpoint-loss redelivery of two logins
+    /// (an older monarch observation, then a newer one) must skip both as stale and never regress the
+    /// projection back to the older, already-superseded monarch.
+    /// </summary>
+    [TestMethod]
+    public async Task RunBatchAsync_StaleCharacterLoginObservedRedelivery_NeverRegressesTheProjection()
+    {
+        var options = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
+        var characterId = NextCharacterId();
+        var firstMonarchId = NextCharacterId();
+        var secondMonarchId = NextCharacterId();
+
+        await using (var context = new CloudDbContext(options))
+        {
+            var gateway = new CloudIdentityEventGateway(context);
+            await gateway.PublishCharacterLoginObservedEventAsync(
+                ShardId, characterId, firstMonarchId, accountId: 31, characterName: "Wanderer", totalLogins: 1, Guid.NewGuid());
+        }
+
+        await using (var context = new CloudDbContext(options))
+        {
+            var consumer = new CloudIdentityProjectionConsumer(context);
+            await consumer.RunBatchAsync(ShardId, maxCount: 100);
+        }
+
+        await using (var context = new CloudDbContext(options))
+        {
+            var gateway = new CloudIdentityEventGateway(context);
+            await gateway.PublishCharacterLoginObservedEventAsync(
+                ShardId, characterId, secondMonarchId, accountId: 31, characterName: "Wanderer", totalLogins: 2, Guid.NewGuid());
+        }
+
+        await using (var context = new CloudDbContext(options))
+        {
+            var consumer = new CloudIdentityProjectionConsumer(context);
+            await consumer.RunBatchAsync(ShardId, maxCount: 100);
+        }
+
+        await using (var connection = new MySqlConnection(_fixture.CloudConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var reset = connection.CreateCommand();
+            reset.CommandText = "UPDATE CloudProjectionCheckpoint SET LastAppliedSequenceNumber = 0 WHERE ConsumerName = 'IdentityProjection';";
+            await reset.ExecuteNonQueryAsync();
+        }
+
+        await using (var context = new CloudDbContext(options))
+        {
+            var consumer = new CloudIdentityProjectionConsumer(context);
+            var redeliveryOutcome = await consumer.RunBatchAsync(ShardId, maxCount: 100);
+            Assert.AreEqual(0, redeliveryOutcome.Value!.EventsApplied);
+            Assert.AreEqual(2, redeliveryOutcome.Value.EventsSkippedAsStale);
+        }
+
+        await using var verifyContext = new CloudDbContext(options);
+        var row = await verifyContext.CloudCharacterIdentityReadProjections.SingleAsync(r => r.CharacterId == characterId);
+        Assert.AreEqual(secondMonarchId, row.MonarchId, "A stale redelivery of an earlier login observation must never roll the monarch pointer backward.");
     }
 
     [TestMethod]

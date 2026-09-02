@@ -1,4 +1,4 @@
-import { Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes } from "react-router-dom";
 import { ActivityLedgerPage } from "./activity/ActivityLedgerPage";
 import { AllegianceVaultPage } from "./collaboration/AllegianceVaultPage";
 import { SharingGrantsPage } from "./collaboration/SharingGrantsPage";
@@ -9,7 +9,7 @@ import { Button } from "./design-system/primitives/Button";
 import { NotificationCenter } from "./notifications/NotificationCenter";
 import { AccountOverviewPage } from "./pages/AccountOverviewPage";
 import { AdminPage } from "./pages/AdminPage";
-import { DashboardPage } from "./pages/DashboardPage";
+import { InventoryPage } from "./pages/InventoryPage";
 import { LoginPage } from "./pages/LoginPage";
 import { MarketplacePage } from "./pages/MarketplacePage";
 import { RequireAdmin } from "./routes/RequireAdmin";
@@ -21,7 +21,7 @@ import { useSession } from "./session/SessionContext";
 
 const NAV_ITEMS = [
   { to: "/", label: "Marketplace" },
-  { to: "/dashboard", label: "Dashboard" },
+  { to: "/inventory", label: "Inventory" },
   { to: "/activity", label: "Activity" },
   { to: "/transfer-offers", label: "Transfer Offers" },
   { to: "/sharing-grants", label: "Sharing" },
@@ -60,13 +60,15 @@ export function App() {
           <Route path="/" element={<MarketplacePage />} />
           <Route path="/login" element={<LoginPage />} />
           <Route
-            path="/dashboard"
+            path="/inventory"
             element={
               <RequireAuth>
-                <DashboardPage />
+                <InventoryPage />
               </RequireAuth>
             }
           />
+          {/* Rename (issue #39): preserve old bookmarks/links to the Dashboard. */}
+          <Route path="/dashboard" element={<Navigate to="/inventory" replace />} />
           <Route
             path="/activity"
             element={
