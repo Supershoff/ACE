@@ -79,6 +79,14 @@ internal sealed class BackendTestFactory : WebApplicationFactory<Program>
 
     public FakeCloudMonarchVaultRecoveryService MonarchVaultRecoveryService { get; } = new();
 
+    public FakeCloudTransferOfferService TransferOfferService { get; } = new();
+
+    public FakeCloudSharingGrantService SharingGrantService { get; } = new();
+
+    public FakeCloudAllegianceVaultTransactionService AllegianceVaultTransactionService { get; } = new();
+
+    public FakeCloudActingCharacterReader ActingCharacterReader { get; } = new();
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.ConfigureServices(services =>
@@ -145,6 +153,24 @@ internal sealed class BackendTestFactory : WebApplicationFactory<Program>
 
             services.RemoveAll<ICloudMonarchVaultRecoveryService>();
             services.AddSingleton<ICloudMonarchVaultRecoveryService>(MonarchVaultRecoveryService);
+
+            services.RemoveAll<ICloudTransferOfferService>();
+            services.AddSingleton<ICloudTransferOfferService>(TransferOfferService);
+
+            services.RemoveAll<ICloudTransferOfferReader>();
+            services.AddSingleton<ICloudTransferOfferReader>(TransferOfferService);
+
+            services.RemoveAll<ICloudSharingGrantService>();
+            services.AddSingleton<ICloudSharingGrantService>(SharingGrantService);
+
+            services.RemoveAll<ICloudSharingGrantReader>();
+            services.AddSingleton<ICloudSharingGrantReader>(SharingGrantService);
+
+            services.RemoveAll<ICloudAllegianceVaultTransactionService>();
+            services.AddSingleton<ICloudAllegianceVaultTransactionService>(AllegianceVaultTransactionService);
+
+            services.RemoveAll<ICloudActingCharacterReader>();
+            services.AddSingleton<ICloudActingCharacterReader>(ActingCharacterReader);
         });
     }
 }

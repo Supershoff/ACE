@@ -19,7 +19,7 @@ namespace ACE.Cloud.Persistence;
 /// notification side effects, when the requested level already matches), so a repeated identical
 /// request converges to the same committed state without needing a stored key to detect the replay.
 /// </summary>
-public sealed class CloudSharingGrantGateway
+public sealed class CloudSharingGrantGateway : ICloudSharingGrantService
 {
     private readonly CloudDbContext _context;
     private readonly ICloudAccountOwnershipResolver _ownershipResolver;
@@ -321,6 +321,10 @@ public sealed class CloudSharingGrantGateway
 
             var result = await command.ExecuteScalarAsync(cancellationToken);
             return result is null or DBNull ? (false, 0) : (true, Convert.ToUInt32(result));
+        }
+        catch (MySqlConnector.MySqlException ex) when (CloudRawSqlHelpers.IsAccessDenied(ex))
+        {
+            throw new CloudDatabasePrivilegeException();
         }
         finally
         {

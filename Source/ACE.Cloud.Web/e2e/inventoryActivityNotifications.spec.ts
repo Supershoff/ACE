@@ -5,7 +5,7 @@ import { loginAsUiFlow } from "./support/auth";
 test.describe("inventory, appraisal, and search", () => {
   test("browses the Mule Page, filters by category, and opens the Full Cloud Appraisal", async ({ page }) => {
     await loginAsUiFlow(page, mainAccount());
-    await page.goto("/dashboard");
+    await page.goto("/inventory");
 
     await expect(page.getByRole("option").first()).toBeVisible();
 
@@ -23,7 +23,7 @@ test.describe("inventory, appraisal, and search", () => {
 test.describe("icon reconstruction and selection", () => {
   test("selecting a grid cell (without opening it) shows the AC-style bright green selection border", async ({ page }) => {
     await loginAsUiFlow(page, mainAccount());
-    await page.goto("/dashboard");
+    await page.goto("/inventory");
 
     const firstItem = page.getByRole("option").first();
     await expect(firstItem).toBeVisible();
@@ -41,7 +41,7 @@ test.describe("icon reconstruction and selection", () => {
 
   test("a rendered (non-fallback) grid icon serves real image bytes, not a broken image", async ({ page }) => {
     await loginAsUiFlow(page, mainAccount());
-    await page.goto("/dashboard");
+    await page.goto("/inventory");
     await expect(page.getByRole("option").first()).toBeVisible();
 
     const composedIcon = page.locator("img.inventory-icon").first();

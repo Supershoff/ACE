@@ -18,7 +18,7 @@ namespace ACE.Cloud.Persistence;
 /// <c>CloudWithdrawalReservation.Release</c>'s established rationale for the same situation). This
 /// class instead applies the identical precedence directly against <see cref="CloudTransferOfferRecord"/>.
 /// </summary>
-public sealed class CloudTransferOfferGateway
+public sealed class CloudTransferOfferGateway : ICloudTransferOfferService
 {
     /// <summary>XFER-002: "expires after seven days."</summary>
     public static readonly TimeSpan OfferDuration = TimeSpan.FromDays(7);
@@ -640,6 +640,10 @@ public sealed class CloudTransferOfferGateway
 
             var result = await command.ExecuteScalarAsync(cancellationToken);
             return result is null or DBNull ? (false, 0) : (true, Convert.ToUInt32(result));
+        }
+        catch (MySqlConnector.MySqlException ex) when (CloudRawSqlHelpers.IsAccessDenied(ex))
+        {
+            throw new CloudDatabasePrivilegeException();
         }
         finally
         {

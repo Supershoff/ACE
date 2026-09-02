@@ -75,7 +75,8 @@ public sealed class CloudIdentityOutboxReaderTests
         var gateway = new CloudIdentityEventGateway(context);
 
         await gateway.PublishAllegianceEventAsync(
-            ShardId, CloudIdentityEventType.AllegianceSworn, characterId, monarchId, priorMonarchId: null, Guid.NewGuid());
+            ShardId, CloudIdentityEventType.AllegianceSworn, characterId, monarchId, priorMonarchId: null,
+            accountId: 42, characterName: "Sworn", totalLogins: 3, Guid.NewGuid());
 
         await using var readerContext = new CloudDbContext(options);
         var reader = new CloudIdentityOutboxReader(readerContext);
@@ -87,8 +88,44 @@ public sealed class CloudIdentityOutboxReaderTests
         Assert.AreEqual(characterId, evt.CharacterId);
         Assert.AreEqual(monarchId, evt.MonarchId);
         Assert.IsNull(evt.PriorMonarchId);
-        Assert.IsNull(evt.AccountId);
-        Assert.IsNull(evt.CharacterName);
+        // Issue #39's oath-first fix: an allegiance event now also carries the authoritative
+        // account/name snapshot, so it alone can produce an account-associated projection.
+        Assert.AreEqual(42u, evt.AccountId);
+        Assert.AreEqual("Sworn", evt.CharacterName);
+        Assert.AreEqual(3, evt.TotalLogins);
+    }
+
+    /// <summary>
+    /// Issue #39's self-heal fix: a character-login-observed snapshot event publishes and replays
+    /// exactly like the other two event shapes, carrying the current monarch (not a "prior" one -- an
+    /// observation has no delta) alongside the same account/name/login snapshot.
+    /// </summary>
+    [TestMethod]
+    public async Task PublishCharacterLoginObservedEventAsync_ThenReadAfter_ReplaysTheEventInFull()
+    {
+        var options = CloudDbContextOptionsFactory.Create(_fixture.CloudConnectionString);
+        var characterId = NextCharacterId();
+        var monarchId = NextCharacterId();
+
+        await using var context = new CloudDbContext(options);
+        var gateway = new CloudIdentityEventGateway(context);
+
+        await gateway.PublishCharacterLoginObservedEventAsync(
+            ShardId, characterId, monarchId, accountId: 42, characterName: "Observed", totalLogins: 5, Guid.NewGuid());
+
+        await using var readerContext = new CloudDbContext(options);
+        var reader = new CloudIdentityOutboxReader(readerContext);
+        var events = await reader.ReadAfterAsync(0, 100);
+
+        Assert.HasCount(1, events);
+        var evt = events[0];
+        Assert.AreEqual(CloudIdentityEventType.CharacterLoginObserved, evt.EventType);
+        Assert.AreEqual(characterId, evt.CharacterId);
+        Assert.AreEqual(monarchId, evt.MonarchId);
+        Assert.IsNull(evt.PriorMonarchId);
+        Assert.AreEqual(42u, evt.AccountId);
+        Assert.AreEqual("Observed", evt.CharacterName);
+        Assert.AreEqual(5, evt.TotalLogins);
     }
 
     [TestMethod]

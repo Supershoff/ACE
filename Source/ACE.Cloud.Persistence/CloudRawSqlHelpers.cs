@@ -27,4 +27,14 @@ internal static class CloudRawSqlHelpers
     /// <summary>MySQL/MariaDB error 1452: "Cannot add or update a child row: a foreign key constraint fails".</summary>
     public static bool IsForeignKeyViolation(DbUpdateException ex) =>
         ex.InnerException is MySqlException { Number: 1452 };
+
+    /// <summary>
+    /// MySQL/MariaDB error 1142/1143: "SELECT command denied to user ... for table ..." (or column).
+    /// Distinguishes a missing least-privilege grant from an ordinary query failure so a caller can
+    /// translate it into <see cref="CloudDatabasePrivilegeException"/>'s safe, operator-actionable
+    /// message instead of letting the raw exception -- which names the runtime database username and
+    /// exact schema/table -- reach an API response or log (issue #39).
+    /// </summary>
+    public static bool IsAccessDenied(MySqlException ex) =>
+        ex.ErrorCode is MySqlErrorCode.TableAccessDenied or MySqlErrorCode.ColumnAccessDenied;
 }

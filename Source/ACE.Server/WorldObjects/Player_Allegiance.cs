@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 
 using ACE.Cloud.Domain;
+using ACE.Database;
 using ACE.Entity;
 using ACE.Entity.Enum;
 using ACE.Entity.Enum.Properties;
@@ -111,8 +112,11 @@ namespace ACE.Server.WorldObjects
             if (Allegiance != null && Allegiance.MonarchId == Guid.Full)
                 HandleMonarchSwear();
 
-            // VAULT-001: refresh the companion's allegiance-membership projection.
-            CloudIdentityEventManager.PublishAllegianceEvent(Guid.Full, CloudIdentityEventType.AllegianceSworn, monarchGuid, priorMonarchId);
+            // VAULT-001: refresh the companion's allegiance-membership projection. Issue #39: pass this
+            // character's own authoritative account/name/login snapshot so the projection stays
+            // account-associated even if this is the character's first-ever Cloud identity event.
+            CloudIdentityEventManager.PublishAllegianceEvent(
+                Guid.Full, CloudIdentityEventType.AllegianceSworn, monarchGuid, priorMonarchId, Character.AccountId, Name, Character.TotalLogins);
 
             SaveBiotaToDatabase();
 
@@ -151,7 +155,9 @@ namespace ACE.Server.WorldObjects
             // VAULT-004: absorb this monarch's Allegiance Vault into their new monarch's before the
             // old allegiance tree below is rewritten to point at that new monarch.
             CloudIdentityEventManager.AbsorbVault(Guid.Full, MonarchId.Value);
-            CloudIdentityEventManager.PublishAllegianceEvent(Guid.Full, CloudIdentityEventType.AllegianceMonarchChanged, MonarchId, priorMonarchId: Guid.Full);
+            CloudIdentityEventManager.PublishAllegianceEvent(
+                Guid.Full, CloudIdentityEventType.AllegianceMonarchChanged, MonarchId, priorMonarchId: Guid.Full,
+                accountId: Character.AccountId, characterName: Name, totalLogins: Character.TotalLogins);
 
             // walk the allegiance tree from this node, update monarch ids
             AllegianceNode.Walk((node) =>
@@ -253,8 +259,28 @@ namespace ACE.Server.WorldObjects
             // VAULT-001: refresh the companion's allegiance-membership projection for both sides of
             // the break. HandleNoAllegiance above may have already cleared either side's MonarchId,
             // so both current values are read only now, after every mutation above has settled.
-            CloudIdentityEventManager.PublishAllegianceEvent(Guid.Full, CloudIdentityEventType.AllegianceBroken, MonarchId, priorMonarchIdForSelf);
-            CloudIdentityEventManager.PublishAllegianceEvent(target.Guid.Full, CloudIdentityEventType.AllegianceBroken, target.MonarchId, priorMonarchIdForTarget);
+            CloudIdentityEventManager.PublishAllegianceEvent(
+                Guid.Full, CloudIdentityEventType.AllegianceBroken, MonarchId, priorMonarchIdForSelf,
+                accountId: Character.AccountId, characterName: Name, totalLogins: Character.TotalLogins);
+
+            // target is IPlayer (online Player or OfflinePlayer); look up its character stub for the
+            // account/name/login snapshot the way OfflinePlayer itself does, since only Player exposes
+            // a live Character instance.
+            var targetCharacterStub = DatabaseManager.Shard.BaseDatabase.GetCharacterStubByGuid(target.Guid.Full);
+            if (targetCharacterStub != null)
+            {
+                CloudIdentityEventManager.PublishAllegianceEvent(
+                    target.Guid.Full, CloudIdentityEventType.AllegianceBroken, target.MonarchId, priorMonarchIdForTarget,
+                    accountId: targetCharacterStub.AccountId, characterName: targetCharacterStub.Name, totalLogins: targetCharacterStub.TotalLogins);
+            }
+            else
+            {
+                // Fails safe: the allegiance break itself already succeeded above; a missing character
+                // stub only means this side's Cloud projection cannot be refreshed right now (it will
+                // still self-heal on that character's next login, issue #39), not that the mutation
+                // should be aborted or crash with a NullReferenceException.
+                log.Warn($"AC Cloud Mule: no character record found for 0x{target.Guid.Full:X8} while breaking allegiance; skipping their allegiance-broken Cloud event.");
+            }
 
             if (isVassal)
             {
@@ -452,6 +478,15 @@ namespace ACE.Server.WorldObjects
         /// </summary>
         public void HandleAllegianceOnLogin()
         {
+            // VAULT-001/issue #39's self-heal fix: publish an authoritative login snapshot on every
+            // successful world login, not only when an allegiance actually changes. This is what
+            // repairs a projection row a pre-oath-first-fix allegiance event left without an
+            // account/name association (or with a stale monarch) -- ordinary login otherwise publishes
+            // no identity/allegiance event at all, so an already-sworn character would otherwise stay
+            // invisible to its own account forever. Deliberately its own event type (not a swear/break/
+            // monarch-change): no game text is sent and no allegiance mutation is implied.
+            CloudIdentityEventManager.PublishCharacterLoginObserved(Guid.Full, Character.AccountId, Name, Character.TotalLogins, MonarchId);
+
             var actionChain = new ActionChain();
             actionChain.AddDelaySeconds(3.0f);
             actionChain.AddAction(this, () =>

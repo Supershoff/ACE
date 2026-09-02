@@ -12,7 +12,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run && node --test ../../Tools/LocalAcceptance/same-origin-proxy.test.mjs",
     "test:watch": "vitest",
     "test:e2e": "playwright test"
   },

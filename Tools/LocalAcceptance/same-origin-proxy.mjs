@@ -20,8 +20,9 @@ const backendOrigin = `http://127.0.0.1:${backendPort}`;
 // Mirrors every route actually mapped in Source/ACE.Cloud.Backend (AuthSessionEndpoints,
 // AccountIdentityEndpoints, CloudInventoryEndpoints, CloudActivityLedgerEndpoints,
 // CloudWithdrawalEndpoints, CloudNotificationEndpoints, CloudLiveStreamEndpoints,
+// CloudTransferOfferEndpoints, CloudSharingGrantEndpoints, CloudAllegianceVaultEndpoints,
 // ACE.Cloud.Hosting/CloudDiagnosticsEndpoints). Update this list if Backend gains a new prefix.
-const API_PREFIXES = [
+export const API_PREFIXES = [
   "/auth",
   "/admin",
   "/notifications",
@@ -31,6 +32,9 @@ const API_PREFIXES = [
   "/withdrawal-locations",
   "/withdrawals",
   "/account",
+  "/transfer-offers",
+  "/sharing-grants",
+  "/allegiance-vault",
   "/health",
   "/version",
 ];
@@ -46,7 +50,7 @@ const MIME_TYPES = {
   ".woff2": "font/woff2",
 };
 
-function isApiRequest(req) {
+export function isApiRequest(req) {
   const accept = req.headers.accept ?? "";
   if (accept.includes("text/html")) {
     return false;
@@ -55,51 +59,61 @@ function isApiRequest(req) {
   return API_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
 }
 
-function proxyToBackend(req, res) {
-  const target = new URL(req.url, backendOrigin);
-  const proxyReq = http.request(target, { method: req.method, headers: { ...req.headers, host: target.host } }, (proxyRes) => {
-    res.writeHead(proxyRes.statusCode ?? 502, proxyRes.headers);
-    proxyRes.pipe(res);
-  });
-  proxyReq.on("error", (error) => {
-    res.writeHead(502, { "content-type": "text/plain" });
-    res.end(`Bad gateway: ACE.Cloud.Backend is not reachable at ${backendOrigin} (${error.message}).`);
-  });
-  req.pipe(proxyReq);
-}
-
-function serveStatic(req, res) {
-  const { pathname } = new URL(req.url, "http://localhost");
-  let filePath = path.join(distDir, decodeURIComponent(pathname));
-  if (pathname === "/" || !fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
-    filePath = path.join(distDir, "index.html");
+// Built with an explicit ({ distDir, backendOrigin }) so tests can point it at a stub backend and a
+// throwaway static root instead of the production dist/backend, without starting the real listener.
+export function createProxyServer({ distDir, backendOrigin }) {
+  function proxyToBackend(req, res) {
+    const target = new URL(req.url, backendOrigin);
+    const proxyReq = http.request(target, { method: req.method, headers: { ...req.headers, host: target.host } }, (proxyRes) => {
+      res.writeHead(proxyRes.statusCode ?? 502, proxyRes.headers);
+      proxyRes.pipe(res);
+    });
+    proxyReq.on("error", (error) => {
+      res.writeHead(502, { "content-type": "text/plain" });
+      res.end(`Bad gateway: ACE.Cloud.Backend is not reachable at ${backendOrigin} (${error.message}).`);
+    });
+    req.pipe(proxyReq);
   }
-  fs.readFile(filePath, (error, content) => {
-    if (error) {
-      res.writeHead(404, { "content-type": "text/plain" });
-      res.end("Not found. Did you run `npm run build` in Source/ACE.Cloud.Web first?");
+
+  function serveStatic(req, res) {
+    const { pathname } = new URL(req.url, "http://localhost");
+    let filePath = path.join(distDir, decodeURIComponent(pathname));
+    if (pathname === "/" || !fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
+      filePath = path.join(distDir, "index.html");
+    }
+    fs.readFile(filePath, (error, content) => {
+      if (error) {
+        res.writeHead(404, { "content-type": "text/plain" });
+        res.end("Not found. Did you run `npm run build` in Source/ACE.Cloud.Web first?");
+        return;
+      }
+      res.writeHead(200, { "content-type": MIME_TYPES[path.extname(filePath)] ?? "application/octet-stream" });
+      res.end(content);
+    });
+  }
+
+  return http.createServer((req, res) => {
+    if (isApiRequest(req)) {
+      proxyToBackend(req, res);
       return;
     }
-    res.writeHead(200, { "content-type": MIME_TYPES[path.extname(filePath)] ?? "application/octet-stream" });
-    res.end(content);
+    serveStatic(req, res);
   });
 }
 
-if (!fs.existsSync(distDir)) {
-  console.error(`Not found: ${distDir}. Run "npm run build" in Source/ACE.Cloud.Web before starting the proxy.`);
-  process.exit(1);
-}
-
-const server = http.createServer((req, res) => {
-  if (isApiRequest(req)) {
-    proxyToBackend(req, res);
-    return;
+// Only start the real listener when this file is run directly (`node same-origin-proxy.mjs`), not
+// when a test imports it for its exports -- importing must never bind a port or touch the real dist/.
+const isMainModule = process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+if (isMainModule) {
+  if (!fs.existsSync(distDir)) {
+    console.error(`Not found: ${distDir}. Run "npm run build" in Source/ACE.Cloud.Web before starting the proxy.`);
+    process.exit(1);
   }
-  serveStatic(req, res);
-});
 
-server.listen(proxyPort, "127.0.0.1", () => {
-  console.log(`Same-origin local proxy listening at http://127.0.0.1:${proxyPort}`);
-  console.log(`  -> static files from ${distDir}`);
-  console.log(`  -> API requests proxied to ${backendOrigin}`);
-});
+  const server = createProxyServer({ distDir, backendOrigin });
+  server.listen(proxyPort, "127.0.0.1", () => {
+    console.log(`Same-origin local proxy listening at http://127.0.0.1:${proxyPort}`);
+    console.log(`  -> static files from ${distDir}`);
+    console.log(`  -> API requests proxied to ${backendOrigin}`);
+  });
+}

@@ -1,9 +1,9 @@
 import { InventoryView } from "../inventory/InventoryView";
 
-export function DashboardPage() {
+export function InventoryPage() {
   return (
     <section>
-      <h1>Dashboard</h1>
+      <h1>Inventory</h1>
       <InventoryView />
     </section>
   );

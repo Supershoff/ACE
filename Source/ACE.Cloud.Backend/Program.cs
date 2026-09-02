@@ -40,6 +40,15 @@ builder.Services.AddScoped(serviceProvider => new CloudNotificationGateway(servi
 builder.Services.AddScoped<ICloudNotificationReader>(serviceProvider => serviceProvider.GetRequiredService<CloudNotificationGateway>());
 builder.Services.AddScoped<ICloudNotificationWriter>(serviceProvider => serviceProvider.GetRequiredService<CloudNotificationGateway>());
 builder.Services.AddScoped<ICloudLiveStreamReader>(serviceProvider => new CloudLiveStreamReader(serviceProvider.GetRequiredService<CloudDbContext>()));
+builder.Services.AddScoped<ICloudTransferOfferService>(serviceProvider => new CloudTransferOfferGateway(
+    serviceProvider.GetRequiredService<CloudDbContext>(), serviceProvider.GetRequiredService<ICloudAccountOwnershipResolver>()));
+builder.Services.AddScoped<ICloudTransferOfferReader>(serviceProvider => new CloudTransferOfferReader(serviceProvider.GetRequiredService<CloudDbContext>()));
+builder.Services.AddScoped<ICloudSharingGrantService>(serviceProvider => new CloudSharingGrantGateway(
+    serviceProvider.GetRequiredService<CloudDbContext>(), serviceProvider.GetRequiredService<ICloudAccountOwnershipResolver>()));
+builder.Services.AddScoped<ICloudSharingGrantReader>(serviceProvider => new CloudSharingGrantReader(serviceProvider.GetRequiredService<CloudDbContext>()));
+builder.Services.AddScoped<ICloudAllegianceVaultTransactionService>(serviceProvider => new CloudAllegianceVaultTransactionGateway(
+    serviceProvider.GetRequiredService<CloudDbContext>(), serviceProvider.GetRequiredService<ICloudAccountOwnershipResolver>()));
+builder.Services.AddScoped<ICloudActingCharacterReader>(serviceProvider => new CloudActingCharacterReader(serviceProvider.GetRequiredService<CloudDbContext>()));
 
 var protectedAssetStorageOptions = new CloudAssetStorageOptions { RootDirectory = backendOptions.ProtectedAssetStorageRootDirectory };
 builder.Services.AddSingleton<IProtectedAssetBlobStore>(new LocalProtectedAssetBlobStore(protectedAssetStorageOptions));
@@ -81,6 +90,9 @@ app.MapCloudActivityLedgerEndpoints();
 app.MapCloudNotificationEndpoints();
 app.MapCloudLiveStreamEndpoints();
 app.MapCloudAdminVaultRecoveryEndpoints();
+app.MapCloudTransferOfferEndpoints();
+app.MapCloudSharingGrantEndpoints();
+app.MapCloudAllegianceVaultEndpoints();
 
 app.Run();
 

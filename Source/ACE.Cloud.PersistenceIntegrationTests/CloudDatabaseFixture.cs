@@ -73,15 +73,71 @@ public sealed class CloudDatabaseFixture : IAsyncDisposable
     }
 
     /// <summary>
-    /// Provisions a MariaDB identity granted every privilege on the Cloud schema (ace_cloud) and
-    /// explicitly nothing on ace_shard, and returns a connection string authenticating as it. This
-    /// models the narrowly privileged companion web database identity ARCH-004 requires ("The web
-    /// database identity MUST NOT have native-biota write privileges"); tests use it to prove that
-    /// restriction is an enforced database grant, not only documentation. <paramref name="username"/>
-    /// and <paramref name="password"/> are caller-generated test-only random tokens, not real
-    /// operator secrets.
+    /// Provisions a MariaDB identity granted every privilege on the Cloud schema (ace_cloud) plus
+    /// issue #39's minimum narrow read-only grants -- SELECT on exactly <c>ace_shard.character</c> and
+    /// <c>ace_shard.biota_properties_i_i_d</c>, nothing else in ace_shard -- and returns a connection
+    /// string authenticating as it. This models the real narrowly privileged companion web database
+    /// identity <see cref="ACE.Cloud.LocalAcceptanceMigrator"/>'s <c>prepare-colocated</c> mode now
+    /// provisions and ARCH-004 requires ("The web database identity MUST NOT have native-biota write
+    /// privileges" -- a scoped read is not a write); tests use it to prove both halves of that shape
+    /// are enforced database grants, not only documentation. <paramref name="username"/> and
+    /// <paramref name="password"/> are caller-generated test-only random tokens, not real operator
+    /// secrets.
     /// </summary>
     public async Task<string> CreateRestrictedCompanionConnectionStringAsync(string username, string password)
+    {
+        await using var connection = new MySqlConnection(BuildConnectionString(database: null));
+        await connection.OpenAsync();
+
+        await using (var createUser = connection.CreateCommand())
+        {
+            createUser.CommandText = $"CREATE USER IF NOT EXISTS '{username}'@'%' IDENTIFIED BY '{password}';";
+            await createUser.ExecuteNonQueryAsync();
+        }
+
+        await using (var grant = connection.CreateCommand())
+        {
+            grant.CommandText = $"GRANT ALL PRIVILEGES ON `{CloudSchemaName}`.* TO '{username}'@'%';";
+            await grant.ExecuteNonQueryAsync();
+        }
+
+        await using (var grantCharacter = connection.CreateCommand())
+        {
+            grantCharacter.CommandText = $"GRANT SELECT ON `{ShardSchemaName}`.`character` TO '{username}'@'%';";
+            await grantCharacter.ExecuteNonQueryAsync();
+        }
+
+        await using (var grantMonarchProperty = connection.CreateCommand())
+        {
+            grantMonarchProperty.CommandText = $"GRANT SELECT ON `{ShardSchemaName}`.`biota_properties_i_i_d` TO '{username}'@'%';";
+            await grantMonarchProperty.ExecuteNonQueryAsync();
+        }
+
+        await using (var flush = connection.CreateCommand())
+        {
+            flush.CommandText = "FLUSH PRIVILEGES;";
+            await flush.ExecuteNonQueryAsync();
+        }
+
+        var builder = new MySqlConnectionStringBuilder(_container.GetConnectionString())
+        {
+            Database = CloudSchemaName,
+            UserID = username,
+            Password = password,
+        };
+
+        return builder.ConnectionString;
+    }
+
+    /// <summary>
+    /// Provisions the same identity as <see cref="CreateRestrictedCompanionConnectionStringAsync"/>
+    /// except without the ace_shard.character/biota_properties_i_i_d grants -- the exact broken shape
+    /// issue #39's local acceptance provisioning had before its fix (ace_cloud only). Negative-path
+    /// tests use this to prove the missing-grant failure mode is both reproducible and reported through
+    /// <see cref="ACE.Cloud.Persistence.CloudDatabasePrivilegeException"/> rather than an unhandled,
+    /// detail-leaking <see cref="MySqlException"/>.
+    /// </summary>
+    public async Task<string> CreateRestrictedCompanionConnectionStringWithoutShardAccessAsync(string username, string password)
     {
         await using var connection = new MySqlConnection(BuildConnectionString(database: null));
         await connection.OpenAsync();
