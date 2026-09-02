@@ -92,4 +92,43 @@ describe("createHttpClient", () => {
     expect(result.ok).toBe(false);
     expect(result.status).toBe(0);
   });
+
+  it("returns ok:false and never exposes the raw body when a 2xx response is SPA HTML instead of JSON", async () => {
+    // Regression for issue #39 / PR #157: an unmatched API path behind the local acceptance proxy
+    // returned 200 text/html (the SPA shell), which httpClient previously typed as `data: T` as-is.
+    const html = "<!doctype html><html><body>SPA shell</body></html>";
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(html, { status: 200, headers: { "content-type": "text/html; charset=utf-8" } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = createHttpClient({ baseUrl: "https://cloud.example", getCsrfToken: () => null });
+    const result = await client.get<{ offers: unknown[] }>("/transfer-offers");
+
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe(200);
+    expect(result.data).toBeUndefined();
+    expect(result.error).not.toContain(html);
+    expect(result.error).not.toContain("<html>");
+  });
+
+  it("still returns a typed successful result with undefined data for a legitimate empty 2xx body", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = createHttpClient({ baseUrl: "https://cloud.example", getCsrfToken: () => null });
+    const result = await client.post("/allegiance-vault/contribute", { amount: 1 });
+
+    expect(result).toEqual({ ok: true, status: 204, data: undefined });
+  });
+
+  it("still returns the parsed error body for a non-2xx JSON error response", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ error: "not_found" }, { status: 404 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = createHttpClient({ baseUrl: "https://cloud.example", getCsrfToken: () => null });
+    const result = await client.get("/allegiance-vault");
+
+    expect(result).toEqual({ ok: false, status: 404, error: { error: "not_found" } });
+  });
 });

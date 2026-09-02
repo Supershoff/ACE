@@ -20,11 +20,13 @@ export interface HttpClientOptions {
 
 type HttpMethod = "GET" | "POST";
 
+const NotJson = Symbol("NotJson");
+
 function safeJsonParse(text: string): unknown {
   try {
     return JSON.parse(text);
   } catch {
-    return text;
+    return NotJson;
   }
 }
 
@@ -58,7 +60,21 @@ async function performRequest<T>(
   }
 
   const text = await response.text();
-  const parsed = text.length > 0 ? safeJsonParse(text) : undefined;
+  if (text.length === 0) {
+    return response.ok
+      ? { ok: true, status: response.status, data: undefined }
+      : { ok: false, status: response.status, error: undefined };
+  }
+
+  const parsed = safeJsonParse(text);
+  if (parsed === NotJson) {
+    // A 2xx with a non-JSON body (e.g. a proxy or dev server returning the SPA's own index.html for
+    // an unmatched API path) is never a legitimate typed success -- surface it as a failure instead
+    // of handing callers an HTML string typed as T.
+    return response.ok
+      ? { ok: false, status: response.status, error: "Received a non-JSON response body." }
+      : { ok: false, status: response.status, error: text };
+  }
 
   return response.ok
     ? { ok: true, status: response.status, data: parsed as T }
